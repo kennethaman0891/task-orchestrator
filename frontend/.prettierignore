@@ -1,0 +1,7 @@
+dist/
+node_modules/
+src-tauri/gen/
+src-tauri/target/
+public/videos/
+package-lock.json
+*.min.js

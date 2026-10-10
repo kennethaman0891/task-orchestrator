@@ -1,0 +1,810 @@
+//! Terminal manager: registry + lifecycle (spec §4, §7, §36).
+//!
+//! Owns every terminal session. Creating T5 spawns PTY #5 + reader #5 and
+//! leaves T1–T4 untouched.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+use tauri::ipc::Channel;
+use tauri::{AppHandle, Emitter};
+
+use super::output::{spawn_reader, QUEUE_CAP};
+use super::pty::{self};
+use super::recovery;
+use super::session::{SessionDiag, SessionMeta, TerminalSession};
+
+pub struct TerminalManager {
+    pub app: AppHandle,
+    pub sessions: Mutex<HashMap<String, Arc<TerminalSession>>>,
+    counter: AtomicU64,
+    /// Per-process launch salt. Session ids are `t-{n}-{salt}` (e.g.
+    /// `t-3-8m2xq1kz`) so they are COMPACT yet UNIQUE across app launches and
+    /// concurrent instances — persisted pane ids from an older run can never
+    /// alias a live session from a newer one (the old `terminal-1..N` scheme
+    /// restarted its counter on every launch, so restore skipped panes whose
+    /// stale id collided with a fresh session, panes silently bound to
+    /// dead/wrong sessions, killing one terminal killed another, and two app
+    /// instances fought over one id space). The salt is the launch wall-clock
+    /// in base36 (8 chars, ~89-year wrap), ms resolution → each launch gets a
+    /// fresh salt.
+    salt: String,
+}
+
+/// Heuristic agent detection from the launched command (spec §26).
+fn detect_agent(command: &str) -> String {
+    let lower = command.to_lowercase();
+    let candidates: &[(&str, &[&str])] = &[
+        ("antigravity", &["antigravity", "agy", "jetski"][..]),
+        ("codex", &["codex"][..]),
+        ("prime", &["prime-agent", "primeagent", "prime"][..]),
+        ("opencode", &["opencode"][..]),
+        ("claude", &["claude"][..]),
+        ("gemini", &["gemini", "gemini-cli"][..]),
+        ("cursor", &["cursor", "cursor-agent"][..]),
+        ("aider", &["aider"][..]),
+    ];
+    for (name, keys) in candidates {
+        if keys.iter().any(|k| lower.contains(k)) {
+            return name.to_string();
+        }
+    }
+    String::new()
+}
+
+/// True when `command` actually *invokes* the `claude` binary as the program
+/// being run, rather than merely mentioning it in a string.
+///
+/// `detect_agent` matches on substrings, so commands like
+/// `grep -r claude ~/src` or `cd ~/claude-app && npm test` report agent
+/// "claude" even though nothing launches Claude Code. Appending `--no-banner`
+/// to those corrupts them. This inspects the FIRST token of the LAST
+/// shell-separated segment, so:
+///   `claude --resume`            -> true
+///   `cd ~/proj && claude`        -> true
+///   `sudo claude`                -> true
+///   `grep -r claude .`           -> false
+///   `cd ~/claude-app && npm dev` -> false
+fn invokes_claude(command: &str) -> bool {
+    // Split on shell command separators (covers `&&`, `||`, `|`, `;`) and keep
+    // the last segment — that is the program actually being executed.
+    let last = command
+        .split(|c| c == '|' || c == ';' || c == '&' || c == '\n')
+        .filter(|s| !s.trim().is_empty())
+        .last()
+        .unwrap_or("")
+        .trim();
+
+    let mut tokens = last.split_whitespace();
+    let mut prog = match tokens.next() {
+        Some(t) => t,
+        None => return false,
+    };
+
+    // Step over leading `VAR=value` assignments and common wrappers
+    // (sudo, env, time, nice, nohup) to reach the real program token.
+    loop {
+        let is_env_assign = prog.contains('=') && !prog.starts_with('-');
+        let is_wrapper = matches!(
+            prog.rsplit('/').next(),
+            Some("sudo") | Some("env") | Some("time") | Some("nice") | Some("nohup")
+        );
+        if !is_env_assign && !is_wrapper {
+            break;
+        }
+        prog = match tokens.next() {
+            Some(t) => t,
+            None => return false,
+        };
+    }
+
+    // The basename must be exactly `claude` (or a `claude-*` variant) —
+    // never a substring of a longer word.
+    match prog.rsplit('/').next() {
+        Some(p) => p == "claude" || p.starts_with("claude-"),
+        None => false,
+    }
+}
+
+/// Broader CLI detection — returns a recognizable cli id for ANY terminal
+/// tool the user launches (matches the frontend CliLogo map keys).
+fn detect_cli(command: &str) -> String {
+    let a = detect_agent(command);
+    if !a.is_empty() {
+        return a;
+    }
+    let base = command
+        .split_whitespace()
+        .next()
+        .map(|w| w.rsplit('/').next().unwrap_or(w))
+        .unwrap_or("")
+        .trim_start_matches('-')
+        .to_lowercase();
+    let table: &[(&str, &str)] = &[
+        ("vim", "vim"), ("nvim", "nvim"), ("neovim", "nvim"),
+        ("htop", "htop"), ("top", "top"), ("btop", "btop"),
+        ("tmux", "tmux"),
+        ("python", "python"), ("python3", "python"),
+        ("node", "node"), ("nodejs", "node"),
+        ("npm", "npm"), ("npx", "npm"), ("yarn", "npm"), ("pnpm", "npm"),
+        ("git", "git"),
+        ("docker", "docker"),
+        ("zsh", "zsh"), ("bash", "bash"), ("sh", "bash"), ("fish", "bash"),
+        ("cargo", "cargo"),
+        ("ssh", "ssh"), ("curl", "curl"), ("wget", "curl"),
+        ("php", "php"), ("artisan", "php"),
+        ("prime-agent", "prime"), ("primeagent", "prime"), ("prime", "prime"),
+    ];
+    for (key, id) in table {
+        if *key == base {
+            return id.to_string();
+        }
+    }
+    String::new()
+}
+
+impl TerminalManager {
+    pub fn new(app: AppHandle) -> Self {
+        Self {
+            app,
+            sessions: Mutex::new(HashMap::new()),
+            counter: AtomicU64::new(1),
+            salt: launch_salt(),
+        }
+    }
+
+    fn next_id(&self) -> String {
+        let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("t-{n}-{}", self.salt)
+    }
+
+    /// Create a native terminal session (spec §7: creates ONLY the new session).
+    pub fn create(
+        &self,
+        cwd: Option<String>,
+        workspace_id: String,
+        cols: u16,
+        rows: u16,
+        initial_command: Option<String>,
+    ) -> Result<SessionMeta, String> {
+        let id = self.next_id();
+        eprintln!("[MANAGER] create() id={}, cwd={:?}, ws={}", id, cwd, workspace_id);
+        let shell = pty::user_shell();
+        let cwd_path = {
+            let raw = cwd
+                .unwrap_or_default()
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string();
+            // Expand ~ to the user's home directory (shell convention).
+            // Uses crate::home_dir() which handles USERPROFILE on Windows.
+            let expanded = if raw.starts_with('~') {
+                let home = crate::home_dir();
+                if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+                    format!("{}", home.join(rest).display())
+                } else if raw == "~" {
+                    home.to_string_lossy().to_string()
+                } else {
+                    raw.clone()
+                }
+            } else {
+                raw.clone()
+            };
+            let candidate = PathBuf::from(&expanded);
+            let p = if !expanded.is_empty() {
+                if candidate.is_absolute() {
+                    candidate
+                } else {
+                    crate::home_dir().join(&expanded)
+                }
+            } else {
+                PathBuf::new()
+            };
+            // Validate the path exists and is a directory; fall back to HOME.
+            if !expanded.is_empty() && p.is_dir() {
+                eprintln!("[MANAGER] using resolved cwd: {:?}", p);
+                p
+            } else {
+                if !raw.is_empty() {
+                    eprintln!("[MANAGER] cwd {:?} is not a directory or invalid; falling back to {:?}", raw, crate::home_dir());
+                }
+                crate::home_dir()
+            }
+        };
+        let (handle, reader) = pty::spawn_shell(&cwd_path, cols.max(2), rows.max(2))?;
+        let pid = handle.pid;
+
+        let (tx, rx) = tokio::sync::mpsc::channel(QUEUE_CAP);
+        let _reader = spawn_reader(reader, tx);
+
+        let mut meta = SessionMeta {
+            id: id.clone(),
+            workspace_id,
+            shell,
+            cwd: cwd_path.to_string_lossy().to_string(),
+            title: "tto · shell".to_string(),
+            status: "running".to_string(),
+            agent: String::new(),
+            cli: String::new(),
+            created_at: now(),
+            last_activity: now(),
+            cols,
+            rows,
+            tui_active: false,
+            pid,
+            tty: pty::tty_for_pid(pid),
+            grid_mode: "auto".to_string(),
+        };
+
+        // If an initial command is specified, pre-populate CLI, agent, and title
+        let mut cmd_to_inject: Option<String> = None;
+        if let Some(ref cmd) = initial_command {
+            let trimmed = cmd.trim();
+            let is_bare_shell = matches!(
+                trimmed,
+                "zsh" | "zshl" | "/bin/zsh" | "bash" | "/bin/bash" | "sh" | "/bin/sh" | "exec zsh"
+            );
+            if !trimmed.is_empty() && !is_bare_shell {
+                let cli = detect_cli(trimmed);
+                let cmd_to_send = trimmed.to_string();
+                if !cli.is_empty() {
+                    meta.cli = cli.clone();
+                    meta.agent = cli.clone();
+                    meta.title = format!("tto · {cli}");
+                }
+                cmd_to_inject = Some(cmd_to_send);
+            }
+        }
+
+        let session = Arc::new(TerminalSession::new(meta.clone(), handle, rx));
+        if let Some(cmd) = cmd_to_inject {
+            *session.pending_command.lock() = Some(cmd);
+        }
+        eprintln!("[MANAGER] insert session={} tty={}", id, meta.tty);
+        self.sessions.lock().insert(id.clone(), session.clone());
+        let _ = self.app.emit("terminal-updated", ());
+
+        Ok(meta)
+    }
+
+    /// Attach a frontend renderer channel + exit channel to an existing session
+    /// (spec §28: reattach, never restart the process).
+    pub fn attach(
+        &self,
+        id: &str,
+        on_output: Channel<Vec<u8>>,
+        on_exit: Channel<()>,
+    ) -> Result<(), String> {
+        eprintln!("[MANAGER] attach() id={}", id);
+        let sessions = self.sessions.lock();
+        let session = sessions.get(id).ok_or_else(|| format!("no session {id}"))?;
+        recovery::attach(session, on_output, on_exit);
+        eprintln!("[MANAGER] attach() id={} -> OK", id);
+
+        // If this session has a pending initial command, execute it now that the
+        // frontend has attached and established the real terminal geometry!
+        let pending = session.pending_command.lock().take();
+        if let Some(cmd) = pending {
+            let session_clone = session.clone();
+            let id_clone = id.to_string();
+            tokio::spawn(async move {
+                // Allow a safe 1500ms for zsh login profile (.zshrc) and initial fit to settle
+                // Increased to ensure PATH, shell init, and prompt are ready before
+                // launching TUI apps like claude, codex, etc.
+                tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+                // Use newline instead of carriage return for better compatibility
+                let cmd_with_nl = format!("\n{}\n", cmd);
+                if let Err(e) = session_clone.write(cmd_with_nl.as_bytes()) {
+                    eprintln!("[MANAGER] attach() failed to inject pending command for {}: {}", id_clone, e);
+                } else {
+                    eprintln!("[MANAGER] attach() injected pending command '{}' into {}", cmd, id_clone);
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Explicitly detach (e.g. window unload). PTY keeps running; output stays
+    /// bounded in the queue.
+    pub fn detach(&self, id: &str) -> Result<(), String> {
+        let sessions = self.sessions.lock();
+        if let Some(session) = sessions.get(id) {
+            recovery::detach(session);
+        }
+        Ok(())
+    }
+
+    /// Register a secondary read-only mirror subscriber (Space view renderer).
+    pub fn subscribe(&self, id: &str, sub_id: u64, channel: Channel<Vec<u8>>) -> Result<(), String> {
+        let sessions = self.sessions.lock();
+        let session = sessions.get(id).ok_or_else(|| format!("no session {id}"))?;
+        recovery::subscribe(session, sub_id, channel);
+        Ok(())
+    }
+
+    /// Remove a secondary subscriber (idempotent).
+    pub fn unsubscribe(&self, id: &str, sub_id: u64) -> Result<(), String> {
+        let sessions = self.sessions.lock();
+        if let Some(session) = sessions.get(id) {
+            recovery::unsubscribe(session, sub_id);
+        }
+        Ok(())
+    }
+
+    pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
+        let sessions = self.sessions.lock();
+        if let Some(session) = sessions.get(id) {
+            return session.write(data);
+        }
+        for session in sessions.values() {
+            let meta = session.meta.lock();
+            if meta.id == id || meta.tty == id || (!id.is_empty() && meta.tty.contains(id)) {
+                return session.write(data);
+            }
+        }
+        Err(format!("no session {id}"))
+    }
+
+    pub fn send_command(&self, id: &str, command: &str) -> Result<(), String> {
+        let sessions = self.sessions.lock();
+        let session = sessions.get(id).cloned().or_else(|| {
+            sessions.values().find(|s| {
+                let meta = s.meta.lock();
+                meta.id == id || meta.tty == id || (!id.is_empty() && meta.tty.contains(id))
+            }).cloned()
+        }).ok_or_else(|| format!("no session {id}"))?;
+        eprintln!("[MANAGER] send_command id={} cmd={:?}", id, command);
+        let agent = detect_agent(command);
+        // Auto-append --no-banner only when the command *invokes* claude
+        // (not when it merely mentions it, e.g. `grep -r claude .`).
+        let cmd_to_send = if invokes_claude(command) && !command.contains("--no-banner") {
+            let mut c = command.to_string();
+            if !c.ends_with(' ') {
+                c.push(' ');
+            }
+            c.push_str("--no-banner");
+            eprintln!("[MANAGER] Appended --no-banner to claude command");
+            c
+        } else {
+            command.to_string()
+        };
+        if !agent.is_empty() {
+            session.meta.lock().agent = agent;
+        }
+        let cli = detect_cli(&cmd_to_send);
+        if !cli.is_empty() {
+            session.meta.lock().cli = cli;
+        }
+        let r = session.send_command(&cmd_to_send);
+        eprintln!("[MANAGER] send_command id={} -> {:?}", id, r.as_ref().err());
+        r
+    }
+
+    /// Look up a session by its slave tty (e.g. "ttys004") and inject a
+    /// command. Used by the sidecar command relay: the sidecar knows only the
+    /// tty, and only we (the Rust process) hold the PTY master fd.
+    pub fn send_command_by_tty(&self, tty: &str, command: &str) -> Result<(), String> {
+        if tty.is_empty() {
+            return Err("empty tty".to_string());
+        }
+        let sessions = self.sessions.lock();
+        for session in sessions.values() {
+            if session.meta.lock().tty == tty {
+                let agent = detect_agent(command);
+                // Auto-append --no-banner only when the command *invokes* claude
+                // (not when it merely mentions it, e.g. `grep -r claude .`).
+                let cmd_to_send = if invokes_claude(command) && !command.contains("--no-banner") {
+                    let mut c = command.to_string();
+                    if !c.ends_with(' ') {
+                        c.push(' ');
+                    }
+                    c.push_str("--no-banner");
+                    eprintln!("[MANAGER] Appended --no-banner to claude command");
+                    c
+                } else {
+                    command.to_string()
+                };
+                if !agent.is_empty() {
+                    session.meta.lock().agent = agent;
+                }
+                let cli = detect_cli(&cmd_to_send);
+                if !cli.is_empty() {
+                    session.meta.lock().cli = cli;
+                }
+                return session.send_command(&cmd_to_send);
+            }
+        }
+        Err(format!("no session with tty {tty}"))
+    }
+
+    /// Write raw bytes to a session found by its slave tty (remote /stop
+    /// sends Ctrl+C this way). Mirrors `send_command_by_tty`.
+    pub fn write_by_tty(&self, tty: &str, data: &str) -> Result<(), String> {
+        if tty.is_empty() {
+            return Err("empty tty".to_string());
+        }
+        let sessions = self.sessions.lock();
+        for session in sessions.values() {
+            if session.meta.lock().tty == tty {
+                return session.write(data.as_bytes());
+            }
+        }
+        Err(format!("no session with tty {tty}"))
+    }
+
+    /// Restart the shell inside the session whose slave tty matches
+    /// (remote /restart for Rust sessions).
+    pub fn restart_by_tty(&self, tty: &str) -> Result<(), String> {
+        if tty.is_empty() {
+            return Err("empty tty".to_string());
+        }
+        let id = self.id_for_tty(tty)?;
+        self.restart(&id)
+    }
+
+    /// Close/kill the session whose slave tty matches (remote /kill).
+    pub fn close_by_tty(&self, tty: &str) -> Result<(), String> {
+        if tty.is_empty() {
+            return Err("empty tty".to_string());
+        }
+        let id = self.id_for_tty(tty)?;
+        self.close(&id)
+    }
+
+    fn id_for_tty(&self, tty: &str) -> Result<String, String> {
+        let sessions = self.sessions.lock();
+        for (id, session) in sessions.iter() {
+            if session.meta.lock().tty == tty {
+                return Ok(id.clone());
+            }
+        }
+        Err(format!("no session with tty {tty}"))
+    }
+
+    pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
+        use super::resize as rz;
+        let sessions = self.sessions.lock();
+        let session = sessions.get(id).ok_or_else(|| format!("no session {id}"))?;
+        let (cols, rows) = rz::clamp(cols, rows);
+        {
+            let m = session.meta.lock();
+            if !rz::changed(m.cols, m.rows, cols, rows) {
+                return Ok(()); // no-op: avoids ioctl + resize loops (spec §35)
+            }
+        }
+        {
+            let pty = session.pty.lock();
+            pty::resize(&*pty.master, cols, rows)?;
+        }
+        {
+            let mut m = session.meta.lock();
+            m.cols = cols;
+            m.rows = rows;
+        }
+        Ok(())
+    }
+
+    /// Kill the process and drop the session. The frontend recreates on demand.
+    pub fn close(&self, id: &str) -> Result<(), String> {
+        let mut sessions = self.sessions.lock();
+        if let Some(session) = sessions.remove(id) {
+            let _ = session.pty.lock().child.kill();
+            let _ = session.pty.lock().child.wait();
+        }
+        let _ = self.app.emit("terminal-updated", ());
+        Ok(())
+    }
+
+    /// Kill every PTY child. Called on app exit so shells/TUIs (e.g. opencode)
+    /// are NOT orphaned with a dead terminal — orphaned TUI processes spin at
+    /// 100% CPU and can crash their runtime (Bun SIGTRAP in the renderer).
+    pub fn kill_all(&self) {
+        let sessions = self.sessions.lock();
+        for session in sessions.values() {
+            let mut pty = session.pty.lock();
+            let _ = pty.child.kill();
+            let _ = pty.child.wait();
+        }
+    }
+
+    /// Restart the shell process inside the same session (same id, same cwd).
+    /// The renderer channel is preserved; the reader queue is swapped.
+    pub fn restart(&self, id: &str) -> Result<(), String> {
+        let sessions = self.sessions.lock();
+        let session = sessions.get(id).ok_or_else(|| format!("no session {id}"))?;
+
+        let (cwd, cols, rows, grid_mode) = {
+            let m = session.meta.lock();
+            (m.cwd.clone(), m.cols, m.rows, m.grid_mode.clone())
+        };
+
+        {
+            let mut pty = session.pty.lock();
+            let _ = pty.child.kill();
+            let _ = pty.child.wait();
+        }
+
+        let (handle, reader) = pty::spawn_shell(&PathBuf::from(&cwd), cols, rows)?;
+        let pid = handle.pid;
+        let (tx, rx) = tokio::sync::mpsc::channel(QUEUE_CAP);
+        let _reader = spawn_reader(reader, tx);
+
+        // Swap PTY + queue; keep id + channels (detach/re-attach handled by UI).
+        recovery::detach(session);
+        session.reset_scrollback();
+        *session.pty.lock() = handle;
+        *session.rx.lock() = Some(rx);
+
+        {
+            let mut m = session.meta.lock();
+            m.status = "running".to_string();
+            m.pid = pid;
+            m.tty = pty::tty_for_pid(pid);
+            m.last_activity = now();
+            m.grid_mode = grid_mode;
+        }
+        let _ = self.app.emit("terminal-updated", ());
+        Ok(())
+    }
+
+    pub fn list(&self) -> Vec<SessionMeta> {
+        let sessions = self.sessions.lock();
+        sessions.values().map(|s| {
+            let pid = s.meta.lock().pid;
+            let current_cli = s.meta.lock().cli.clone();
+            if let Some(active) = pty::active_child_process(pid) {
+                let detected = detect_cli(&active);
+                let cli_to_set = if !detected.is_empty() { detected } else { active };
+                s.meta.lock().cli = cli_to_set.clone();
+                s.meta.lock().agent = cli_to_set;
+            } else if !current_cli.is_empty() && current_cli != "zsh" && current_cli != "bash" && current_cli != "sh" {
+                s.meta.lock().cli = "zsh".to_string();
+                s.meta.lock().agent = "shell".to_string();
+            }
+            s.meta()
+        }).collect()
+    }
+
+    pub fn get_meta(&self, id: &str) -> Option<SessionMeta> {
+        let sessions = self.sessions.lock();
+        sessions.get(id).map(|s| {
+            let pid = s.meta.lock().pid;
+            let current_cli = s.meta.lock().cli.clone();
+            if let Some(active) = pty::active_child_process(pid) {
+                let detected = detect_cli(&active);
+                let cli_to_set = if !detected.is_empty() { detected } else { active };
+                s.meta.lock().cli = cli_to_set.clone();
+                s.meta.lock().agent = cli_to_set;
+            } else if !current_cli.is_empty() && current_cli != "zsh" && current_cli != "bash" && current_cli != "sh" {
+                s.meta.lock().cli = "zsh".to_string();
+                s.meta.lock().agent = "shell".to_string();
+            }
+            s.meta()
+        })
+    }
+
+    /// Return the full persistent scrollback for a session (FIX: full-history
+    /// replay). The frontend calls this after (re)creating a renderer so the
+    /// terminal shows the ENTIRE output history, not just the newest chunks.
+    pub fn get_scrollback(&self, id: &str) -> Result<Vec<u8>, String> {
+        let sessions = self.sessions.lock();
+        let session = sessions.get(id).ok_or_else(|| format!("no session {id}"))?;
+        Ok(session.scrollback_copy())
+    }
+
+    pub fn set_title(&self, id: &str, title: &str) {
+        let sessions = self.sessions.lock();
+        if let Some(session) = sessions.get(id) {
+            session.meta.lock().title = title.to_string();
+        } else if let Some(session) = sessions.values().find(|s| {
+            let meta = s.meta.lock();
+            meta.id == id || meta.tty == id || (!id.is_empty() && meta.tty.contains(id))
+        }) {
+            session.meta.lock().title = title.to_string();
+        }
+        let _ = self.app.emit("terminal-updated", ());
+    }
+
+    pub fn set_tui(&self, id: &str, active: bool) {
+        let sessions = self.sessions.lock();
+        if let Some(session) = sessions.get(id) {
+            session.meta.lock().tui_active = active;
+        }
+    }
+
+    pub fn set_focus(&self, id: &str, focused: bool) {
+        let sessions = self.sessions.lock();
+        if let Some(session) = sessions.get(id) {
+            let changed = session.focused.load(std::sync::atomic::Ordering::Relaxed) != focused;
+            session
+                .focused
+                .store(focused, std::sync::atomic::Ordering::Relaxed);
+            if changed {
+                drop(sessions);
+                let _ = self.app.emit("terminal-updated", ());
+            }
+        }
+    }
+
+    pub fn set_visible(&self, id: &str, visible: bool) {
+        let sessions = self.sessions.lock();
+        if let Some(session) = sessions.get(id) {
+            let changed = session.visible.load(std::sync::atomic::Ordering::Relaxed) != visible;
+            session
+                .visible
+                .store(visible, std::sync::atomic::Ordering::Relaxed);
+            if changed {
+                drop(sessions);
+                let _ = self.app.emit("terminal-updated", ());
+            }
+        }
+    }
+
+    /// Update the grid layout mode for a session (auto | grid | compact | large).
+    /// Stored in metadata so the scheduler and diagnostics know the presentation
+    /// context. Also emits a terminal-updated event so the frontend can react.
+    pub fn set_grid_mode(&self, id: &str, mode: &str) {
+        let valid = matches!(mode, "auto" | "grid" | "compact" | "large");
+        let mode = if valid { mode } else { "auto" };
+        let sessions = self.sessions.lock();
+        if let Some(session) = sessions.get(id) {
+            session.meta.lock().grid_mode = mode.to_string();
+            drop(sessions);
+            let _ = self.app.emit("terminal-updated", ());
+        }
+    }
+
+    /// Batch-resize all sessions belonging to a workspace to the given dimensions.
+    /// Called when the user switches grid layout modes so every terminal in the
+    /// workspace gets a SIGWINCH at the new card size in one pass.
+    pub fn batch_resize(&self, workspace_id: &str, cols: u16, rows: u16) -> usize {
+        use super::resize as rz;
+        let (cols, rows) = rz::clamp(cols, rows);
+        let mut resized = 0usize;
+        let sessions = self.sessions.lock();
+        for session in sessions.values() {
+            {
+                let m = session.meta.lock();
+                if m.workspace_id != workspace_id {
+                    continue;
+                }
+                if !rz::changed(m.cols, m.rows, cols, rows) {
+                    continue;
+                }
+            }
+            {
+                let pty = session.pty.lock();
+                if pty::resize(&*pty.master, cols, rows).is_err() {
+                    continue;
+                }
+            }
+            {
+                let mut m = session.meta.lock();
+                m.cols = cols;
+                m.rows = rows;
+            }
+            resized += 1;
+        }
+        if resized > 0 {
+            drop(sessions);
+            let _ = self.app.emit("terminal-updated", ());
+        }
+        resized
+    }
+
+    pub fn diagnostics(&self) -> Vec<SessionDiag> {
+        self.sessions.lock().values().map(|s| s.diag()).collect()
+    }
+
+    /// Drain one terminal's pending output up to `budget` chunks, forwarding to
+    /// the attached renderer channel AND/OR mirror subscribers. Returns (forwarded, exited).
+    ///
+    /// IMPORTANT (fix: blank-terminal bug): output is ONLY consumed while a
+    /// renderer is listening — either the PRIMARY channel (old grid view) or at
+    /// least ONE mirror SUBSCRIBER (Space view). While nothing listens (e.g.
+    /// the first ~200 ms between spawn and webview attach, or a pane swap),
+    /// chunks stay queued — bounded by QUEUE_CAP — so the next listener resumes
+    /// exactly where output left off.
+    ///
+    /// FIX (missing-content bug): previously drain refused to run unless the
+    /// PRIMARY channel existed. The Space view only ever SUBSCRIBES (mirrors),
+    /// never attaches — so its sessions had channel=None forever, the queue
+    /// filled to QUEUE_CAP (~2 MB), the PTY reader blocked on backpressure,
+    /// and terminals froze with truncated/missing content. Now mirrors count
+    /// as listeners too.
+    /// Drain up to `budget` chunks from a specific session directly without holding the sessions map lock.
+    pub fn drain_session(&self, session: &Arc<TerminalSession>, budget: usize) -> (usize, bool) {
+        let has_primary = session.channel.lock().is_some();
+        let has_subscribers = !session.subscribers.lock().is_empty();
+        let has_listeners = has_primary || has_subscribers;
+        let mut forwarded = 0usize;
+        let mut exited = false;
+        for _ in 0..budget {
+            let chunk = {
+                let mut rx_guard = session.rx.lock();
+                match rx_guard.as_mut().map(|r| r.try_recv()) {
+                    Some(Ok(chunk)) => chunk,
+                    _ => break,
+                }
+            };
+            session
+                .dropped
+                .fetch_add(chunk.dropped, std::sync::atomic::Ordering::Relaxed);
+            session.append_scrollback(&chunk.data);
+            if chunk.eof {
+                exited = true;
+                let _ = session.pty.lock().child.try_wait();
+                session.meta.lock().status = "exited".to_string();
+            }
+            if !chunk.data.is_empty() {
+                session.publish_rust_taps(&chunk.data);
+                if has_listeners && recovery::send_chunk(session, chunk.data) {
+                    session
+                        .chunks_sent
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    forwarded += 1;
+                }
+            }
+            if chunk.eof {
+                recovery::notify_exit(session);
+            }
+        }
+        if exited {
+            let _ = self.app.emit("terminal-updated", ());
+        }
+        (forwarded, exited)
+    }
+
+    pub fn drain(&self, id: &str, budget: usize) -> (usize, bool) {
+        let session = {
+            let sessions = self.sessions.lock();
+            sessions.get(id).cloned()
+        };
+        if let Some(session) = session {
+            self.drain_session(&session, budget)
+        } else {
+            (0, false)
+        }
+    }
+}
+
+fn now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// Per-process unique salt: boot timestamp compacted to 8 base36 digits.
+/// Unique across app launches and concurrent instances (ms-resolution wall
+/// clock, ~89-year wrap), so a persisted pane id can never alias a live
+/// session from a different run — while keeping ids short (`t-{n}-{hash}`).
+fn launch_salt() -> String {
+    let boot = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    base36(boot as u64)
+}
+
+/// Compact base36 encoding (digits `0-9a-z`): ~33% shorter than hex for the
+/// same value (11 hex chars → 8 base36 chars), and unambiguous for display,
+/// keys, and our `t-{n}-{salt}` ids.
+fn base36(mut v: u64) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    if v == 0 {
+        return "0".to_string();
+    }
+    let mut out = Vec::with_capacity(13);
+    while v > 0 {
+        out.push(DIGITS[(v % 36) as usize]);
+        v /= 36;
+    }
+    out.reverse();
+    String::from_utf8(out).expect("base36 digits are ASCII")
+}

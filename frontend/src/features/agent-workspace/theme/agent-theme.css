@@ -1,0 +1,407 @@
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Agent Workspace — Pitch-Black Monospace Theme
+   Scoped to .aw-container so it never leaks into the rest of the app.
+   Pure black surfaces, neutral gray text, no color tint.
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+.aw-container {
+  /* ── Surface & background ─────────────────────────────────────────────── */
+  --agent-bg: #000000;
+  --agent-surface: #0a0a0a;
+  --agent-surface-hover: #141414;
+  --agent-surface-active: #1a1a1a;
+  --agent-elevated: #0d0d0d;
+  --agent-code-bg: #050505;
+  --agent-selection: rgba(255, 255, 255, 0.12);
+
+  /* ── Borders ──────────────────────────────────────────────────────────── */
+  --agent-border: #1a1a1a;
+  --agent-border-subtle: #141414;
+  --agent-border-accent: rgba(255, 255, 255, 0.25);
+
+  /* ── Text ─────────────────────────────────────────────────────────────── */
+  --agent-text: #c8c8c8;
+  --agent-text-bright: #f2f2f2;
+  --agent-text-muted: #777777;
+  --agent-text-dim: #4a4a4a;
+
+  /* ── Monochrome semantic palette ───────────────────────────────────────── */
+  --agent-cyan: #a8a8a8;
+  --agent-cyan-bright: #d0d0d0;
+  --agent-blue: #b0b0b0;
+  --agent-green: #9e9e9e;
+  --agent-green-bright: #c0c0c0;
+  --agent-yellow: #b8b8b8;
+  --agent-orange: #a0a0a0;
+  --agent-red: #d94545;
+  --agent-red-muted: rgba(217, 69, 69, 0.12);
+  --agent-magenta: #b8b8b8;
+  --agent-violet: #a0a0a0;
+
+  /* ── Semantic aliases (success / warning / error / accent) ─────────────── */
+  --agent-accent: #d0d0d0;
+  --agent-accent-hover: #f2f2f2;
+  --agent-success: #a0a0a0;
+  --agent-warning: #b8b8b8;
+  --agent-error: var(--agent-red);
+
+  /* ── Typography ────────────────────────────────────────────────────────── */
+  --agent-mono: 'SF Mono', ui-monospace, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  --agent-mono-xs: 9px;
+  --agent-mono-sm: 10px;
+  --agent-mono-base: 11.5px;
+  --agent-mono-md: 13px;
+  --agent-line-height: 1.45;
+
+  /* ── Spacing scale ─────────────────────────────────────────────────────── */
+  --agent-sp-xs: 2px;
+  --agent-sp-sm: 4px;
+  --agent-sp-md: 8px;
+  --agent-sp-lg: 12px;
+  --agent-sp-xl: 16px;
+
+  /* ── Radii ─────────────────────────────────────────────────────────────── */
+  --agent-radius-sm: 4px;
+  --agent-radius-md: 6px;
+  --agent-radius-lg: 8px;
+
+  /* ── Transitions ───────────────────────────────────────────────────────── */
+  --agent-transition: 120ms ease;
+
+  /* ── Override the global vars locally ──────────────────────────────────── */
+  background: var(--agent-bg);
+  color: var(--agent-text);
+  font-family: var(--agent-mono);
+  font-size: var(--agent-mono-base);
+  line-height: var(--agent-line-height);
+}
+
+/* ── Selection color inside agent workspace ──────────────────────────────── */
+.aw-container ::selection {
+  background: var(--agent-selection);
+  color: var(--agent-text-bright);
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   MAC TRAFFIC-LIGHT HEADER DOTS
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.aw-mac-dots {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+.aw-mac-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  opacity: 0.75;
+  transition: opacity var(--agent-transition);
+}
+.aw-mac-dot:hover {
+  opacity: 1;
+}
+.aw-mac-dot--close {
+  background: var(--agent-red);
+}
+.aw-mac-dot--minimize {
+  background: var(--agent-yellow);
+}
+.aw-mac-dot--maximize {
+  background: var(--agent-green);
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   FOCUS & ACCESSIBILITY
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.aw-container *:focus-visible {
+  outline: 2px solid var(--agent-accent);
+  outline-offset: 1px;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   HEADER WORKSPACE DROP-DOWN
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.aw-ws-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background:
+    linear-gradient(45deg, transparent 50%, var(--agent-text-muted) 50%)
+      calc(100% - 14px) 50% / 5px 5px no-repeat,
+    linear-gradient(135deg, var(--agent-text-muted) 50%, transparent 50%)
+      calc(100% - 9px) 50% / 5px 5px no-repeat,
+    var(--agent-surface);
+  border: 1px solid var(--agent-border);
+  border-radius: var(--agent-radius-sm);
+  color: var(--agent-text);
+  font-family: var(--agent-mono);
+  font-size: var(--agent-mono-sm);
+  padding: 4px 26px 4px 8px;
+  max-width: 200px;
+  cursor: pointer;
+  transition: border-color var(--agent-transition), background-color var(--agent-transition);
+}
+.aw-ws-select:hover {
+  border-color: var(--agent-border-accent);
+}
+.aw-ws-select:focus-visible {
+  outline: 2px solid var(--agent-accent);
+  outline-offset: 1px;
+}
+.aw-ws-select option {
+  background: var(--agent-elevated);
+  color: var(--agent-text);
+}
+.aw-ws-path {
+  font-family: var(--agent-mono);
+  font-size: var(--agent-mono-xs);
+  color: var(--agent-text-muted);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* show the tail (most meaningful part) when truncated */
+  text-align: left;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   NEW SESSION MODAL
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.nws-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 900; /* below the embedded New Workspace wizard (wz2-overlay: 1000) */
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: wz2-fade 0.16s ease-out;
+}
+.nws-modal {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+  background: var(--agent-elevated);
+  border: 1px solid var(--agent-border);
+  border-radius: 14px;
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+  overflow: hidden;
+  animation: wz2-pop 0.18s ease-out;
+  color: var(--agent-text);
+  font-family: var(--agent-mono);
+  font-size: var(--agent-mono-base);
+}
+.nws-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid var(--agent-border-subtle);
+}
+.nws-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--agent-text-bright);
+}
+.nws-sub {
+  margin: 4px 0 0;
+  font-size: var(--agent-mono-sm);
+  color: var(--agent-text-muted);
+}
+.nws-close {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--agent-text-muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--agent-radius-sm);
+}
+.nws-close:hover {
+  color: var(--agent-text-bright);
+  background: var(--agent-surface-hover);
+}
+.nws-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 10px 20px 0;
+  border-bottom: 1px solid var(--agent-border-subtle);
+}
+.nws-tab {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--agent-radius-sm) var(--agent-radius-sm) 0 0;
+  color: var(--agent-text-muted);
+  font-family: var(--agent-mono);
+  font-size: var(--agent-mono-sm);
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: color var(--agent-transition), background-color var(--agent-transition);
+}
+.nws-tab:hover {
+  color: var(--agent-text);
+  background: var(--agent-surface);
+}
+.nws-tab.active {
+  color: var(--agent-cyan-bright);
+  background: var(--agent-surface);
+  border-color: var(--agent-border);
+}
+.nws-body {
+  padding: 16px 20px 8px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.nws-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.nws-label {
+  font-size: var(--agent-mono-sm);
+  color: var(--agent-text-muted);
+}
+.nws-optional {
+  color: var(--agent-text-dim);
+  font-size: var(--agent-mono-xs);
+}
+.nws-input {
+  appearance: none;
+  background: var(--agent-surface);
+  border: 1px solid var(--agent-border);
+  border-radius: var(--agent-radius-md);
+  color: var(--agent-text);
+  font-family: var(--agent-mono);
+  font-size: var(--agent-mono-base);
+  padding: 8px 10px;
+  transition: border-color var(--agent-transition);
+}
+.nws-input:focus-visible {
+  outline: none;
+  border-color: var(--agent-accent);
+}
+.nws-mono {
+  font-family: var(--agent-mono);
+}
+.nws-input option {
+  background: var(--agent-elevated);
+  color: var(--agent-text);
+}
+.nws-textarea {
+  resize: vertical;
+  min-height: 56px;
+}
+.nws-chosen {
+  font-family: var(--agent-mono);
+  font-size: var(--agent-mono-xs);
+  color: var(--agent-text-muted);
+  background: var(--agent-surface);
+  border: 1px dashed var(--agent-border);
+  border-radius: var(--agent-radius-sm);
+  padding: 4px 8px;
+  overflow: hidden;
+}
+.nws-chosen-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+.nws-agents {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.nws-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  appearance: none;
+  background: var(--agent-surface);
+  border: 1px solid var(--agent-border);
+  border-radius: 999px;
+  padding: 5px 12px;
+  color: var(--agent-text);
+  font-family: var(--agent-mono);
+  font-size: var(--agent-mono-sm);
+  cursor: pointer;
+  transition: border-color var(--agent-transition), background-color var(--agent-transition),
+    color var(--agent-transition);
+}
+.nws-agent:hover {
+  border-color: var(--agent-border-accent);
+}
+.nws-agent.active {
+  background: var(--agent-selection);
+  border-color: var(--agent-accent);
+  color: var(--agent-cyan-bright);
+}
+.nws-agent-icon {
+  font-size: 12px;
+}
+.nws-muted {
+  color: var(--agent-text-dim);
+  font-size: var(--agent-mono-sm);
+}
+.nws-error {
+  color: var(--agent-error);
+  font-size: var(--agent-mono-sm);
+  background: var(--agent-red-muted);
+  border: 1px solid rgba(220, 50, 47, 0.3);
+  border-radius: var(--agent-radius-sm);
+  padding: 6px 10px;
+}
+.nws-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--agent-border-subtle);
+}
+.nws-cancel,
+.nws-create {
+  appearance: none;
+  border-radius: var(--agent-radius-md);
+  font-family: var(--agent-mono);
+  font-size: var(--agent-mono-sm);
+  padding: 7px 16px;
+  cursor: pointer;
+  transition: background-color var(--agent-transition), border-color var(--agent-transition),
+    color var(--agent-transition);
+}
+.nws-cancel {
+  background: transparent;
+  border: 1px solid var(--agent-border);
+  color: var(--agent-text-muted);
+}
+.nws-cancel:hover {
+  color: var(--agent-text);
+  border-color: var(--agent-border-accent);
+}
+.nws-create {
+  background: var(--agent-accent);
+  border: 1px solid var(--agent-accent);
+  color: #05201d;
+  font-weight: 600;
+}
+.nws-create:hover {
+  background: var(--agent-accent-hover);
+}
+.nws-create:disabled,
+.nws-cancel:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

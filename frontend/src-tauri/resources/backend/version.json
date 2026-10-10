@@ -1,0 +1,32 @@
+{
+  "version": "2.3.1",
+  "date": "2026-09-14",
+  "ok": true,
+  "downloads": {
+    "macos": "",
+    "windows": ""
+  },
+  "changelog": [
+    "Security: .env file protected — all file API endpoints block .env, .ssh, .gnupg, credentials, key files",
+    "Security: Tauri CSP set — no more null Content-Security-Policy in webview",
+    "Security: assetProtocol.scope narrowed from ** to app-specific directories",
+    "Security: npm vulnerabilities patched (fast-uri, nanoid)",
+    "Fixed: frontend dist rebuilt with all uncommitted features (NewSessionModal, cliLogos, screenshot, agent-workspace)",
+    "Fixed: .env file restored after accidental overwrite during audit",
+    "Updated: version bumped to 2.3.1 across all manifests",
+    "Added: IDE View (VS Code layout — activity bar, file explorer, tabbed editor, breadcrumbs, welcome page with TTO logo, Send-to-Terminal panel, status bar)",
+    "Added: Floating colorful wire connections in Task Center (8-color palette, animated flowing particles, click-to-connect endpoints, persistent per workspace)",
+    "Added: UI Inspector (Cmd+Shift+A) for annotating UI elements",
+    "Added: Command Palette (Cmd+P) for quick file search and actions",
+    "Added: File Drag & Drop onto terminal panes (shell-escaped, injected into PTY)",
+    "Improved: Attractive sidebar redesign (gradient background, glowing live dots, hover animations, accent borders)",
+    "Improved: IDE welcome page with floating TTO logo and styled keyboard shortcuts",
+    "Improved: File send to terminal now works in Tauri mode (uses PTY directly)",
+    "Improved: CEO agent dispatch resolves Tauri sessions correctly",
+    "Improved: Wire overlay z-index raised for better visibility",
+    "Fixed: Workspace selector no longer incorrectly sends file paths",
+    "Fixed: CLI auto-close race when creating multiple terminals",
+    "Fixed: Terminal pane goes blank after switching workspace tabs",
+    "Updated: Instruction guide with all current features (v2.3.0)"
+  ]
+}

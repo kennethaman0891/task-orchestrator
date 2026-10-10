@@ -1,0 +1,137 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// Developer City — data contracts. Mirrors backend/routers/projects.py.
+// The 3D scene is rendered ENTIRELY from these records; no project is
+// hard-coded anywhere in the city code.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export type ProjectType =
+  | 'college'
+  | 'ecommerce'
+  | 'business'
+  | 'portfolio'
+  | 'saas'
+  | 'custom';
+
+export const PROJECT_TYPES: ProjectType[] = [
+  'college', 'ecommerce', 'business', 'portfolio', 'saas', 'custom',
+];
+
+export const PROJECT_TYPE_LABELS: Record<ProjectType, string> = {
+  college: 'College',
+  ecommerce: 'E-commerce',
+  business: 'Business',
+  portfolio: 'Portfolio',
+  saas: 'SaaS',
+  custom: 'Custom',
+};
+
+export type ProjectStatus = 'active' | 'paused' | 'archived';
+export type ProjectHealth = 'healthy' | 'degraded' | 'failed' | 'unknown';
+
+/** Visual configuration of one building — pure data, user-editable. */
+export interface BuildingConfig {
+  buildingStyle: string;        // archetype key (defaults to project type)
+  theme: string;                // one of THEMES
+  primaryColor: string | null;
+  secondaryColor: string | null;
+  accentColor: string | null;
+  /** Auto-extracted brand palette {primary, secondary, accent} */
+  brandColors: { primary: string; secondary: string; accent: string } | null;
+  logo: string | null;          // file path / URL for the logo image
+  texture: string | null;
+  scale: number;
+  rotation: number;            // degrees
+  themeIndex: number;
+  /**
+   * Optional 8-slot user palette (null/empty slot = inherit theme cascade):
+   *  0 facade   1 plinth/lower walls   2 glass/windows
+   *  3 accent/roof features   4 window glow (lit)
+   *  5 plaza ring (ground disc under the building)
+   *  6 sign/logo plate background   7 trim (roof cap, antenna)
+   */
+  palette?: (string | null)[];
+  /** Custom 3D model generated automatically from a user-uploaded image */
+  customModel3d?: CustomModel3dConfig | null;
+}
+
+export interface CustomModel3dConfig {
+  enabled: boolean;
+  imageUrl: string;
+  depth?: number;            // 0.2 to 2.0 (default 0.8)
+  placement?: 'rooftop' | 'facade' | 'plaza'; // default 'rooftop'
+  spinSpeed?: number;        // 0 = static, 1 = normal, 2 = fast
+  scale?: number;            // 0.5 to 2.5 (default 1.0)
+}
+
+/** One floor = one level inside the building, rooms are its zones. */
+export interface FloorSpec {
+  name: string;
+  rooms: string[];
+}
+
+export interface ProjectDeployInfo {
+  target?: string;
+  lastDeployedAt?: string;
+  lastStatus?: string;
+  url?: string;
+  maintenance?: boolean;
+  [k: string]: unknown;
+}
+
+/** A persisted project record (the city's atom). */
+export interface Project {
+  id: string;
+  name: string;
+  path: string;
+  type: ProjectType;
+  status: ProjectStatus;
+  health: ProjectHealth;
+  logo: string | null;
+  screenshot: string | null;
+  deploy: ProjectDeployInfo | null;
+  floors: string[] | FloorSpec[];
+  building: BuildingConfig;
+  plot: { x: number; y: number };
+  agent_snapshot: Record<string, unknown> | null;
+  created_at: number;
+  updated_at: number;
+}
+
+// ── Runtime agent state (NOT persisted — driven by the live sidecar) ──────
+export type AgentBotStatus =
+  | 'idle' | 'thinking' | 'working' | 'waiting'
+  | 'completed' | 'failed' | 'offline';
+
+export interface AgentBot {
+  id: string;
+  name: string;
+  model: string;
+  sessionId: string;      // Rust session id / tty
+  terminalId: string;
+  projectPath: string;
+  status: AgentBotStatus;
+  currentTask: string;
+  room: string | null;    // interior zone this agent is placed in
+  progress: number;       // 0..1
+  tools: string[];
+  recentActions: string[];
+}
+
+export interface CityMeta {
+  grid_size: number;
+  grid_spacing: number;
+  project_types: string[];
+  default_floors: Record<string, string[]>;
+  themes: string[];
+}
+
+/** Navigation context model: CITY → PROJECT → BUILDING → FLOOR → ROOM → WORKSPACE */
+export type CityNavMode =
+  | { mode: 'city' }
+  | { mode: 'exterior'; projectId: string }
+  | { mode: 'interior'; projectId: string; floorIndex: number; room: string | null };
+
+/** The 2D fallback map uses the same records. */
+export function projectDisplayName(p: Project): string {
+  return p.name || (p.path ? (p.path.split('/').filter(Boolean).pop() || 'Untitled') : 'Untitled');
+}

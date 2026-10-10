@@ -1,0 +1,63 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Task Orchestrator",
+  "version": "2.3.1",
+  "identifier": "com.kennethaman.tto",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1421",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Task Orchestrator",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true,
+        "backgroundColor": "#000000",
+        "dragDropEnabled": true,
+        "devtools": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost http://localhost:* http://127.0.0.1:*; object-src 'self' asset: http://asset.localhost data:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; font-src 'self' data:; worker-src 'self' blob:; child-src 'self' blob:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "**/Users/*/Documents",
+          "**/Users/*/Desktop",
+          "**/Users/*/Downloads",
+          "**/Users/*/Projects",
+          "**/Users/*/Source",
+          "**/Users/*/workspace"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app"
+    ],
+    "category": "DeveloperTool",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "infoPlist": "Info.plist.extra"
+    },
+    "resources": [
+      "resources/**/*"
+    ]
+  }
+}

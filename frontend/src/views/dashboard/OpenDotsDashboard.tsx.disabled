@@ -1,0 +1,618 @@
+import { useState, useMemo, useEffect } from 'react';
+import { useTheme } from '@/contexts/ThemeContext';
+import { TerminalManager } from '@/terminal/TerminalManager';
+import { jarvisManager } from '@/jarvis/agent/JarvisManager';
+import { sessionContextStore } from '@/jarvis/contextStore';
+import { useAGUI } from '../../hooks/useAGUI';
+import { getDotsFromJarvis, getDotByTerminalId } from '../../opendots/adapters/jarvis-to-dots';
+import type { UnifiedTerminal, Workspace } from '@/types';
+import { ttoAGUIAdapter } from '../../opendots/adapters/tto-agui-adapter';
+import { buttonBase, buttonSize, buttonVariant, inputBase, scrollbarStyle } from '@/lib/theme';
+import { Terminal as TerminalIcon, Cpu, Activity, Mic, Square, Filter, Plus } from 'lucide-react';
+import { VoiceButton } from '../../opendots/components/VoiceButton';
+
+// Import OpenDots components (adapted)
+import { ComputerPanel } from '../../opendots/components/ComputerPanel';
+import { Chat } from '../../opendots/components/Chat';
+import { SpaceNav } from '../../opendots/components/SpaceNav';
+
+interface OpenDotsDashboardProps {
+  terminals: Record<string, UnifiedTerminal>;
+  focusedTerminal: string | null;
+  onSelectTerminal: (id: string | null) => void;
+  workspaces: Workspace[];
+  activeWorkspace?: Workspace;
+  onAddPane?: (workspaceId: string, label?: string) => void;
+}
+
+export function OpenDotsDashboard({ 
+  terminals, 
+  focusedTerminal, 
+  onSelectTerminal, 
+  workspaces, 
+  activeWorkspace,
+  onAddPane
+}: OpenDotsDashboardProps) {
+  const { theme: t } = useTheme();
+  
+  // Terminal selection state
+  const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(focusedTerminal);
+  const [viewMode, setViewMode] = useState<'computer' | 'chat' | 'grid'>('computer');
+  const [showChat, setShowChat] = useState(true);
+  const [showSpaceNav, setShowSpaceNav] = useState(false);
+  const [newTerminalLabel, setNewTerminalLabel] = useState('');
+  const [showNewTerminalDialog, setShowNewTerminalDialog] = useState(false);
+
+  // Get Dot config for selected terminal
+  const dotConfig = useMemo(() => {
+    if (!selectedTerminalId) return null;
+    return getDotByTerminalId(selectedTerminalId);
+  }, [selectedTerminalId]);
+
+  // AG-UI connection for selected terminal
+  const agui = useAGUI({
+    terminalId: selectedTerminalId,
+    config: {
+      terminalManager: TerminalManager,
+      jarvisManager,
+      sessionContextStore
+    }
+  });
+
+  // Sync with TTO focus
+  useEffect(() => {
+    if (focusedTerminal && focusedTerminal !== selectedTerminalId) {
+      setSelectedTerminalId(focusedTerminal);
+    }
+  }, [focusedTerminal]);
+
+  // Terminal list for navigation
+  const terminalList = useMemo(() => 
+    Object.entries(terminals).map(([id, term]) => ({
+      id,
+      name: term.session_name || term.window_name || term.session_id || id,
+      workspace: term.session_context || 'default',
+      isActive: id === selectedTerminalId,
+      hasAgent: (jarvisManager.getAgent(id)?.status || 'UNASSIGNED') !== 'UNASSIGNED',
+      status: jarvisManager.getAgent(id)?.status || 'UNASSIGNED'
+    })), [terminals, selectedTerminalId]);
+
+  // Handle new terminal creation
+  const handleCreateTerminal = async () => {
+    if (!activeWorkspace || !newTerminalLabel.trim()) return;
+    
+    try {
+      if (onAddPane) {
+        onAddPane(activeWorkspace.id, newTerminalLabel.trim());
+      }
+      setNewTerminalLabel('');
+      setShowNewTerminalDialog(false);
+    } catch (error) {
+      console.error('Failed to create terminal:', error);
+    }
+  };
+
+  return (
+    <div className="opendots-container" style={{ 
+      display: 'flex', 
+      flexDirection: 'column', 
+      height: '100%', 
+      background: t.colors.bg.primary,
+      fontFamily: t.fontFamily.sans
+    }}>
+      {/* Header Toolbar */}
+      <div style={{ 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'space-between',
+        padding: '10px 16px', 
+        borderBottom: `1px solid ${t.colors.border.subtle}`,
+        background: t.colors.bg.secondary,
+        gap: 12,
+        flexWrap: 'wrap'
+      }}>
+        {/* Left: View Mode + Terminal Selector */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          {/* View Mode Tabs */}
+          <div style={{ display: 'flex', gap: 4, background: t.colors.bg.tertiary, borderRadius: t.borderRadius.lg, padding: 2 }}>
+            {['computer', 'chat', 'grid'].map(mode => (
+              <button
+                key={mode}
+                onClick={() => setViewMode(mode as any)}
+                style={{ 
+                  padding: '6px 12px',
+                  borderRadius: t.borderRadius.md,
+                  border: 'none',
+                  background: viewMode === mode ? t.colors.accent.primary : 'transparent',
+                  color: viewMode === mode ? t.colors.accent.primary : t.colors.text.primary,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                {mode.charAt(0).toUpperCase() + mode.slice(1)}
+              </button>
+            ))}
+          </div>
+
+          {/* Terminal Selector */}
+          <div style={{ position: 'relative', minWidth: 280 }}>
+            <select
+              value={selectedTerminalId || ''}
+              onChange={(e) => { 
+                const id = e.target.value; 
+                setSelectedTerminalId(id || null); 
+                onSelectTerminal(id || null); 
+              }}
+              style={{ 
+                width: '100%', 
+                height: 32,
+                padding: '0 36px 0 12px',
+                background: t.colors.bg.tertiary,
+                border: `1px solid ${t.colors.border.primary}`,
+                borderRadius: t.borderRadius.md,
+                color: t.colors.text.primary,
+                fontSize: 12,
+                cursor: 'pointer',
+                appearance: 'none'
+              }}
+            >
+              <option value="">Select Terminal…</option>
+              {terminalList.map(term => (
+                <option key={term.id} value={term.id}>
+                  {term.name} {term.hasAgent ? '🤖' : ''} · {term.status}
+                </option>
+              ))}
+            </select>
+            <div style={{ 
+              position: 'absolute', 
+              right: 8, 
+              top: '50%', 
+              transform: 'translateY(-50%)',
+              pointerEvents: 'none',
+              color: t.colors.text.muted,
+              fontSize: 10
+            }}>▼</div>
+          </div>
+
+          {/* New Terminal Button */}
+          <button
+            onClick={() => setShowNewTerminalDialog(true)}
+            style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: 6,
+              padding: '6px 12px',
+              background: t.colors.accent.primary,
+              color: t.colors.accent.primary,
+              border: 'none',
+              borderRadius: t.borderRadius.md,
+              fontSize: 12,
+              fontWeight: 500,
+              cursor: 'pointer'
+            }}
+          >
+            <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
+            New Terminal
+          </button>
+        </div>
+
+        {/* Right: Connection Status + Chat Toggle */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <label style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: 6, 
+            fontSize: 12,
+            cursor: 'pointer'
+          }}>
+            <input 
+              type="checkbox" 
+              checked={showChat} 
+              onChange={e => setShowChat(e.target.checked)}
+              style={{ accentColor: t.colors.accent.primary }}
+            />
+            Chat Panel
+          </label>
+          
+          <label style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: 6, 
+            fontSize: 12,
+            cursor: 'pointer'
+          }}>
+            <input 
+              type="checkbox" 
+              checked={showSpaceNav} 
+              onChange={e => setShowSpaceNav(e.target.checked)}
+              style={{ accentColor: t.colors.accent.primary }}
+            />
+            Spaces
+          </label>
+
+          <span style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: 6,
+            color: agui.isConnected ? '#22c55e' : t.colors.text.muted, 
+            fontSize: 11,
+            fontWeight: 500
+          }}>
+            <span style={{ 
+              width: 8, 
+              height: 8, 
+              borderRadius: '50%', 
+              background: agui.isConnected ? '#22c55e' : t.colors.text.muted 
+            }}></span>
+            {agui.isConnected ? 'Connected' : 'Disconnected'}
+          </span>
+        </div>
+
+          {/* Voice Button */}
+          {selectedTerminalId && (
+            <VoiceButton
+              terminalId={selectedTerminalId}
+              onTranscript={(text: string, isFinal: boolean) => {
+                if (isFinal && dotConfig) {
+                  // Add transcript to chat messages
+                  agui.sendMessage(`🎤 ${text}`);
+                }
+              }}
+              onResponse={(text: string) => {
+                if (dotConfig) {
+                  agui.sendMessage(text);
+                }
+              }}
+            />
+          )}
+      </div>
+
+      {/* Space Navigation (optional sidebar) */}
+      {showSpaceNav && (
+        <div style={{ 
+          height: '100%', 
+          borderRight: `1px solid ${t.colors.border.subtle}`,
+          background: t.colors.bg.secondary,
+          minWidth: 280,
+          maxWidth: 320
+        }}>
+          <SpaceNav 
+            theme={t}
+            onClose={() => setShowSpaceNav(false)}
+          />
+        </div>
+      )}
+
+      {/* Main Content Area */}
+      <div style={{ 
+        flex: 1, 
+        display: 'flex', 
+        overflow: 'hidden',
+        position: 'relative'
+      }}>
+        {/* Left: Main View (Computer/Chat/Grid) */}
+        <div style={{ 
+          flex: showChat ? 0.7 : 1, 
+          display: 'flex', 
+          flexDirection: 'column',
+          minWidth: 0,
+          background: t.colors.bg.secondary,
+          position: 'relative'
+        }}>
+          {viewMode === 'computer' && dotConfig && (
+            <ComputerPanel
+              key={selectedTerminalId}
+              dot={dotConfig}
+              terminalId={selectedTerminalId}
+              agentState={agui.agentState}
+              toolCalls={agui.toolCalls}
+              messages={agui.messages}
+              onToolCall={(call: any) => ttoAGUIAdapter.executeToolCall(call, { jarvisManager })}
+              onSendMessage={agui.sendMessage}
+              theme={t}
+            />
+          )}
+          
+          {viewMode === 'grid' && (
+            <TerminalGridView 
+              terminals={terminals} 
+              onSelect={setSelectedTerminalId}
+              focusedTerminal={focusedTerminal}
+              theme={t}
+            />
+          )}
+          
+          {viewMode === 'chat' && dotConfig && (
+            <Chat 
+              key={selectedTerminalId}
+              dot={dotConfig}
+              messages={agui.messages}
+              onSend={agui.sendMessage}
+              toolCalls={agui.toolCalls}
+              onApprove={agui.approveToolCall}
+              agentState={agui.agentState}
+              theme={t}
+              isConnected={agui.isConnected}
+            />
+          )}
+
+          {/* Empty state */}
+          {!dotConfig && (
+            <div style={{ 
+              flex: 1, 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center',
+              flexDirection: 'column',
+              gap: 16,
+              color: t.colors.text.muted,
+              padding: 24
+            }}>
+              <div style={{ fontSize: 48 }}>🤖</div>
+              <h3 style={{ margin: 0, fontSize: 18, fontWeight: 500, color: t.colors.text.primary }}>
+                No Terminal Selected
+              </h3>
+              <p style={{ margin: 0, fontSize: 13, textAlign: 'center', maxWidth: 320 }}>
+                Select a terminal from the dropdown above to start working with Jarvis agent.
+                Or create a new terminal using the + button.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Right: Chat Panel (when enabled and in computer/grid mode) */}
+        {showChat && dotConfig && viewMode !== 'chat' && (
+          <div style={{ 
+            width: '30%', 
+            minWidth: 320, 
+            maxWidth: 480,
+            borderLeft: `1px solid ${t.colors.border.subtle}`,
+            background: t.colors.bg.primary,
+            display: 'flex', 
+            flexDirection: 'column',
+            overflow: 'hidden'
+          }}>
+            <Chat 
+              key={selectedTerminalId}
+              dot={dotConfig}
+              messages={agui.messages}
+              onSend={agui.sendMessage}
+              toolCalls={agui.toolCalls}
+              onApprove={agui.approveToolCall}
+              agentState={agui.agentState}
+              theme={t}
+              isConnected={agui.isConnected}
+              compact={true}
+            />
+          </div>
+        )}
+
+        {/* Chat placeholder when no terminal selected */}
+        {showChat && !dotConfig && viewMode !== 'chat' && (
+          <div style={{ 
+            width: '30%', 
+            minWidth: 320, 
+            maxWidth: 480,
+            borderLeft: `1px solid ${t.colors.border.subtle}`,
+            background: t.colors.bg.primary,
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center',
+            color: t.colors.text.muted,
+            fontSize: 12
+          }}>
+            Select a terminal to start chatting
+          </div>
+        )}
+      </div>
+
+      {/* New Terminal Dialog */}
+      {showNewTerminalDialog && (
+        <div style={{ 
+          position: 'fixed', 
+          inset: 0, 
+          background: 'rgba(0,0,0,0.5)', 
+          display: 'flex', 
+          alignItems: 'center', 
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{ 
+            background: t.colors.bg.secondary, 
+            borderRadius: t.borderRadius.lg, 
+            padding: 24, 
+            minWidth: 360,
+            border: `1px solid ${t.colors.border.primary}`
+          }}>
+            <h3 style={{ margin: '0 0 16px', fontSize: 16, fontWeight: 600 }}>Create New Terminal</h3>
+            <input
+              type="text"
+              value={newTerminalLabel}
+              onChange={e => setNewTerminalLabel(e.target.value)}
+              placeholder="Terminal label (optional)"
+              style={{ 
+                width: '100%', 
+                padding: '10px 12px', 
+                marginBottom: 16,
+                background: t.colors.bg.tertiary,
+                border: `1px solid ${t.colors.border.primary}`,
+                borderRadius: t.borderRadius.md,
+                color: t.colors.text.primary,
+                fontSize: 13
+              }}
+              autoFocus
+              onKeyDown={e => e.key === 'Enter' && handleCreateTerminal()}
+            />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={() => setShowNewTerminalDialog(false)}
+                style={{
+                  ...buttonBase(t),
+                  ...buttonSize(t, 'sm'),
+                  ...buttonVariant(t, 'ghost'),
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateTerminal}
+                disabled={!activeWorkspace}
+                style={{
+                  ...buttonBase(t),
+                  ...buttonSize(t, 'sm'),
+                  ...buttonVariant(t, 'primary'),
+                }}
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Simple Terminal Grid View for the 'grid' mode
+function TerminalGridView({ 
+  terminals, 
+  onSelect, 
+  focusedTerminal,
+  theme 
+}: { 
+  terminals: Record<string, UnifiedTerminal>;
+  onSelect: (id: string | null) => void;
+  focusedTerminal: string | null;
+  theme: any;
+}) {
+  const termEntries = Object.entries(terminals);
+  
+  if (termEntries.length === 0) {
+    return (
+      <div style={{ 
+        flex: 1, 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'center',
+        flexDirection: 'column',
+        gap: 12,
+        color: theme.colors.text.muted
+      }}>
+        <div style={{ fontSize: 48 }}>📟</div>
+        <h3 style={{ margin: 0, fontWeight: 500 }}>No Terminals</h3>
+        <p style={{ margin: 0, fontSize: 13, textAlign: 'center' }}>
+          Create a terminal from the workspace or dashboard
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ 
+      flex: 1, 
+      display: 'grid', 
+      gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+      gap: 12,
+      padding: 12,
+      overflow: 'auto'
+    }}>
+      {termEntries.map(([id, term]) => (
+        <TerminalCard 
+          key={id}
+          id={id}
+          terminal={term}
+          isFocused={id === focusedTerminal}
+          isSelected={id === onSelect}
+          onClick={() => onSelect(id)}
+          theme={theme}
+        />
+      ))}
+    </div>
+  );
+}
+
+function TerminalCard({ 
+  id, 
+  terminal, 
+  isFocused, 
+  // isSelected, // unused
+  onClick,
+  theme 
+}: { 
+  id: string;
+  terminal: UnifiedTerminal;
+  isFocused: boolean;
+  isSelected: boolean;
+  onClick: () => void;
+  theme: any;
+}) {
+  const agent = jarvisManager.getAgent(id);
+  const status = agent?.status || 'UNASSIGNED';
+  
+  const statusColors: Record<string, string> = {
+    'UNASSIGNED': theme.colors.text.muted,
+    'OBSERVING': theme.colors.accent.light,
+    'WORKING': '#f59e0b',
+    'WAITING': '#3b82f6',
+    'ERROR': '#ef4444',
+    'NEEDS_APPROVAL': '#ec4899'
+  };
+
+  return (
+    <div
+      onClick={onClick}
+      style={{ 
+        display: 'flex', 
+        flexDirection: 'column',
+        background: theme.colors.bg.tertiary,
+        border: `1px solid ${isFocused ? theme.colors.accent.primary : theme.colors.border.primary}`,
+        borderRadius: theme.borderRadius.lg,
+        padding: 12,
+        cursor: 'pointer',
+        transition: 'all 0.15s ease',
+        minHeight: 180
+      }}
+      onMouseEnter={(e) => e.currentTarget.style.borderColor = theme.colors.accent.primary}
+      onMouseLeave={(e) => e.currentTarget.style.borderColor = isFocused ? theme.colors.accent.primary : theme.colors.border.primary}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <span style={{ fontWeight: 500, fontSize: 13, color: theme.colors.text.primary }}>
+          {terminal.session_name || terminal.window_name || terminal.session_id || id.slice(0, 8)}
+        </span>
+        <span style={{ 
+          fontSize: 10, 
+          fontWeight: 600, 
+          textTransform: 'uppercase',
+          color: statusColors[status] || theme.colors.text.muted,
+          background: `${statusColors[status] || theme.colors.text.muted}20`,
+          padding: '2px 8px',
+          borderRadius: theme.borderRadius.full
+        }}>
+          {status}
+        </span>
+      </div>
+      
+      <div style={{ fontSize: 11, color: theme.colors.text.muted, marginBottom: 8 }}>
+        Workspace: {terminal.session_context?.slice(0, 20) || 'unknown'}…
+      </div>
+      
+      <div style={{ 
+        flex: 1, 
+        fontSize: 11, 
+        color: theme.colors.text.muted,
+        fontFamily: 'monospace',
+        background: theme.colors.bg.primary,
+        borderRadius: theme.borderRadius.md,
+        padding: 8,
+        overflow: 'auto',
+        maxHeight: 80
+      }}>
+        {terminal.live_output || '(no output yet)'}
+      </div>
+    </div>
+  );
+}

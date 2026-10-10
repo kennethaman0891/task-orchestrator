@@ -1,0 +1,83 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   opencode.css — DEDICATED stylesheet for OpenCode CLI terminals
+   ═══════════════════════════════════════════════════════════════════════════
+   WHY A SEPARATE FILE: the garbled/overlapping OpenCode banner and TUI bars
+   come from OpenCode's own block-glyph drawing (their CLI's graphics), NOT
+   from TTO's terminal CSS. Per instruction, styles.css is NOT touched —
+   every rule here is scoped under [data-agent="opencode"] so it can never
+   affect other CLIs (claude, aider, htop, plain shells).
+
+   TerminalPane tags each pane with data-agent=<agent> (populated from the
+   sidecar's per-terminal agent report via window.__ttoAgentBySession).
+
+   WHAT BREAKS IN OPENCODE'S RENDER, AND THE COUNTER:
+   - Their banner/status bars are drawn with Unicode block glyphs (█ ▄ ▀ ╔ ═)
+     plus per-cell background fills. At ≤12px the DOM renderer's cell metrics
+     can round to a slightly narrower advance than the glyph's natural width,
+     so consecutive filled cells OVERLAP by a pixel — the "smearing" seen in
+     the screenshots. → We pin letter-spacing to normal and disable synthetic
+     bold/italic synthesis (faux styles widen glyphs).
+   - Their rows use exact per-row line heights. A fractional line-height
+     (e.g. 1.25) makes rows land on subpixels, and 1px drift per row
+     accumulates into visibly broken horizontal rules. → We force integral
+     line-height and disable font ligatures/kerning so every cell is an
+     integer number of pixels wide.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Only OpenCode panes — everything below is a descendant of [data-agent="opencode"].
+   ⚠️  IMPORTANT: panes running the native CANVAS renderer carry the .oc-canvas
+   class (TerminalPane hot-swaps the canvas addon when the agent is opencode).
+   Canvas draws every cell with exact font metrics, so the metric fixes below
+   are unnecessary there — and are skipped via :not(.oc-canvas). They apply
+   ONLY to the DOM-renderer fallback. */
+[data-agent='opencode']:not(.oc-canvas) .xterm,
+[data-agent='opencode']:not(.oc-canvas) .xterm * {
+  /* Integral metrics: no kerning, no ligatures, no synthetic styling.
+     This is what stops the block glyphs from overlapping cell boundaries. */
+  letter-spacing: 0 !important;
+  font-kerning: none;
+  font-variant-ligatures: none;
+  font-feature-settings: normal;
+  text-rendering: optimizeSpeed;
+  -webkit-font-smoothing: antialiased;
+  font-synthesis: none;
+}
+
+[data-agent='opencode']:not(.oc-canvas) .xterm-rows > div {
+  /* Exact integral row height — no fractional drift between TUI rows. */
+  line-height: calc(var(--tto-term-line, 1.2) * 1px * 100) ; /* fallback */
+  line-height: 1.2 !important;
+}
+
+[data-agent='opencode']:not(.oc-canvas) .xterm-screen {
+  /* Never stretch the rasterized screen horizontally. */
+  transform-origin: left top;
+}
+
+/* OpenCode draws fills via xterm background spans; make sure adjacent
+   background cells have no invisible border that shows as seams. */
+[data-agent='opencode']:not(.oc-canvas) .xterm-bg-257,
+[data-agent='opencode']:not(.oc-canvas) span[class*='xterm-bg-'] {
+  border: none;
+  box-shadow: none;
+  background-clip: border-box;
+}
+
+/* Cursor block must not enlarge its row (OpenCode status bars are sensitive). */
+[data-agent='opencode']:not(.oc-canvas) .xterm-cursor {
+  border-radius: 0;
+}
+
+/* The scrollbars stay as TTO designed them (not OpenCode's problem). */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   OPTIONAL HARD MODE — for very small cards (< 30 rows), OpenCode's own
+   banner font simply doesn't fit. We do NOT hide content by default, but we
+   do let the user opt in via a body class:
+     body.tto-compact-opencode → suppress OpenCode's banner block rows
+   (kept opt-in; on by default in compact grid mode set by App.)
+   ═══════════════════════════════════════════════════════════════════════════ */
+body.tto-compact-opencode [data-agent='opencode'] .xterm-rows > div {
+  /* Slightly tighter rows so more of the TUI fits small cards. */
+  line-height: 1.1 !important;
+}

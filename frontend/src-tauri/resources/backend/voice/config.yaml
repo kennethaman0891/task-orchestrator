@@ -1,0 +1,75 @@
+# Voice Pipeline Configuration
+# Copy to config.local.yaml and modify for local overrides
+
+voice:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8765
+  
+  # Speech-to-Text (faster-whisper)
+  stt:
+    model: "base.en"           # tiny.en, base.en, small.en, medium.en, large-v3
+    device: "cpu"              # cpu, cuda, auto
+    compute_type: "int8"       # int8, float16, float32
+    language: "en"
+    vad: true                  # Voice activity detection
+    beam_size: 1
+    best_of: 1
+  
+  # LLM (Ollama/vLLM/LM Studio)
+  llm:
+    endpoint: "http://localhost:11434/v1/chat/completions"
+    model: "llama3.2:1b"
+    temperature: 0.7
+    max_tokens: 2048
+    timeout_seconds: 30
+    system_prompt: |
+      You are Jarvis, a voice-activated coding assistant.
+      CRITICAL: Respond in 1-2 sentences MAX. No markdown, no code blocks.
+      If user asks to run something, output ONLY the command to execute.
+      If user asks a question, answer briefly.
+  
+  # Text-to-Speech (Piper)
+  tts:
+    model: "en_US-lessac-medium"   # en_US-amy-medium, en_US-ryan-high, etc.
+    speaker_id: 0
+    length_scale: 1.0
+    noise_scale: 0.667
+    noise_w: 0.8
+    sample_rate: 22050
+  
+  # Audio Processing
+  audio:
+    sample_rate: 16000
+    chunk_duration_ms: 100
+    silence_threshold: 0.01
+    min_speech_duration_ms: 500
+    max_silence_duration_ms: 1000
+  
+  # Pipeline Behavior
+  pipeline:
+    enable_streaming_llm: false
+    conversation_max_turns: 10
+
+# WebRTC Configuration
+webrtc:
+  ice_servers:
+    - urls: "stun:stun.l.google.com:19302"
+    - urls: "stun:stun1.l.google.com:19302"
+  # For TURN (if needed for NAT traversal):
+  # - urls: "turn:your-turn-server.com:3478"
+  #   username: "user"
+  #   credential: "pass"
+  
+  # Audio constraints for browser
+  audio_constraints:
+    sampleRate: 16000
+    channelCount: 1
+    echoCancellation: true
+    noiseSuppression: true
+    autoGainControl: true
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "88b1abe7-34e9-4e8a-8094-eddee7b1e145",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/kennethaman/tto-golden/.archify/architecture-tto-system-20261003-171635/candidate.json",
+  "output": "/Users/kennethaman/tto-golden/.archify/architecture-tto-system-20261003-171635/tto-system.html",
+  "specification": {
+    "sha256": "771ce1556ec55f896bae8bc8841d5284bbbf68834793fefe56c8b001600a367a",
+    "bytes": 13233
+  },
+  "artifact": {
+    "sha256": "0302dd7da6a3ff0cbff8ef1c0fe697b59661ee3f9b71b6d620d1faab72d602a8",
+    "bytes": 788138
+  }
+}

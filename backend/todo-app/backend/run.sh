@@ -1,0 +1,2 @@
+#!/bin/bash
+source /Users/kennethaman/tto-web/venv/bin/activate && uvicorn main:app --host 0.0.0.0 --port 8001 --reload

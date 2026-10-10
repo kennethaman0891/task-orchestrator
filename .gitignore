@@ -1,0 +1,66 @@
+# --- Secrets / environment ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+id_rsa
+id_ed25519
+
+# --- Python ---
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# --- Node / frontend ---
+node_modules/
+frontend/dist/
+frontend/node_modules/
+backend/frontend
+dist/
+build/
+gateway/dist/
+gateway/dist-test/
+
+# --- Rust / Tauri ---
+frontend/src-tauri/target/
+target/
+
+# --- App state / logs / backups ---
+.tto-web/
+.freebuff/
+graphify-out/
+*.log
+*.bak
+*.orig
+*~
+*.db
+*.sqlite3
+
+# --- Runtime state (may hold session data/tokens — never commit) ---
+backend/data/
+frontend/data/
+*state.json
+*auth.json
+
+# --- macOS data dir ---
+.local/
+
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
+*.dmg
+
+# --- Repo hygiene ---
+dmg_temp/
+/screenshots/
+*.iml
+.idea/
+.vscode/
+*.pyc
+.editorconfig-history/

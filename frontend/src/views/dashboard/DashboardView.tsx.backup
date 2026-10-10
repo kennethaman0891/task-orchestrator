@@ -1,0 +1,1644 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// JARVIS PER-TERMINAL WORKSTATION VIEW (Phase 1 & Phase 4)
+// Central control surface answering: "What are all my terminals & agents doing right now?"
+// ═══════════════════════════════════════════════════════════════════════════
+
+'use client';
+
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { useTheme } from '@/contexts/ThemeContext';
+import type { UnifiedTerminal } from '@/types';
+import type { Workspace, View } from '@/lib/workspace';
+import { sessionContextStore } from '@/jarvis/contextStore';
+import { jarvisManager } from '@/jarvis/agent/JarvisManager';
+import { VoiceRouter } from '@/jarvis/voice/VoiceRouter';
+import { JarvisPanel } from '@/jarvis/ui/JarvisPanel';
+import type { SessionContext, JarvisStatus } from '@/jarvis/types';
+import { buttonBase, buttonSize, buttonVariant, inputBase, scrollbarStyle } from '@/lib/theme';
+import { CliLogo } from '@/lib/cliLogos';
+import { TerminalManager } from '@/terminal/TerminalManager';
+import {
+  Activity,
+  Bot,
+  Mic,
+  Play,
+  CheckCircle,
+  Code2,
+  Terminal,
+  ExternalLink,
+  AlertTriangle,
+  Sparkles,
+  Send,
+  SlidersHorizontal,
+  Square,
+  Volume2,
+  X,
+  Filter,
+  Pencil,
+  Check,
+} from 'lucide-react';
+
+import { OpenDotsDashboard } from './OpenDotsDashboard';
+interface Props {
+  activeWorkspace?: Workspace;
+  workspaces: Workspace[];
+  terminals: Record<string, UnifiedTerminal>;
+  focusedTerminal: string | null;
+  onSelectTerminal: (id: string | null) => void;
+  onView: (v: View) => void;
+  onOpenFile: (path: string, name: string) => void;
+  onToast: (msg: string, error?: boolean) => void;
+  onRenameTerminal?: (tty: string, newLabel: string) => void;
+}
+
+type WorkspaceScope = 'active' | 'all_workspaces' | 'all_terminals';
+
+export function DashboardView({
+  activeWorkspace,
+  workspaces,
+  terminals,
+  focusedTerminal,
+  onSelectTerminal,
+  onView,
+  onOpenFile: _onOpenFile,
+  onToast,
+  onRenameTerminal,
+}: Props) {
+  const { theme: t } = useTheme();
+
+  // ── Session contexts from store ──
+  const [contexts, setContexts] = useState<Record<string, SessionContext>>(() => sessionContextStore.getAll());
+  const [, setAgentVersion] = useState(0);
+  const [tick, setTick] = useState(0);
+
+  // ── Workspace Filter Scope ──
+  const [scope, setScope] = useState<WorkspaceScope>('active');
+
+  const [dashboardMode, setDashboardMode] = useState<'classic' | 'opendots'>('classic');
+  // ── Per-terminal task input draft ──
+  const [taskDrafts, setTaskDrafts] = useState<Record<string, string>>({});
+
+  // ── Selected terminal for Jarvis Panel drawer ──
+  const [inspectTerminalId, setInspectTerminalId] = useState<string | null>(null);
+
+  // ── Interactive Voice Assistant Modal ──
+  const [voiceModalOpen, setVoiceModalOpen] = useState(false);
+  const [voiceTargetTerminal, setVoiceTargetTerminal] = useState<string | null>(null); // null = global
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [voiceTextDraft, setVoiceTextDraft] = useState('');
+  const [voiceStatusMsg, setVoiceStatusMsg] = useState<string>('');
+  const [executingTerminal, setExecutingTerminal] = useState<string | null>(null);
+  const [voiceRecordingTerminal, setVoiceRecordingTerminal] = useState<string | null>(null);
+  const [commandHistory, setCommandHistory] = useState<Record<string, string[]>>({});
+  const [historyIndex, setHistoryIndex] = useState<Record<string, number>>({});
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recognitionRef = useRef<any>(null);
+
+  // ── Per-card terminal renaming in dashboard ──
+  const [editingCardId, setEditingCardId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+
+  const handleStartRename = (terminalId: string, currentName: string) => {
+    setEditingCardId(terminalId);
+    setRenameDraft(currentName);
+  };
+
+  const handleCommitRename = (terminalId: string) => {
+    const trimmed = renameDraft.trim();
+    if (trimmed) {
+      onRenameTerminal?.(terminalId, trimmed);
+      const ctx = sessionContextStore.get(terminalId);
+      if (ctx) ctx.terminalName = trimmed;
+      onToast(`Renamed terminal to "${trimmed}"`);
+    }
+    setEditingCardId(null);
+    setRenameDraft('');
+  };
+
+  // Sync contexts from live terminals
+  useEffect(() => {
+    for (const [id, term] of Object.entries(terminals)) {
+      const ws = workspaces.find((w) => w.panes.some((p) => p.tty === id)) || activeWorkspace;
+      sessionContextStore.syncTerminal(id, term, ws);
+    }
+    setContexts(sessionContextStore.getAll());
+  }, [terminals, workspaces, activeWorkspace]);
+
+  // Subscribe to context updates
+  useEffect(() => {
+    return sessionContextStore.subscribe((updated) => {
+      setContexts({ ...updated });
+    });
+  }, []);
+
+  // Subscribe to JarvisManager updates so UI re-renders live on any assignment/task change!
+  useEffect(() => {
+    return jarvisManager.subscribe(() => {
+      setAgentVersion((v) => v + 1);
+    });
+  }, []);
+
+  // Poll 1s for elapsed times and agent status
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((v) => v + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Set of terminal IDs belonging to the active workspace
+  const activeWorkspaceSessionIds = useMemo(() => {
+    if (!activeWorkspace) return [];
+    return activeWorkspace.panes.map((p) => p.tty).filter((tty): tty is string => !!tty);
+  }, [activeWorkspace]);
+
+  // Set of terminal IDs across ALL workspaces
+  const allWorkspaceSessionIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const w of workspaces) {
+      for (const p of w.panes) {
+        if (p.tty) set.add(p.tty);
+      }
+    }
+    return Array.from(set);
+  }, [workspaces]);
+
+  // Filtered session list based on chosen scope
+  const filteredSessionList = useMemo(() => {
+    let ids: string[] = [];
+    if (scope === 'active') {
+      ids = activeWorkspaceSessionIds;
+    } else if (scope === 'all_workspaces') {
+      ids = allWorkspaceSessionIds;
+    } else {
+      const keys = new Set([...Object.keys(terminals), ...Object.keys(contexts)]);
+      ids = Array.from(keys);
+    }
+
+    return ids.map((id) => {
+      const term = terminals[id];
+      const ctx = contexts[id] || sessionContextStore.syncTerminal(id, term, activeWorkspace);
+      const agent = jarvisManager.getAgent(id);
+      return { id, term, ctx, agent };
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, activeWorkspaceSessionIds, allWorkspaceSessionIds, terminals, contexts, activeWorkspace, tick]);
+
+  // Workstation Live Summary Metrics
+  const stats = useMemo(() => {
+    const total = filteredSessionList.length;
+    let assigned = 0;
+    let working = 0;
+    for (const s of filteredSessionList) {
+      if (s.agent.status !== 'UNASSIGNED') assigned++;
+      if (s.agent.status === 'WORKING' || s.ctx.state === 'running') working++;
+    }
+    return { total, assigned, working };
+  }, [filteredSessionList]);
+
+  // ── Format Duration nicely ──
+  const formatDuration = (elapsedMs: number) => {
+    if (elapsedMs < 60000) return 'Just started';
+    const mins = Math.floor(elapsedMs / 60000);
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    return `${hrs}h ${remMins}m`;
+  };
+
+  // ── Handle Task / Command Dispatch ──
+  const handleDispatchTask = async (terminalId: string) => {
+    const draft = (taskDrafts[terminalId] || '').trim();
+    if (!draft) return;
+    const termName = contexts[terminalId]?.terminalName || terminalId;
+    const agent = jarvisManager.getAgent(terminalId);
+
+    if (agent.status !== 'UNASSIGNED') {
+      setExecutingTerminal(terminalId);
+      try {
+        const success = await jarvisManager.assignTask(terminalId, draft);
+        if (success) {
+          onToast(`Assigned task to ${termName}: "${draft}"`);
+          // Save to command history
+          setCommandHistory((prev) => {
+            const history = prev[terminalId] || [];
+            const newHistory = [draft, ...history.filter(h => h !== draft)].slice(0, 50);
+            return { ...prev, [terminalId]: newHistory };
+          });
+          setHistoryIndex((prev) => ({ ...prev, [terminalId]: -1 }));
+          setTaskDrafts((prev) => ({ ...prev, [terminalId]: '' }));
+        } else {
+          onToast(`Jarvis could not execute task (may need approval)`, true);
+          // Do NOT clear draft on failure
+        }
+      } catch (err: any) {
+        onToast(`Failed to assign task: ${err?.message || err}`, true);
+      } finally {
+        setExecutingTerminal(null);
+      }
+    } else {
+      // Unassigned terminal: send directly to real PTY
+      setExecutingTerminal(terminalId);
+      try {
+        await TerminalManager.write(terminalId, `${draft}\n`);
+        const ctx = contexts[terminalId];
+        if (ctx) {
+          ctx.currentActivity = `Executing: ${draft}`;
+          ctx.recentActivity.unshift(`Ran: ${draft}`);
+          if (ctx.recentActivity.length > 10) ctx.recentActivity.pop();
+        }
+        onToast(`Executed in ${termName}: "${draft}"`);
+        // Save to command history
+        setCommandHistory((prev) => {
+          const history = prev[terminalId] || [];
+          const newHistory = [draft, ...history.filter(h => h !== draft)].slice(0, 50);
+          return { ...prev, [terminalId]: newHistory };
+        });
+        setHistoryIndex((prev) => ({ ...prev, [terminalId]: -1 }));
+        setTaskDrafts((prev) => ({ ...prev, [terminalId]: '' }));
+      } catch (err: any) {
+        onToast(`Failed to send command: ${err?.message || err}`, true);
+        // Do NOT clear draft on failure - user can retry
+      } finally {
+        setExecutingTerminal(null);
+      }
+    }
+  };
+
+  const handleAssignJarvisAndRun = async (terminalId: string) => {
+    const draft = (taskDrafts[terminalId] || '').trim();
+    const termName = contexts[terminalId]?.terminalName || terminalId;
+    setExecutingTerminal(terminalId);
+    try {
+      jarvisManager.assignAgent(terminalId, ['OBSERVE', 'READ', 'EXECUTE', 'CONTROL']);
+      if (draft) {
+        const success = await jarvisManager.assignTask(terminalId, draft);
+        if (success) {
+          onToast(`Assigned Jarvis & task to ${termName}: "${draft}"`);
+          // Save to command history
+          setCommandHistory((prev) => {
+            const history = prev[terminalId] || [];
+            const newHistory = [draft, ...history.filter(h => h !== draft)].slice(0, 50);
+            return { ...prev, [terminalId]: newHistory };
+          });
+          setHistoryIndex((prev) => ({ ...prev, [terminalId]: -1 }));
+          setTaskDrafts((prev) => ({ ...prev, [terminalId]: '' }));
+        } else {
+          onToast(`Jarvis assigned but could not execute task`, true);
+        }
+      } else {
+        onToast(`Assigned Jarvis to ${termName}`);
+      }
+    } catch (err: any) {
+      onToast(`Failed to assign Jarvis: ${err?.message || err}`, true);
+    } finally {
+      setExecutingTerminal(null);
+    }
+  };
+
+  // ── Voice Assistant: Start Recording (Web Speech API + MediaRecorder Whisper fallback) ──
+  const startRecordingAudio = async () => {
+    try {
+      audioChunksRef.current = [];
+      setIsRecording(true);
+      setRecordingSeconds(0);
+      setVoiceStatusMsg('Listening... speak now.');
+
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((s) => s + 1);
+      }, 1000);
+
+      // 1. Try browser Web Speech API (realtime on macOS WebKit/Chrome)
+      const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRec) {
+        try {
+          const rec = new SpeechRec();
+          rec.continuous = true;
+          rec.interimResults = true;
+          rec.lang = 'en-US';
+          rec.onresult = (event: any) => {
+            let transcript = '';
+            for (let i = 0; i < event.results.length; i++) {
+              transcript += event.results[i][0].transcript;
+            }
+            if (transcript.trim()) {
+              setVoiceTextDraft(transcript.trim());
+              setVoiceStatusMsg(`Heard: "${transcript.trim()}"`);
+            }
+          };
+          rec.onerror = (e: any) => {
+            console.warn('[WebSpeech] error:', e);
+          };
+          rec.start();
+          recognitionRef.current = rec;
+        } catch (err) {
+          console.warn('[WebSpeech] start failed:', err);
+        }
+      }
+
+      // 2. Also record audio via MediaRecorder for backend Whisper fallback
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mimeType = MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
+        const options = mimeType ? { mimeType } : undefined;
+        const recorder = new MediaRecorder(stream, options);
+        mediaRecorderRef.current = recorder;
+
+        recorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) {
+            audioChunksRef.current.push(e.data);
+          }
+        };
+
+        recorder.onstop = async () => {
+          stream.getTracks().forEach((track) => track.stop());
+          if (!voiceTextDraft.trim() && audioChunksRef.current.length > 0) {
+            setVoiceStatusMsg('Transcribing audio with Whisper...');
+            const audioBlob = new Blob(audioChunksRef.current, {
+              type: recorder.mimeType || 'audio/webm',
+            });
+            const text = await VoiceRouter.transcribeAudio(audioBlob);
+            if (text && text.trim()) {
+              setVoiceTextDraft(text.trim());
+              setVoiceStatusMsg(`Transcribed: "${text.trim()}"`);
+            } else {
+              setVoiceStatusMsg('No speech detected. You can type your command below.');
+            }
+          }
+        };
+
+        recorder.start(100);
+      } catch (mediaErr) {
+        console.warn('[MediaRecorder] getUserMedia or start failed:', mediaErr);
+        if (!recognitionRef.current) {
+          setIsRecording(false);
+          if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+          setVoiceStatusMsg('Microphone not accessible. Type your command below.');
+        }
+      }
+    } catch {
+      setIsRecording(false);
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      setVoiceStatusMsg('Microphone not accessible. Type your command below.');
+    }
+  };
+
+  // ── Voice Assistant: Stop Recording ──
+  const stopRecordingAudio = () => {
+    setIsRecording(false);
+    setVoiceRecordingTerminal(null);
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {}
+      recognitionRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {}
+    }
+  };
+
+  // ── Voice Assistant: Execute Voice / Text Command ──
+  const handleExecuteVoice = async (textToRun?: string) => {
+    setVoiceRecordingTerminal(null);
+    const text = (textToRun || voiceTextDraft).trim();
+    if (!text) return;
+
+    if (voiceTargetTerminal) {
+      const res = await VoiceRouter.routeTerminalVoice(voiceTargetTerminal, text);
+      onToast(res.message, !res.success);
+    } else {
+      const res = await VoiceRouter.routeGlobalVoice(text);
+      onToast(res.message, !res.success);
+    }
+    setVoiceModalOpen(false);
+    setVoiceTextDraft('');
+    setVoiceStatusMsg('');
+    setVoiceRecordingTerminal(null);
+  };
+
+  const getStatusColor = (st: JarvisStatus) => {
+    switch (st) {
+      case 'WORKING': return t.colors.accent.primary;
+      case 'WAITING': return t.colors.warning.primary;
+      case 'OBSERVING': return t.colors.info.primary;
+      case 'ERROR': return t.colors.danger.primary;
+      case 'COMPLETED': return t.colors.success.primary;
+      default: return t.colors.text.muted;
+    }
+  };
+
+  return (
+    <div
+      style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        backgroundColor: t.colors.bg.primary,
+        color: t.colors.text.primary,
+      }}
+    >
+      {/* ── Workstation Top Header ── */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '12px 20px',
+          borderBottom: `1px solid ${t.colors.border.subtle}`,
+          backgroundColor: t.colors.bg.secondary,
+          flexWrap: 'wrap',
+          gap: 12,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: t.borderRadius.md,
+              backgroundColor: t.colors.accent.light,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: t.colors.accent.primary,
+            }}
+          >
+            <Activity size={20} />
+          </div>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: t.fontSize.md }}>
+              Jarvis Developer Workstation
+            </div>
+            <div style={{ fontSize: t.fontSize.xs, color: t.colors.text.muted }}>
+              Live autonomous agent monitoring & terminal control surface
+            </div>
+          </div>
+        </div>
+
+        {/* Global Workstation Metrics & Voice Control */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          {/* Live Metrics Counters */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: t.fontSize.xs }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <Terminal size={13} style={{ color: t.colors.text.secondary }} />
+              <strong>{stats.total}</strong> Terminals
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <Bot size={14} style={{ color: t.colors.accent.primary }} />
+              <strong style={{ color: stats.assigned > 0 ? t.colors.accent.primary : 'inherit' }}>
+                {stats.assigned}
+              </strong> Jarvis Agents
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  backgroundColor: stats.working > 0 ? t.colors.success.primary : t.colors.text.muted,
+                  boxShadow: stats.working > 0 ? `0 0 8px ${t.colors.success.primary}` : 'none',
+                }}
+              />
+              <strong>{stats.working}</strong> Active
+            </span>
+          </div>
+
+          {/* Mode 2: Global Voice Assistant Button */}
+          <button
+            type="button"
+            onClick={() => {
+              setVoiceTargetTerminal(null);
+              setVoiceModalOpen(true);
+              startRecordingAudio();
+            }}
+            style={{
+              ...buttonBase(t),
+              ...buttonSize(t, 'sm'),
+              ...buttonVariant(t, 'primary'),
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              height: '30px',
+              padding: '0 12px',
+            }}
+            title="Global Workstation Voice: Speak an instruction to any terminal"
+          >
+            <Mic size={14} />
+            <span>Global Voice</span>
+          </button>
+        </div>
+      </div>
+
+        {/* Dashboard Mode Toggle */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ color: t.colors.text.muted, fontWeight: 600 }}>VIEW MODE:</span>
+          <button
+            type="button"
+            onClick={() => setDashboardMode(dashboardMode === 'classic' ? 'opendots' : 'classic')}
+            style={{
+              ...buttonBase(t),
+              ...buttonSize(t, 'sm'),
+              ...buttonVariant(t, dashboardMode === 'opendots' ? 'primary' : 'ghost'),
+              height: '24px',
+              padding: '0 10px',
+              fontSize: '11px',
+              borderRadius: t.borderRadius.full,
+            }}
+          >
+            {dashboardMode === 'opendots' ? 'OpenDots' : 'Classic'}
+          </button>
+        </div>
+
+      {/* ── Scope Filter Bar: Active Workspace vs All Workspaces vs All OS Processes ── */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '8px 20px',
+          borderBottom: `1px solid ${t.colors.border.subtle}`,
+          backgroundColor: t.colors.bg.primary,
+          fontSize: t.fontSize.xs,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Filter size={12} style={{ color: t.colors.text.muted }} />
+          <span style={{ color: t.colors.text.muted, fontWeight: 600 }}>VIEW SCOPE:</span>
+
+          {/* Active Workspace Pill */}
+          <button
+            type="button"
+            onClick={() => setScope('active')}
+            style={{
+              ...buttonBase(t),
+              ...buttonSize(t, 'sm'),
+              ...buttonVariant(t, scope === 'active' ? 'primary' : 'ghost'),
+              height: '24px',
+              padding: '0 10px',
+              fontSize: '11px',
+              borderRadius: t.borderRadius.full,
+            }}
+          >
+            Active: {activeWorkspace?.name || 'Workspace'} ({activeWorkspaceSessionIds.length})
+          </button>
+
+          {/* All Workspaces Pill */}
+          <button
+            type="button"
+            onClick={() => setScope('all_workspaces')}
+            style={{
+              ...buttonBase(t),
+              ...buttonSize(t, 'sm'),
+              ...buttonVariant(t, scope === 'all_workspaces' ? 'primary' : 'ghost'),
+              height: '24px',
+              padding: '0 10px',
+              fontSize: '11px',
+              borderRadius: t.borderRadius.full,
+            }}
+          >
+            All Workspaces ({allWorkspaceSessionIds.length})
+          </button>
+
+          {/* All OS Processes Pill */}
+          <button
+            type="button"
+            onClick={() => setScope('all_terminals')}
+            style={{
+              ...buttonBase(t),
+              ...buttonSize(t, 'sm'),
+              ...buttonVariant(t, scope === 'all_terminals' ? 'primary' : 'ghost'),
+              height: '24px',
+              padding: '0 10px',
+              fontSize: '11px',
+              borderRadius: t.borderRadius.full,
+            }}
+          >
+            All System Processes ({Object.keys(terminals).length})
+          </button>
+        </div>
+
+        <div style={{ color: t.colors.text.muted }}>
+          Showing <strong>{filteredSessionList.length}</strong> terminals
+      {/* ── Main Content (Classic or OpenDots) ── */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: 20, ...scrollbarStyle(t) }}>
+        {dashboardMode === 'opendots' ? (
+          <OpenDotsDashboard
+            terminals={terminals}
+            focusedTerminal={focusedTerminal}
+            onSelectTerminal={onSelectTerminal}
+            workspaces={workspaces}
+            activeWorkspace={activeWorkspace}
+            onAddPane={onAddPane}
+          />
+        ) : (
+          {filteredSessionList.length === 0 ? (
+            <div
+              style={{
+                height: '60%',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 14,
+                color: t.colors.text.muted,
+              }}
+            >
+              <Terminal size={42} style={{ opacity: 0.4 }} />
+              <div style={{ fontSize: t.fontSize.md, fontWeight: 600 }}>No Terminals in this Scope</div>
+              <div style={{ fontSize: t.fontSize.sm, maxWidth: 360, textAlign: 'center' }}>
+                Add a terminal in the active workspace or switch scope to "All Workspaces".
+              </div>
+              <button
+                type="button"
+                style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'secondary') }}
+                onClick={() => onView('workspace')}
+              >
+                Go to Workspace View
+              </button>
+            </div>
+          ) : (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))',
+                gap: 16,
+              }}
+            >
+              {filteredSessionList.map(({ id, ctx, agent }) => {
+                const isAssigned = agent.status !== 'UNASSIGNED';
+                const isWorking = agent.status === 'WORKING';
+                const startTimeStr = new Date(ctx.sessionStartTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const currentTask = agent.workingMemory.task && agent.workingMemory.task !== 'Unassigned'
+                  ? agent.workingMemory.task
+                  : ctx.currentTaskTitle;
+
+                return (
+                  <div
+                    key={id}
+                    style={{
+                      backgroundColor: t.colors.bg.secondary,
+                      border: `1px solid ${focusedTerminal === id ? t.colors.accent.primary : t.colors.border.subtle}`,
+                      borderRadius: t.borderRadius.lg,
+                      padding: 16,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 12,
+                      boxShadow: t.shadow.sm,
+                      transition: `border-color ${t.transition.fast}`,
+                    }}
+                  >
+                    {/* Card Header: Terminal Name, Workspace, CLI & Jarvis Status */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div
+                          style={{
+                            width: 28,
+                            height: 28,
+                            borderRadius: t.borderRadius.md,
+                            backgroundColor: t.colors.accent.light,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: t.colors.accent.primary,
+                          }}
+                        >
+                          <Terminal size={14} />
+                        </div>
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: t.fontSize.sm, color: t.colors.text.primary }}>
+                            {term.label || term.sessionId || id.slice(0, 8)}
+                          </div>
+                          <div style={{ display: 'flex', gap: 4, fontSize: t.fontSize.xs, color: t.colors.text.muted }}>
+                            <span
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 2,
+                                fontSize: '10px'
+                              }}
+                            >
+                              <Cpu size={10} style={{ color: t.colors.text.secondary }} />
+                              {term.workspaceId ? term.workspaceId.slice(0, 8) + '…' : 'no ws'}
+                            </span>
+                            <span
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 2,
+                                fontSize: '10px'
+                              }}
+                            >
+                              <Activity size={10} style={{ color: t.colors.text.secondary }} />
+                              {term.detectedCli || 'shell'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            fontSize: t.fontSize.xs,
+                            color:
+                              agent.status === 'WORKING'
+                                ? t.colors.success.primary
+                                : agent.status === 'WAITING'
+                                ? t.colors.warning.primary
+                                : agent.status === 'ERROR'
+                                ? t.colors.danger.primary
+                                : agent.status === 'NEEDS_APPROVAL'
+                                ? t.colors.info.primary
+                                : t.colors.text.muted
+                          }}
+                        >
+                          {agent.status === 'UNASSIGNED'
+                            ? 'Unassigned'
+                            : agent.status === 'WORKING'
+                            ? 'Working'
+                            : agent.status === 'WAITING'
+                            ? 'Waiting'
+                            : agent.status === 'ERROR'
+                            ? 'Error'
+                            : agent.status === 'NEEDS_APPROVAL'
+                            ? 'Approval'
+                            : agent.status === 'OBSERVING'
+                            ? 'Observing'
+                            : 'Assigned'}
+                        </span>
+                        <Button
+                          size='sm'
+                          variant={agent.status === 'UNASSIGNED' ? 'primary' : 'secondary'}
+                          onClick={() => handleAssignJarvisAndRun(id)}
+                          disabled={agent.status === 'WORKING' || agent.status === 'WAITING'}
+                        >
+                          {agent.status === 'UNASSIGNED'
+                            ? 'Assign Jarvis'
+                            : agent.status === 'WORKING'
+                            ? 'Working...'
+                            : agent.status === 'WAITING'
+                            ? 'Waiting...'
+                            : agent.status === 'ERROR'
+                            ? 'Error'
+                            : agent.status === 'NEEDS_APPROVAL'
+                            ? 'Review'
+                            : agent.status === 'OBSERVING'
+                            ? 'Observing'
+                            : 'Assign Jarvis'}
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Current Task / Activity */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {currentTask ? (
+                        <>
+                          <div style={{ fontWeight: 600, fontSize: t.fontSize.sm, color: t.colors.text.primary }}>
+                            Current Task
+                          </div>
+                          <div style={{ fontSize: t.fontSize.xs, color: t.colors.text.secondary, fontStyle: 'italic' }}>
+                            {currentTask}
+                          </div>
+                        </>
+                      ) : null}
+                      {ctx.currentActivity ? (
+                        <>
+                          <div style={{ fontWeight: 600, fontSize: t.fontSize.sm, color: t.colors.text.primary }}>
+                            Recent Activity
+                          </div>
+                          <div style={{ fontSize: t.fontSize.xs, color: t.colors.text.secondary, fontStyle: 'italic', maxWidth: 280 }}>
+                            {ctx.currentActivity}
+                          </div>
+                        </>
+                      ) : null}
+                    </div>
+
+                    {/* Quick Controls */}
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                      <Button
+                        size='sm'
+                        variant='secondary'
+                        onClick={() => {
+                          const draft = (taskDrafts[id] || '').trim();
+                          if (draft) {
+                            TerminalManager.write(id, `${draft}
+`);
+                            onToast(`Executed in ${term.label || id}: "${draft}"`);
+                            setTaskDrafts((prev) => ({ ...prev, [id]: '' }));
+                          }
+                        }}
+                      >
+                        Run Draft
+                      </Button>
+                      <Button
+                        size='sm'
+                        variant='secondary'
+                        onClick={() => {
+                          setInspectTerminalId(id);
+                        }}
+                      >
+                        Inspect
+                      </Button>
+                    </div>
+
+                    {/* Task Input Draft */}
+                    <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                      <input
+                        type="text"
+                        placeholder="Task for Jarvis..."
+                        value={taskDrafts[id] || ''}
+                        onChange={(e) => setTaskDrafts((prev) => ({ ...prev, [id]: e.target.value }))}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            handleDispatchTask(id);
+                          }
+                        }}
+                        style={{
+                          ...inputBase(t),
+                          flex: 1,
+                          fontSize: t.fontSize.xs,
+                          height: '28px',
+                        }}
+                      />
+                      <Button
+                        size='sm'
+                        variant='primary'
+                        onClick={() => handleDispatchTask(id)}
+                        disabled={!taskDrafts[id]?.trim()}
+                      >
+                        Dispatch
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
+        )}
+      </div>
+      </div>
+
+      {/* ── Main Terminal Cards Grid ── */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: 20, ...scrollbarStyle(t) }}>
+        {filteredSessionList.length === 0 ? (
+          <div
+            style={{
+              height: '60%',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 14,
+              color: t.colors.text.muted,
+            }}
+          >
+            <Terminal size={42} style={{ opacity: 0.4 }} />
+            <div style={{ fontSize: t.fontSize.md, fontWeight: 600 }}>No Terminals in this Scope</div>
+            <div style={{ fontSize: t.fontSize.sm, maxWidth: 360, textAlign: 'center' }}>
+              Add a terminal in the active workspace or switch scope to "All Workspaces".
+            </div>
+            <button
+              type="button"
+              style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'secondary') }}
+              onClick={() => onView('workspace')}
+            >
+              Go to Workspace View
+            </button>
+          </div>
+        ) : (
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))',
+              gap: 16,
+            }}
+          >
+            {filteredSessionList.map(({ id, ctx, agent }) => {
+              const isAssigned = agent.status !== 'UNASSIGNED';
+              const isWorking = agent.status === 'WORKING';
+              const startTimeStr = new Date(ctx.sessionStartTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              const currentTask = agent.workingMemory.task && agent.workingMemory.task !== 'Unassigned'
+                ? agent.workingMemory.task
+                : ctx.currentTaskTitle;
+
+              return (
+                <div
+                  key={id}
+                  style={{
+                    backgroundColor: t.colors.bg.secondary,
+                    border: `1px solid ${focusedTerminal === id ? t.colors.accent.primary : t.colors.border.subtle}`,
+                    borderRadius: t.borderRadius.lg,
+                    padding: 16,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 12,
+                    boxShadow: t.shadow.sm,
+                    transition: `border-color ${t.transition.fast}`,
+                  }}
+                >
+                  {/* Card Header: Terminal Name, Workspace, CLI & Jarvis Status */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
+                      <CliLogo cli={ctx.detectedCli} size={20} />
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        {editingCardId === id ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <input
+                              autoFocus
+                              value={renameDraft}
+                              onChange={(e) => setRenameDraft(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleCommitRename(id);
+                                if (e.key === 'Escape') {
+                                  setEditingCardId(null);
+                                  setRenameDraft('');
+                                }
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                ...inputBase(t),
+                                height: '24px',
+                                fontSize: t.fontSize.xs,
+                                padding: '2px 6px',
+                                fontWeight: 600,
+                                width: 140,
+                              }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleCommitRename(id)}
+                              style={{
+                                ...buttonBase(t),
+                                ...buttonSize(t, 'sm'),
+                                ...buttonVariant(t, 'primary'),
+                                height: '24px',
+                                padding: '0 6px',
+                              }}
+                              title="Save name"
+                            >
+                              <Check size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingCardId(null);
+                                setRenameDraft('');
+                              }}
+                              style={{
+                                ...buttonBase(t),
+                                ...buttonSize(t, 'sm'),
+                                ...buttonVariant(t, 'ghost'),
+                                height: '24px',
+                                padding: '0 4px',
+                              }}
+                              title="Cancel"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                            <div
+                              style={{
+                                fontWeight: 600,
+                                fontSize: t.fontSize.sm,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                cursor: 'pointer',
+                              }}
+                              title="Click pencil or double-click to rename"
+                              onDoubleClick={() => handleStartRename(id, ctx.terminalName)}
+                            >
+                              {ctx.terminalName}
+                            </div>
+                            <button
+                              type="button"
+                              title="Rename terminal"
+                              onClick={() => handleStartRename(id, ctx.terminalName)}
+                              style={{
+                                width: 20,
+                                height: 20,
+                                borderRadius: 4,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                background: 'transparent',
+                                border: 'none',
+                                color: t.colors.text.muted,
+                                cursor: 'pointer',
+                                padding: 0,
+                                flexShrink: 0,
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.color = t.colors.text.primary;
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.color = t.colors.text.muted;
+                              }}
+                            >
+                              <Pencil size={11} />
+                            </button>
+                          </div>
+                        )}
+                        <div style={{ fontSize: '11px', color: t.colors.text.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {ctx.cliName} · {ctx.workspaceName}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {/* Jarvis Status Pill */}
+                      <span
+                        style={{
+                          fontSize: '10px',
+                          fontWeight: 700,
+                          padding: '2px 8px',
+                          borderRadius: t.borderRadius.full,
+                          backgroundColor: `${getStatusColor(agent.status)}20`,
+                          color: getStatusColor(agent.status),
+                          border: `1px solid ${getStatusColor(agent.status)}40`,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 5,
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: '50%',
+                            backgroundColor: getStatusColor(agent.status),
+                            boxShadow: isWorking ? `0 0 6px ${getStatusColor(agent.status)}` : 'none',
+                          }}
+                        />
+                        {isAssigned ? agent.status : 'UNASSIGNED'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Runtime & Started time */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      fontSize: '11px',
+                      color: t.colors.text.muted,
+                      backgroundColor: t.colors.bg.tertiary,
+                      padding: '4px 8px',
+                      borderRadius: t.borderRadius.sm,
+                    }}
+                  >
+                    <span>Started: {startTimeStr}</span>
+                    <span>·</span>
+                    <span>Running: {formatDuration(ctx.elapsedMs)}</span>
+                    {ctx.cwd && (
+                      <>
+                        <span>·</span>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 }}>
+                          {ctx.cwd.split('/').pop()}
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Current Activity Box */}
+                  <div style={{ fontSize: t.fontSize.xs }}>
+                    <div style={{ color: t.colors.text.muted, fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', marginBottom: 2 }}>
+                      Current Activity
+                    </div>
+                    <div style={{ color: t.colors.text.primary, fontWeight: 500 }}>
+                      {ctx.currentActivity || 'Waiting for commands'}
+                    </div>
+                    {currentTask && (
+                      <div
+                        style={{
+                          marginTop: 4,
+                          padding: '4px 8px',
+                          backgroundColor: t.colors.accent.light,
+                          borderRadius: t.borderRadius.sm,
+                          color: t.colors.accent.primary,
+                          fontWeight: 500,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                        }}
+                      >
+                        <Bot size={12} />
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {currentTask}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Task / Command Input Bar (Available on ALL terminals) */}
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <div style={{ position: 'relative', flex: 1, display: 'flex', alignItems: 'center' }}>
+                      <input
+                        type="text"
+                        placeholder={isAssigned ? "Assign task or instruction to Jarvis..." : "Send command or task to terminal..."}
+                        value={taskDrafts[id] || ''}
+                        onChange={(e) => setTaskDrafts({ ...taskDrafts, [id]: e.target.value })}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            handleDispatchTask(id);
+                          } else if (e.key === 'ArrowUp') {
+                            e.preventDefault();
+                            const history = commandHistory[id] || [];
+                            const index = (historyIndex[id] || 0) - 1;
+                            if (history[index] !== undefined) {
+                              setTaskDrafts(prev => ({ ...prev, [id]: history[index] }));
+                              setHistoryIndex(prev => ({ ...prev, [id]: index }));
+                            }
+                          } else if (e.key === 'ArrowDown') {
+                            e.preventDefault();
+                            const history = commandHistory[id] || [];
+                            const index = (historyIndex[id] || 0) + 1;
+                            if (index >= 0 && index < history.length) {
+                              setTaskDrafts(prev => ({ ...prev, [id]: history[index] }));
+                              setHistoryIndex(prev => ({ ...prev, [id]: index }));
+                            } else {
+                              // Clear input when going below history
+                              setTaskDrafts(prev => ({ ...prev, [id]: '' }));
+                              setHistoryIndex(prev => ({ ...prev, [id]: index }));
+                            }
+                          }
+                        }}
+                        style={{
+                          ...inputBase(t),
+                          width: '100%',
+                          fontSize: t.fontSize.xs,
+                          height: '28px',
+                          padding: '3px 8px',
+                          paddingLeft: isAssigned ? '24px' : '8px',
+                        }}
+                      />
+                      {isAssigned && (
+                        <Bot size={12} style={{ position: 'absolute', left: 8, color: t.colors.accent.primary, pointerEvents: 'none' }} />
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      style={{
+                        ...buttonBase(t),
+                        ...buttonSize(t, 'sm'),
+                        ...buttonVariant(t, 'primary'),
+                        height: '28px',
+                        padding: '0 10px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        opacity: executingTerminal === id ? 0.7 : 1,
+                      }}
+                      disabled={executingTerminal === id} onClick={() => handleDispatchTask(id)}
+                      title={isAssigned ? "Assign task to Jarvis" : "Execute command in terminal"}
+                    >
+                      {executingTerminal === id ? (<Send size={11} style={{ opacity: 0.5 }} />) : (<Send size={11} />)}
+                      <span style={{ fontSize: '11px' }}>{isAssigned ? 'Assign' : 'Run'}</span>
+                    </button>
+                    {!isAssigned && (
+                      <button
+                        type="button"
+                        style={{
+                          ...buttonBase(t),
+                          ...buttonSize(t, 'sm'),
+                          ...buttonVariant(t, 'secondary'),
+                          height: '28px',
+                          padding: '0 8px',
+                          fontSize: '11px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 4,
+                        }}
+                        disabled={executingTerminal === id} onClick={() => handleAssignJarvisAndRun(id)}
+                        title="Assign Jarvis to this terminal and execute task"
+                      >
+                        {executingTerminal === id ? (<Sparkles size={11} style={{ color: t.colors.accent.primary, opacity: 0.5 }} />) : (<Sparkles size={11} style={{ color: t.colors.accent.primary }} />)}
+                        <span>Jarvis</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Recent Milestones / Actions Checklist */}
+                  <div style={{ fontSize: '11px', color: t.colors.text.secondary, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ color: t.colors.text.muted, fontSize: '10px', fontWeight: 600, textTransform: 'uppercase' }}>
+                      Recent
+                    </div>
+                    {ctx.recentActivity.length === 0 ? (
+                      <div style={{ color: t.colors.text.muted, fontStyle: 'italic' }}>
+                        ● Waiting for activity
+                      </div>
+                    ) : (
+                      ctx.recentActivity.slice(0, 3).map((act, i) => (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <CheckCircle size={11} style={{ color: t.colors.success.primary, flexShrink: 0 }} />
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{act}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Error Indicator if any */}
+                  {ctx.errors.length > 0 && (
+                    <div
+                      style={{
+                        padding: '6px 8px',
+                        borderRadius: t.borderRadius.sm,
+                        backgroundColor: `${t.colors.danger.primary}15`,
+                        border: `1px solid ${t.colors.danger.primary}30`,
+                        color: t.colors.danger.primary,
+                        fontSize: '11px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                      }}
+                    >
+                      <AlertTriangle size={12} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                        {ctx.errors[0].message}
+                      </span>
+                      {isAssigned && (
+                        <button
+                          type="button"
+                          style={{
+                            ...buttonBase(t),
+                            ...buttonSize(t, 'sm'),
+                            ...buttonVariant(t, 'danger'),
+                            height: '22px',
+                            padding: '0 6px',
+                            fontSize: '10px',
+                          }}
+                          onClick={() => agent.investigateError()}
+                        >
+                          Fix
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Action Footer */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      marginTop: 'auto',
+                      paddingTop: 8,
+                      borderTop: `1px solid ${t.colors.border.subtle}`,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {/* Mode 1: Terminal-Specific Mic Button */}
+                      <button
+                        type="button"
+                        disabled={executingTerminal === id || isRecording}
+                        onClick={() => {
+                          setVoiceTargetTerminal(id);
+                          setVoiceModalOpen(true);
+                          setVoiceRecordingTerminal(id);
+                          startRecordingAudio();
+                        }}
+                        style={{
+                          ...buttonBase(t),
+                          ...buttonSize(t, 'sm'),
+                          ...buttonVariant(t, voiceRecordingTerminal === id ? 'primary' : 'ghost'),
+                          padding: '4px 6px',
+                          height: '26px',
+                        }}
+                        title={`Voice command for ${ctx.terminalName}`}
+                      >
+                        <Mic size={12} />
+                        {voiceRecordingTerminal === id && (
+                          <span style={{ 
+                            fontSize: '10px', 
+                            marginLeft: 2,
+                            animation: 'pulse 1.5s ease-in-out infinite',
+                            color: t.colors.danger.primary
+                          }}>
+                            ●
+                          </span>
+                        )}
+                      </button>
+
+                      {isAssigned ? (
+                        <>
+                          <button
+                            type="button"
+                            style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'secondary'), height: '26px', padding: '0 8px', fontSize: '11px' }}
+                            onClick={() => {
+                              agent.continueTask();
+                              onToast(`Instructed ${ctx.terminalName} to continue`);
+                            }}
+                          >
+                            <Play size={10} /> Continue
+                          </button>
+                          <button
+                            type="button"
+                            style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'secondary'), height: '26px', padding: '0 8px', fontSize: '11px' }}
+                            onClick={() => {
+                              agent.runTests(ctx.cwd);
+                              onToast(`Running tests in ${ctx.terminalName}`);
+                            }}
+                          >
+                            Tests
+                          </button>
+                          <button
+                            type="button"
+                            style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), height: '26px', padding: '0 6px', color: t.colors.danger.primary }}
+                            onClick={() => {
+                              agent.stop();
+                              onToast(`Interrupted ${ctx.terminalName}`);
+                            }}
+                            title="Interrupt terminal process"
+                          >
+                            <Square size={11} />
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          style={{
+                            ...buttonBase(t),
+                            ...buttonSize(t, 'sm'),
+                            ...buttonVariant(t, 'primary'),
+                            height: '26px',
+                            padding: '0 10px',
+                            fontSize: '11px',
+                          }}
+                          onClick={() => {
+                            jarvisManager.assignAgent(id, ['OBSERVE', 'READ', 'EXECUTE', 'CONTROL']);
+                            onToast(`Assigned Jarvis to ${ctx.terminalName}`);
+                          }}
+                        >
+                          <Sparkles size={11} /> Assign Jarvis
+                        </button>
+                      )}
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      {/* Open in IDE */}
+                      <button
+                        type="button"
+                        style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), padding: 4, height: '26px' }}
+                        title="Open in Antigravity IDE"
+                        onClick={() => {
+                          onSelectTerminal(id);
+                          onView('ide');
+                        }}
+                      >
+                        <Code2 size={13} />
+                      </button>
+
+                      {/* Inspect Jarvis Drawer */}
+                      <button
+                        type="button"
+                        style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), padding: 4, height: '26px' }}
+                        title="Jarvis Settings & Permissions"
+                        onClick={() => setInspectTerminalId(id)}
+                      >
+                        <SlidersHorizontal size={13} />
+                      </button>
+
+                      {/* Focus Terminal in Workspace */}
+                      <button
+                        type="button"
+                        style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), padding: 4, height: '26px' }}
+                        title="Focus in Workspace"
+                        onClick={() => {
+                          onSelectTerminal(id);
+                          onView('workspace');
+                        }}
+                      >
+                        <ExternalLink size={13} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── Interactive Voice Assistant & Quick Command Modal ── */}
+      {voiceModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0,0,0,0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            backdropFilter: 'blur(4px)',
+          }}
+          onClick={() => {
+            stopRecordingAudio();
+            setVoiceModalOpen(false);
+          }}
+        >
+          <div
+            style={{
+              width: 480,
+              backgroundColor: t.colors.bg.secondary,
+              borderRadius: t.borderRadius.lg,
+              border: `1px solid ${t.colors.border.primary}`,
+              boxShadow: t.shadow.xl,
+              padding: 20,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 16,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: t.borderRadius.md,
+                    backgroundColor: isRecording ? t.colors.danger.light : t.colors.accent.light,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: isRecording ? t.colors.danger.primary : t.colors.accent.primary,
+                  }}
+                >
+                  <Volume2 size={18} />
+                </div>
+                <div>
+                  <div style={{ fontWeight: 600 }}>
+                    {voiceTargetTerminal ? `Voice Command · ${contexts[voiceTargetTerminal]?.terminalName || voiceTargetTerminal}` : 'Global Workstation Voice'}
+                  </div>
+                  <div style={{ fontSize: t.fontSize.xs, color: t.colors.text.muted }}>
+                    Speak or type your instruction for Jarvis
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), padding: 4 }}
+                onClick={() => {
+                  stopRecordingAudio();
+                  setVoiceModalOpen(false);
+                }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Mic Pulse / Recording Status */}
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '20px 10px',
+                borderRadius: t.borderRadius.md,
+                backgroundColor: isRecording ? `${t.colors.danger.primary}12` : t.colors.bg.primary,
+                border: `1px dashed ${isRecording ? t.colors.danger.primary : t.colors.border.subtle}`,
+                gap: 12,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  if (isRecording) {
+                    stopRecordingAudio();
+                  } else {
+                    startRecordingAudio();
+                  }
+                }}
+                style={{
+                  width: 56,
+                  height: 56,
+                  borderRadius: '50%',
+                  backgroundColor: isRecording ? t.colors.danger.primary : t.colors.accent.primary,
+                  border: 'none',
+                  color: '#ffffff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  boxShadow: isRecording ? `0 0 20px ${t.colors.danger.primary}` : t.shadow.md,
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                {isRecording ? <Square size={22} /> : <Mic size={24} />}
+              </button>
+
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontWeight: 600, fontSize: t.fontSize.sm }}>
+                  {isRecording ? `Recording... (${recordingSeconds}s)` : 'Tap mic to speak'}
+                </div>
+                <div style={{ fontSize: t.fontSize.xs, color: t.colors.text.muted, marginTop: 2 }}>
+                  {voiceStatusMsg || (isRecording ? 'Speak clearly into your microphone' : 'Audio will be transcribed and routed to Jarvis')}
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Command Suggestions */}
+            <div>
+              <div style={{ fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', color: t.colors.text.muted, marginBottom: 6 }}>
+                Quick Actions
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                <button
+                  type="button"
+                  style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'secondary'), fontSize: '11px', height: '26px' }}
+                  onClick={() => handleExecuteVoice('continue the current task')}
+                >
+                  ⚡ Continue Task
+                </button>
+                <button
+                  type="button"
+                  style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'secondary'), fontSize: '11px', height: '26px' }}
+                  onClick={() => handleExecuteVoice('run tests')}
+                >
+                  🧪 Run Tests
+                </button>
+                <button
+                  type="button"
+                  style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'secondary'), fontSize: '11px', height: '26px' }}
+                  onClick={() => handleExecuteVoice('check why it failed and fix error')}
+                >
+                  🔍 Fix Errors
+                </button>
+                <button
+                  type="button"
+                  style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'secondary'), fontSize: '11px', height: '26px' }}
+                  onClick={() => handleExecuteVoice('stop active process')}
+                >
+                  ⏹ Stop Process
+                </button>
+              </div>
+            </div>
+
+            {/* Manual Instruction Text Input */}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                type="text"
+                autoFocus
+                placeholder="Or type any instruction for Jarvis..."
+                value={voiceTextDraft}
+                onChange={(e) => setVoiceTextDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleExecuteVoice();
+                }}
+                style={{
+                  ...inputBase(t),
+                  flex: 1,
+                  fontSize: t.fontSize.xs,
+                  height: '32px',
+                }}
+              />
+              <button
+                type="button"
+                disabled={!voiceTextDraft.trim()}
+                style={{
+                  ...buttonBase(t),
+                  ...buttonSize(t, 'sm'),
+                  ...buttonVariant(t, 'primary'),
+                  height: '32px',
+                  padding: '0 14px',
+                }}
+                onClick={() => handleExecuteVoice()}
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Slide-over Jarvis Inspection Drawer ── */}
+      {inspectTerminalId && (
+        <JarvisPanel
+          terminalId={inspectTerminalId}
+          context={contexts[inspectTerminalId]}
+          onClose={() => setInspectTerminalId(null)}
+          onToast={onToast}
+        />
+      )}
+    </div>
+  );
+}

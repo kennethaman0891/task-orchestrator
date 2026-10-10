@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tto-web Topbar Preview</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0a0a0a;
+      color: #e8e8e8;
+      min-height: 100vh;
+    }
+
+    /* ── Topbar ────────────────────────────────────────────── */
+    .topbar {
+      height: 44px;
+      background: #111111;
+      border-bottom: 1px solid #2a2a2a;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      gap: 8px;
+    }
+    .topbar-row2 {
+      height: 34px;
+      background: #0a0a0a;
+      border-bottom: 1px solid #181818;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      gap: 12px;
+      font-size: 12px;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: #999;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.1s ease;
+      white-space: nowrap;
+    }
+    .btn:hover { background: #1a1a1a; color: #e8e8e8; }
+    .btn.active { background: #1a1a1a; color: #e8e8e8; border: 1px solid #2a2a2a; }
+    .btn-icon { padding: 4px 8px; font-size: 14px; }
+
+    /* Workspace tabs */
+    .workspace-tabs {
+      display: flex;
+      gap: 2px;
+      overflow-x: auto;
+      flex: 1;
+    }
+    .workspace-tab {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      background: transparent;
+      color: #999;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .workspace-tab.active {
+      background: #1a1a1a;
+      color: #e8e8e8;
+      border-color: #2a2a2a;
+    }
+    .workspace-tab:hover:not(.active) { background: #151515; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .dot-red { background: #ef4444; }
+    .dot-green { background: #22c55e; }
+    .tab-close { font-size: 14px; color: #555; cursor: pointer; }
+    .tab-close:hover { color: #e8e8e8; }
+
+    /* Dropdowns */
+    .dropdown {
+      position: relative;
+    }
+    .dropdown-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      margin-top: 4px;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 4px;
+      min-width: 140px;
+      z-index: 100;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    .dropdown:hover .dropdown-menu,
+    .dropdown.open .dropdown-menu {
+      display: block;
+    }
+    .dropdown-item {
+      padding: 6px 10px;
+      font-size: 12px;
+      color: #999;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .dropdown-item:hover { background: #252525; color: #e8e8e8; }
+    .dropdown-item.selected { color: #4a9eff; }
+
+    /* Spacer */
+    .spacer { flex: 1; }
+
+    /* Connection status */
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #22c55e;
+    }
+    .status-dot.disconnected { background: #ef4444; }
+
+    /* View icons */
+    .view-icons {
+      display: flex;
+      gap: 2px;
+    }
+    .view-icon {
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      color: #555;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .view-icon:hover { background: #1a1a1a; color: #e8e8e8; }
+    .view-icon.active { background: #1a1a1a; color: #4a9eff; }
+
+    /* Context bar */
+    .context-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex: 1;
+      overflow: hidden;
+    }
+    .context-workspace {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: #e8e8e8;
+      font-weight: 500;
+    }
+    .context-session {
+      color: #999;
+      font-size: 11px;
+    }
+    .status-badge {
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 500;
+      background: rgba(34, 197, 94, 0.12);
+      color: #22c55e;
+    }
+    .path {
+      color: #555;
+      font-size: 11px;
+      font-family: monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .unread-badge {
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      background: rgba(74, 158, 255, 0.12);
+      color: #4a9eff;
+      cursor: pointer;
+    }
+
+    /* ── Main Content ──────────────────────────────────────── */
+    .main {
+      display: flex;
+      height: calc(100vh - 78px);
+    }
+
+    /* Sidebar */
+    .sidebar {
+      width: 220px;
+      background: #111111;
+      border-right: 1px solid #2a2a2a;
+      padding: 12px;
+      overflow-y: auto;
+    }
+    .sidebar-section {
+      margin-bottom: 16px;
+    }
+    .sidebar-title {
+      font-size: 11px;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+    .sidebar-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      color: #999;
+      cursor: pointer;
+    }
+    .sidebar-item:hover { background: #1a1a1a; color: #e8e8e8; }
+    .sidebar-item.active { background: #1a1a1a; color: #e8e8e8; }
+
+    /* Content area */
+    .content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Terminal grid */
+    .terminal-grid {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      grid-template-rows: repeat(2, 1fr);
+      gap: 6px;
+      padding: 12px;
+      overflow: hidden;
+    }
+    .terminal-card {
+      background: #0a0a0a;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .terminal-header {
+      height: 32px;
+      background: #111111;
+      border-bottom: 1px solid #2a2a2a;
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      gap: 8px;
+    }
+    .terminal-title {
+      flex: 1;
+      font-size: 11px;
+      color: #999;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow: hidden;
+    }
+    .terminal-title img {
+      width: 14px;
+      height: 14px;
+      object-fit: contain;
+    }
+    .terminal-actions {
+      display: flex;
+      gap: 4px;
+    }
+    .terminal-action {
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      color: #555;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .terminal-action:hover { background: #1a1a1a; color: #e8e8e8; }
+
+    /* Terminal content */
+    .terminal-body {
+      flex: 1;
+      padding: 8px;
+      font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+      font-size: 11px;
+      line-height: 1.4;
+      color: #e8e8e8;
+      overflow: auto;
+    }
+
+    /* Claude Code welcome banner */
+    .claude-banner {
+      text-align: center;
+      padding: 16px 8px;
+    }
+    .claude-logo {
+      width: 80px;
+      height: 80px;
+      margin: 0 auto 12px;
+      background: linear-gradient(135deg, #ff6b00, #ff9500);
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 36px;
+      font-weight: bold;
+      color: white;
+    }
+    .claude-version {
+      font-size: 13px;
+      color: #e8e8e8;
+      margin-bottom: 4px;
+    }
+    .claude-model {
+      font-size: 11px;
+      color: #555;
+      margin-bottom: 8px;
+    }
+    .claude-path {
+      font-size: 10px;
+      color: #555;
+    }
+    .claude-input {
+      margin-top: 12px;
+      padding: 6px 10px;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      color: #999;
+      font-size: 11px;
+    }
+
+    /* Without banner (fixed) */
+    .terminal-prompt {
+      color: #22c55e;
+    }
+    .terminal-cursor {
+      display: inline-block;
+      width: 6px;
+      height: 12px;
+      background: #4a9eff;
+      animation: blink 1s infinite;
+      vertical-align: middle;
+      margin-left: 2px;
+    }
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+
+    /* Split view */
+    .split-view {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+    .split-left {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .split-right {
+      width: 320px;
+      background: #111111;
+      border-left: 1px solid #2a2a2a;
+      overflow: hidden;
+    }
+
+    /* Section labels */
+    .section-label {
+      padding: 16px;
+      font-size: 11px;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid #1a1a1a;
+    }
+
+    /* Controls panel */
+    .controls-panel {
+      padding: 12px;
+    }
+    .control-group {
+      margin-bottom: 16px;
+    }
+    .control-label {
+      font-size: 11px;
+      color: #555;
+      margin-bottom: 6px;
+    }
+    .control-select {
+      width: 100%;
+      padding: 6px 10px;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      color: #e8e8e8;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .control-select:focus {
+      outline: none;
+      border-color: #4a9eff;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SECTION 1: TOPBAR PREVIEW                              -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div style="padding: 20px; border-bottom: 1px solid #2a2a2a;">
+    <h2 style="font-size: 14px; color: #555; margin-bottom: 12px;">TOPBAR PREVIEW</h2>
+  </div>
+
+  <!-- Main Topbar Row -->
+  <div class="topbar">
+    <!-- Menu button -->
+    <button class="btn btn-icon" title="Menu">☰</button>
+
+    <!-- Workspace tabs -->
+    <div class="workspace-tabs">
+      <button class="workspace-tab active">
+        <span class="dot dot-red"></span>
+        tto-web
+        <span class="tab-close">×</span>
+      </button>
+      <button class="workspace-tab">
+        <span class="dot dot-green"></span>
+        hccsolapur
+        <span class="tab-close">×</span>
+      </button>
+      <button class="btn" style="font-size: 16px; padding: 4px 8px;" title="New workspace">+</button>
+    </div>
+
+    <!-- Layout controls -->
+    <div class="dropdown">
+      <button class="btn">Compact ▾</button>
+      <div class="dropdown-menu">
+        <div class="dropdown-item selected">Auto</div>
+        <div class="dropdown-item">Grid</div>
+        <div class="dropdown-item">Compact</div>
+        <div class="dropdown-item">Large</div>
+      </div>
+    </div>
+
+    <div class="dropdown">
+      <button class="btn">CLI ✓</button>
+      <div class="dropdown-menu">
+        <div class="dropdown-item selected">All CLIs</div>
+        <div class="dropdown-item">Claude Code</div>
+        <div class="dropdown-item">Opencode</div>
+        <div class="dropdown-item">Vim</div>
+        <div class="dropdown-item">Htop</div>
+      </div>
+    </div>
+
+    <div class="dropdown">
+      <button class="btn">Quad (4) ▾</button>
+      <div class="dropdown-menu">
+        <div class="dropdown-item">Single (1)</div>
+        <div class="dropdown-item">Dual (2)</div>
+        <div class="dropdown-item">Triple (3)</div>
+        <div class="dropdown-item selected">Quad (4)</div>
+        <div class="dropdown-item">Six (6)</div>
+        <div class="dropdown-item">Eight (8)</div>
+        <div class="dropdown-item">Nine (9)</div>
+        <div class="dropdown-item">Twelve (12)</div>
+        <div class="dropdown-item">Sixteen (16)</div>
+      </div>
+    </div>
+
+    <div class="dropdown">
+      <button class="btn">Carbon ▾</button>
+      <div class="dropdown-menu">
+        <div class="dropdown-item selected">Dark</div>
+        <div class="dropdown-item">Neon Tokyo</div>
+        <div class="dropdown-item">Synthwave</div>
+        <div class="dropdown-item">Paper (Light)</div>
+      </div>
+    </div>
+
+    <!-- Connection status -->
+    <span style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #22c55e;">
+      <span class="status-dot"></span>
+      connected
+    </span>
+
+    <!-- Clock -->
+    <span style="font-size: 11px; color: #555; font-family: monospace;">14:32</span>
+
+    <!-- View mode icons -->
+    <div class="view-icons">
+      <div class="view-icon active" title="Focus mode">⛶</div>
+      <div class="view-icon" title="Split mode">⊞</div>
+      <div class="view-icon" title="Stack mode">▤</div>
+      <div class="view-icon" title="Cards">□</div>
+      <div class="view-icon" title="Starred">☆</div>
+      <div class="view-icon" title="Browser">📷</div>
+      <div class="view-icon" title="Devices">📱</div>
+    </div>
+  </div>
+
+  <!-- Context Bar -->
+  <div class="topbar-row2">
+    <span class="status-dot" style="flex-shrink: 0;"></span>
+    <div class="context-workspace">
+      tto-web > claude
+    </div>
+    <span class="status-badge">RUNNING</span>
+    <span class="path">📁 ~/Desktop/tto-web</span>
+    <div class="spacer"></div>
+    <span class="unread-badge">↓ 18 new</span>
+    <button class="btn btn-icon" title="More actions">⋯</button>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SECTION 2: TERMINAL PREVIEW (WITH BANNER)              -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div style="padding: 20px; border-bottom: 1px solid #2a2a2a;">
+    <h2 style="font-size: 14px; color: #555; margin-bottom: 12px;">TERMINAL WITH WELCOME BANNER (CURRENT)</h2>
+    <p style="font-size: 12px; color: #555;">The Claude Code welcome banner dominates small terminal cards</p>
+  </div>
+
+  <div class="main">
+    <div class="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-title">Workspaces</div>
+        <div class="sidebar-item active">
+          <span class="dot dot-red" style="width: 6px; height: 6px;"></span>
+          tto-web
+          <span style="margin-left: auto; font-size: 10px; color: #555;">Quad · 4</span>
+        </div>
+        <div class="sidebar-item">
+          <span class="dot dot-green" style="width: 6px; height: 6px;"></span>
+          hccsolapur
+          <span style="margin-left: auto; font-size: 10px; color: #555;">Quad · 4</span>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-title">Recent</div>
+        <div class="sidebar-item">📁 project-alpha</div>
+        <div class="sidebar-item">📁 project-beta</div>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="terminal-grid">
+        <!-- Terminal 1: Claude Code with banner -->
+        <div class="terminal-card">
+          <div class="terminal-header">
+            <div class="terminal-title">
+              <div class="claude-logo" style="width: 14px; height: 14px; font-size: 8px; margin: 0;">C</div>
+              claude
+            </div>
+            <div class="terminal-actions">
+              <div class="terminal-action">↻</div>
+              <div class="terminal-action">×</div>
+            </div>
+          </div>
+          <div class="terminal-body">
+            <div class="claude-banner">
+              <div class="claude-logo">C</div>
+              <div class="claude-version">Claude Code v2.1.282</div>
+              <div class="claude-model">nara/sorces-2.5-flash with xhigh effort · API Usage Billing</div>
+              <div class="claude-path">~/Desktop/tto-web</div>
+              <div class="claude-input">$ _</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Terminal 2: Another terminal -->
+        <div class="terminal-card">
+          <div class="terminal-header">
+            <div class="terminal-title">
+              <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2360a5fa'%3E%3Cpath d='M8 5v14l11-7z'/%3E%3C/svg%3E" alt="">
+              opencode
+            </div>
+            <div class="terminal-actions">
+              <div class="terminal-action">↻</div>
+              <div class="terminal-action">×</div>
+            </div>
+          </div>
+          <div class="terminal-body">
+            <div style="color: #555; margin-bottom: 8px;">$ opencode</div>
+            <div style="color: #22c55e;">Starting opencode...</div>
+            <div style="color: #999; margin-top: 4px;">Connected to anthropic/claude-3-5-sonnet</div>
+            <div style="color: #999;">> Hello! How can I help you today?</div>
+            <div style="color: #22c55e; margin-top: 8px;">$ <span class="terminal-cursor"></span></div>
+          </div>
+        </div>
+
+        <!-- Terminal 3 -->
+        <div class="terminal-card">
+          <div class="terminal-header">
+            <div class="terminal-title">
+              <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2322c55e'%3E%3Cpath d='M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z'/%3E%3C/svg%3E" alt="" style="filter: brightness(0) invert(1);">
+              git
+            </div>
+            <div class="terminal-actions">
+              <div class="terminal-action">↻</div>
+              <div class="terminal-action">×</div>
+            </div>
+          </div>
+          <div class="terminal-body">
+            <div style="color: #999;">$ git status</div>
+            <div style="color: #f59e0b;">On branch main</div>
+            <div style="color: #999; margin-top: 4px;">Changes not staged for commit:</div>
+            <div style="color: #ef4444;">  modified: src/App.tsx</div>
+            <div style="color: #22c55e; margin-top: 8px;">$ <span class="terminal-cursor"></span></div>
+          </div>
+        </div>
+
+        <!-- Terminal 4 -->
+        <div class="terminal-card">
+          <div class="terminal-header">
+            <div class="terminal-title">
+              <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23a855f7'%3E%3Cpath d='M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z'/%3E%3C/svg%3E" alt="" style="filter: brightness(0) invert(1);">
+              vim
+            </div>
+            <div class="terminal-actions">
+              <div class="terminal-action">↻</div>
+              <div class="terminal-action">×</div>
+            </div>
+          </div>
+          <div class="terminal-body" style="background: #1a1a1a;">
+            <div style="color: #e8e8e8;">~</div>
+            <div style="color: #e8e8e8;">~</div>
+            <div style="color: #e8e8e8;">~ " App.tsx"</div>
+            <div style="color: #e8e8e8;">245,1 All</div>
+            <div style="color: #e8e8e8;">"App.tsx" 245L, 8901B</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SECTION 3: TERMINAL PREVIEW (FIXED - NO BANNER)         -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div style="padding: 20px; margin-top: 20px; border-top: 1px solid #2a2a2a;">
+    <h2 style="font-size: 14px; color: #555; margin-bottom: 12px;">TERMINAL AFTER FIX (AUTO-SKIP BANNER)</h2>
+    <p style="font-size: 12px; color: #555;">Adding <code style="background: #1a1a1a; padding: 2px 6px; border-radius: 4px; color: #4a9eff;">--no-banner</code> flag skips the welcome screen</p>
+  </div>
+
+  <div class="main">
+    <div class="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-title">Workspaces</div>
+        <div class="sidebar-item active">
+          <span class="dot dot-red" style="width: 6px; height: 6px;"></span>
+          tto-web
+          <span style="margin-left: auto; font-size: 10px; color: #555;">Quad · 4</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="terminal-grid">
+        <!-- Terminal 1: Claude Code without banner -->
+        <div class="terminal-card">
+          <div class="terminal-header">
+            <div class="terminal-title">
+              <div class="claude-logo" style="width: 14px; height: 14px; font-size: 8px; margin: 0;">C</div>
+              claude
+            </div>
+            <div class="terminal-actions">
+              <div class="terminal-action">↻</div>
+              <div class="terminal-action">×</div>
+            </div>
+          </div>
+          <div class="terminal-body">
+            <div style="color: #22c55e;">$ claude --no-banner</div>
+            <div style="color: #999; margin-top: 4px;">Claude Code v2.1.282</div>
+            <div style="color: #555; font-size: 10px;">nara/sorces-2.5-flash · xhigh effort</div>
+            <div style="color: #22c55e; margin-top: 8px;">$ <span class="terminal-cursor"></span></div>
+          </div>
+        </div>
+
+        <!-- Other terminals remain the same -->
+        <div class="terminal-card">
+          <div class="terminal-header">
+            <div class="terminal-title">
+              <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2360a5fa'%3E%3Cpath d='M8 5v14l11-7z'/%3E%3C/svg%3E" alt="">
+              opencode
+            </div>
+            <div class="terminal-actions">
+              <div class="terminal-action">↻</div>
+              <div class="terminal-action">×</div>
+            </div>
+          </div>
+          <div class="terminal-body">
+            <div style="color: #22c55e;">$ opencode</div>
+            <div style="color: #999; margin-top: 4px;">> How can I help you today?</div>
+            <div style="color: #22c55e; margin-top: 8px;">$ <span class="terminal-cursor"></span></div>
+          </div>
+        </div>
+
+        <div class="terminal-card">
+          <div class="terminal-header">
+            <div class="terminal-title">
+              <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2322c55e'%3E%3Cpath d='M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z'/%3E%3C/svg%3E" alt="">
+              git
+            </div>
+            <div class="terminal-actions">
+              <div class="terminal-action">↻</div>
+              <div class="terminal-action">×</div>
+            </div>
+          </div>
+          <div class="terminal-body">
+            <div style="color: #999;">$ git status</div>
+            <div style="color: #f59e0b;">On branch main</div>
+            <div style="color: #22c55e; margin-top: 8px;">$ <span class="terminal-cursor"></span></div>
+          </div>
+        </div>
+
+        <div class="terminal-card">
+          <div class="terminal-header">
+            <div class="terminal-title">
+              <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23a855f7'%3E%3Cpath d='M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z'/%3E%3C/svg%3E" alt="" style="filter: brightness(0) invert(1);">
+              vim
+            </div>
+            <div class="terminal-actions">
+              <div class="terminal-action">↻</div>
+              <div class="terminal-action">×</div>
+            </div>
+          </div>
+          <div class="terminal-body" style="background: #1a1a1a;">
+            <div style="color: #e8e8e8;">~</div>
+            <div style="color: #e8e8e8;">~</div>
+            <div style="color: #e8e8e8;">~ " App.tsx"</div>
+            <div style="color: #e8e8e8;">245,1 All</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SECTION 4: SUMMARY                                     -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div style="padding: 20px; margin-top: 20px; border-top: 1px solid #2a2a2a;">
+    <h2 style="font-size: 14px; color: #555; margin-bottom: 12px;">CHANGES SUMMARY</h2>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+      <div style="background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 16px;">
+        <h3 style="font-size: 13px; color: #e8e8e8; margin-bottom: 8px;">Topbar Changes</h3>
+        <ul style="font-size: 12px; color: #999; padding-left: 16px; line-height: 1.8;">
+          <li>Add layout mode dropdown (Auto/Grid/Compact/Large)</li>
+          <li>Add CLI filter dropdown</li>
+          <li>Add template selector (Single/Dual/Quad/etc.)</li>
+          <li>Add theme selector (Dark/Neon Tokyo/Synthwave/Paper)</li>
+          <li>Add connection status indicator</li>
+          <li>Add view-mode icon buttons (Focus/Split/Stack/Cards/etc.)</li>
+          <li>Add context bar with workspace/session info</li>
+        </ul>
+      </div>
+      <div style="background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 16px;">
+        <h3 style="font-size: 13px; color: #e8e8e8; margin-bottom: 8px;">Terminal Changes</h3>
+        <ul style="font-size: 12px; color: #999; padding-left: 16px; line-height: 1.8;">
+          <li>Auto-add <code style="background: #1a1a1a; padding: 1px 4px; border-radius: 3px; color: #4a9eff;">--no-banner</code> flag for Claude Code</li>
+          <li>Terminal starts at prompt immediately</li>
+          <li>No more oversized welcome banner</li>
+          <li>More screen space for actual terminal content</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

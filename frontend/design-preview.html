@@ -1,0 +1,1356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tto-web — UI Design Preview</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-base: #0a0a0b;
+      --bg-surface: #0f0f11;
+      --bg-elevated: #16161a;
+      --bg-hover: #1c1c21;
+      --bg-active: #232329;
+      --border: #2a2a30;
+      --border-light: #3f3f4a;
+      --text-primary: #f4f4f5;
+      --text-secondary: #a1a1aa;
+      --text-muted: #71717a;
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --accent-light: rgba(99, 102, 241, 0.1);
+      --success: #22c55e;
+      --success-light: rgba(34, 197, 94, 0.08);
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --radius-sm: 4px;
+      --radius-md: 6px;
+      --radius-lg: 10px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg-base);
+      color: var(--text-primary);
+      height: 100vh;
+      overflow: hidden;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .app {
+      display: flex;
+      height: 100vh;
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       SIDEBAR
+    ══════════════════════════════════════════════════════════ */
+    .sidebar {
+      width: 252px;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    /* Sidebar collapse/expand */
+    .sidebar.collapsed {
+      width: 48px;
+    }
+
+    .sidebar.collapsed .brand-name,
+    .sidebar.collapsed .version-tag,
+    .sidebar.collapsed .status-row,
+    .sidebar.collapsed .view-tabs,
+    .sidebar.collapsed .section,
+    .sidebar.collapsed .divider {
+      display: none;
+    }
+
+    .sidebar.collapsed .sidebar-body {
+      display: none;
+    }
+
+    .hamburger-btn {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      transition: all 0.2s ease;
+      flex-shrink: 0;
+    }
+
+    .hamburger-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    .hamburger-icon {
+      width: 16px;
+      height: 12px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .hamburger-icon span {
+      display: block;
+      height: 2px;
+      background: currentColor;
+      border-radius: 1px;
+    }
+
+    /* Icon-only mode for collapsed sidebar */
+    .sidebar-icon-strip {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 0;
+    }
+
+    .sidebar-icon-item {
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius-md);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .sidebar-icon-item:hover {
+      background: var(--bg-hover);
+      color: var(--accent);
+    }
+    .sidebar-header {
+      height: 50px;
+      padding: 0 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .logo {
+      width: 28px;
+      height: 28px;
+      background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 10px;
+      color: white;
+      flex-shrink: 0;
+      box-shadow: 0 2px 8px rgba(99, 102, 241, 0.35);
+      letter-spacing: 0.5px;
+    }
+
+    .brand-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      letter-spacing: -0.2px;
+    }
+
+    .version-tag {
+      margin-left: auto;
+      font-size: 10px;
+      padding: 2px 7px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    /* Connection Status */
+    .status-row {
+      margin: 10px 12px 0;
+      padding: 8px 10px;
+      background: var(--success-light);
+      border: 1px solid rgba(34, 197, 94, 0.12);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--success);
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+    }
+
+    /* View Mode Tabs */
+    .view-tabs {
+      display: flex;
+      padding: 8px 10px;
+      gap: 3px;
+      border-bottom: 1px solid var(--border);
+      overflow-x: auto;
+      flex-shrink: 0;
+    }
+
+    .view-tab {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 9px;
+      border-radius: var(--radius-sm);
+      font-size: 11px;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .view-tab:hover {
+      background: var(--bg-hover);
+      color: var(--text-secondary);
+    }
+
+    .view-tab.active {
+      background: var(--bg-active);
+      color: var(--text-primary);
+    }
+
+    .view-tab svg {
+      flex-shrink: 0;
+    }
+
+    /* Scrollable Content Area */
+    .sidebar-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px 8px;
+    }
+
+    .sidebar-body::-webkit-scrollbar {
+      width: 3px;
+    }
+
+    .sidebar-body::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .sidebar-body::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+
+    /* Section Styling */
+    .section {
+      margin-bottom: 14px;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 8px 6px;
+      margin-bottom: 2px;
+    }
+
+    .section-title {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+
+    .section-link {
+      font-size: 10px;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: color 0.15s ease;
+    }
+
+    .section-link:hover {
+      color: var(--accent);
+    }
+
+    /* Workspace Items */
+    .workspace-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .ws-item {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 8px 9px;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: all 0.12s ease;
+      position: relative;
+    }
+
+    .ws-item:hover {
+      background: var(--bg-hover);
+    }
+
+    .ws-item.active {
+      background: var(--bg-active);
+      border: 1px solid var(--border-light);
+    }
+
+    .ws-avatar {
+      width: 26px;
+      height: 26px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      font-weight: 700;
+      flex-shrink: 0;
+      background: var(--bg-elevated);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+    }
+
+    .ws-item.active .ws-avatar {
+      background: var(--accent-light);
+      color: var(--accent);
+      border-color: rgba(99, 102, 241, 0.3);
+    }
+
+    .ws-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .ws-name {
+      font-size: 12px;
+      color: var(--text-primary);
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ws-meta {
+      font-size: 10px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin-top: 1px;
+    }
+
+    .ws-badge {
+      font-size: 9px;
+      padding: 1px 5px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      color: var(--text-muted);
+    }
+
+    .ws-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--success);
+    }
+
+    .ws-actions {
+      display: flex;
+      gap: 1px;
+      opacity: 0;
+      transition: opacity 0.12s ease;
+    }
+
+    .ws-item:hover .ws-actions {
+      opacity: 1;
+    }
+
+    .ws-btn {
+      width: 17px;
+      height: 17px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 10px;
+    }
+
+    .ws-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    /* New Workspace Button */
+    .new-ws-btn {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 8px 10px;
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-md);
+      color: var(--text-muted);
+      font-size: 11.5px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      margin-top: 4px;
+      width: 100%;
+      background: transparent;
+    }
+
+    .new-ws-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-light);
+    }
+
+    /* Divider */
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin: 10px 4px;
+    }
+
+    /* Setting Rows */
+    .setting-group {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    .setting-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 9px;
+      border-radius: var(--radius-md);
+      transition: background 0.12s ease;
+    }
+
+    .setting-row:hover {
+      background: var(--bg-hover);
+    }
+
+    .setting-label {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    .setting-name {
+      font-size: 11.5px;
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .setting-desc {
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+
+    .setting-control select {
+      appearance: none;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 11px;
+      padding: 4px 20px 4px 8px;
+      cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg width='8' height='5' viewBox='0 0 8 5' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%2371717a' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 5px center;
+      min-width: 82px;
+    }
+
+    .setting-control select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    /* Toggle Switch */
+    .toggle {
+      width: 30px;
+      height: 16px;
+      background: var(--border);
+      border-radius: 8px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .toggle.on {
+      background: var(--accent);
+    }
+
+    .toggle::after {
+      content: '';
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      background: white;
+      border-radius: 50%;
+      top: 2px;
+      left: 2px;
+      transition: transform 0.2s ease;
+    }
+
+    .toggle.on::after {
+      transform: translateX(14px);
+    }
+
+    /* File Tree */
+    .file-tree-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 9px;
+      font-size: 10.5px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      border-radius: var(--radius-md);
+    }
+
+    .file-tree-header:hover {
+      background: var(--bg-hover);
+      color: var(--text-secondary);
+    }
+
+    .file-tree {
+      padding: 2px 0;
+    }
+
+    .tree-folder, .tree-file {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px 4px 18px;
+      font-size: 11.5px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      transition: all 0.12s ease;
+    }
+
+    .tree-folder:hover, .tree-file:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    .tree-file {
+      padding-left: 28px;
+    }
+
+    .tree-icon {
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       MAIN CONTENT AREA
+    ══════════════════════════════════════════════════════════ */
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg-base);
+    }
+
+    /* Terminal Grid */
+    .terminal-grid {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      grid-template-rows: repeat(2, 1fr);
+      gap: 7px;
+      padding: 11px;
+      overflow: hidden;
+    }
+
+    /* Terminal Card */
+    .term-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: all 0.15s ease;
+    }
+
+    .term-card:hover {
+      border-color: var(--border-light);
+    }
+
+    .term-card.focused {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.2), 0 4px 16px rgba(0, 0, 0, 0.4);
+    }
+
+    .term-header {
+      height: 30px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .window-dots {
+      display: flex;
+      gap: 5px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    .dot.red { background: #ff5f57; }
+    .dot.yellow { background: #febc2e; }
+    .dot.green { background: #28c840; }
+
+    .term-icon {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 7px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .term-icon.claude { background: linear-gradient(135deg, #f97316, #fb923c); }
+    .term-icon.opencode { background: #3b82f6; }
+    .term-icon.git { background: #f59e0b; }
+    .term-icon.vim { background: #22c55e; }
+
+    .term-title {
+      flex: 1;
+      font-size: 10.5px;
+      color: var(--text-secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .term-controls {
+      display: flex;
+      gap: 2px;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    .term-card:hover .term-controls {
+      opacity: 1;
+    }
+
+    .term-btn {
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 10px;
+    }
+
+    .term-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    .term-body {
+      flex: 1;
+      padding: 8px 10px;
+      font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 10.5px;
+      line-height: 1.55;
+      overflow: auto;
+    }
+
+    .line-prompt { color: var(--success); }
+    .line-output { color: var(--text-secondary); }
+    .line-error { color: var(--danger); }
+    .line-info { color: var(--accent); }
+    .line-comment { color: var(--text-muted); }
+
+    .cursor {
+      display: inline-block;
+      width: 5px;
+      height: 11px;
+      background: var(--accent);
+      animation: blink 1s infinite;
+      vertical-align: middle;
+      margin-left: 1px;
+    }
+
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       PREVIEW SECTIONS BELOW
+    ══════════════════════════════════════════════════════════ */
+    .preview-section {
+      padding: 22px;
+      background: var(--bg-base);
+      border-top: 1px solid var(--border);
+    }
+
+    .preview-title {
+      font-size: 10.5px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+      margin-bottom: 18px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .comparison-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+
+    .compare-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+
+    .compare-header {
+      padding: 11px 14px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .compare-label {
+      font-size: 11.5px;
+      color: var(--text-secondary);
+    }
+
+    .compare-badge {
+      font-size: 10px;
+      padding: 2px 9px;
+      border-radius: 20px;
+      font-weight: 600;
+    }
+
+    .compare-badge.bad {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--danger);
+    }
+
+    .compare-badge.good {
+      background: var(--success-light);
+      color: var(--success);
+    }
+
+    .compare-body {
+      padding: 14px;
+      height: 135px;
+    }
+
+    /* Summary */
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .summary-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+    }
+
+    .summary-title {
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 11px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .summary-icon {
+      width: 18px;
+      height: 18px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+    }
+
+    .summary-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .summary-list li {
+      font-size: 11px;
+      color: var(--text-secondary);
+      padding-left: 14px;
+      position: relative;
+      line-height: 1.45;
+    }
+
+    .summary-list li::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      width: 4px;
+      height: 4px;
+      background: var(--accent);
+      border-radius: 50%;
+      top: 7px;
+    }
+
+    code {
+      background: var(--bg-elevated);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-family: 'SF Mono', monospace;
+      font-size: 10px;
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- MAIN APP LAYOUT                                            -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+
+  <div class="app">
+    <!-- LEFT SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <!-- Header -->
+      <div class="sidebar-header">
+        <div class="hamburger-btn" id="hamburger" title="Toggle Sidebar">
+          <div class="hamburger-icon">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+        </div>
+        <div class="logo">TTO</div>
+        <span class="brand-name">tto-web</span>
+        <span class="version-tag">v0.9</span>
+      </div>
+
+      <!-- Icon Strip (collapsed state) -->
+      <div class="sidebar-icon-strip" id="iconStrip">
+        <div class="sidebar-icon-item" title="Workspace">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <div class="sidebar-icon-item" title="Grid">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        </div>
+        <div class="sidebar-icon-item" title="Kanban">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+        </div>
+        <div class="sidebar-icon-item" title="Settings">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </div>
+      </div>
+
+      <!-- Connection Status -->
+      <div class="status-row">
+        <div class="status-dot"></div>
+        <span>Connected · 4 sessions</span>
+      </div>
+
+      <!-- View Mode Tabs -->
+      <div class="view-tabs">
+        <div class="view-tab active">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          Workspace
+        </div>
+        <div class="view-tab">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          Grid
+        </div>
+        <div class="view-tab">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+          Kanban
+        </div>
+        <div class="view-tab">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+          Tasks
+        </div>
+        <div class="view-tab">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          Planner
+        </div>
+        <div class="view-tab">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          IDE
+        </div>
+      </div>
+
+      <!-- Sidebar Body -->
+      <div class="sidebar-body">
+        <!-- Workspaces Section -->
+        <div class="section">
+          <div class="section-header">
+            <span class="section-title">Workspaces</span>
+            <span class="section-link">+ Add</span>
+          </div>
+          <div class="workspace-list">
+            <div class="ws-item active">
+              <div class="ws-avatar">TW</div>
+              <div class="ws-info">
+                <div class="ws-name">tto-web</div>
+                <div class="ws-meta">
+                  <span class="ws-badge">Quad</span>
+                  <span style="display:flex;align-items:center;gap:4px;"><span class="ws-dot"></span>4 active</span>
+                </div>
+              </div>
+              <div class="ws-actions">
+                <div class="ws-btn" title="Rename">✏</div>
+                <div class="ws-btn" title="Close">×</div>
+              </div>
+            </div>
+
+            <div class="ws-item">
+              <div class="ws-avatar" style="background:rgba(34,197,94,0.1);color:var(--success);">HC</div>
+              <div class="ws-info">
+                <div class="ws-name">hccsolapur</div>
+                <div class="ws-meta">
+                  <span class="ws-badge" style="color:var(--success);">Dual</span>
+                </div>
+              </div>
+              <div class="ws-actions">
+                <div class="ws-btn" title="Rename">✏</div>
+                <div class="ws-btn" title="Close">×</div>
+              </div>
+            </div>
+
+            <div class="ws-item">
+              <div class="ws-avatar" style="background:rgba(245,158,11,0.1);color:var(--warning);">PA</div>
+              <div class="ws-info">
+                <div class="ws-name">project-alpha</div>
+                <div class="ws-meta">
+                  <span class="ws-badge" style="color:var(--warning);">Single</span>
+                </div>
+              </div>
+              <div class="ws-actions">
+                <div class="ws-btn" title="Rename">✏</div>
+                <div class="ws-btn" title="Close">×</div>
+              </div>
+            </div>
+          </div>
+
+          <button class="new-ws-btn">
+            <span style="font-size:13px;">+</span>
+            <span>Create new workspace</span>
+          </button>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- Layout Section -->
+        <div class="section">
+          <div class="section-header">
+            <span class="section-title">Layout</span>
+          </div>
+          <div class="setting-group">
+            <div class="setting-row">
+              <div class="setting-label">
+                <div class="setting-name">Grid Mode</div>
+                <div class="setting-desc">Terminal sizing</div>
+              </div>
+              <div class="setting-control">
+                <select>
+                  <option>Auto</option>
+                  <option>Grid</option>
+                  <option selected>Compact</option>
+                  <option>Large</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-label">
+                <div class="setting-name">Template</div>
+                <div class="setting-desc">Pane count</div>
+              </div>
+              <div class="setting-control">
+                <select>
+                  <option>Single (1)</option>
+                  <option>Dual (2)</option>
+                  <option selected>Quad (4)</option>
+                  <option>Six (6)</option>
+                  <option>Nine (9)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- Appearance Section -->
+        <div class="section">
+          <div class="section-header">
+            <span class="section-title">Appearance</span>
+          </div>
+          <div class="setting-group">
+            <div class="setting-row">
+              <div class="setting-label">
+                <div class="setting-name">Theme</div>
+                <div class="setting-desc">Color scheme</div>
+              </div>
+              <div class="setting-control">
+                <select>
+                  <option selected>Dark</option>
+                  <option>Neon Tokyo</option>
+                  <option>Synthwave</option>
+                  <option>Paper</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-label">
+                <div class="setting-name">CLI Filter</div>
+                <div class="setting-desc">Show specific CLIs</div>
+              </div>
+              <div class="setting-control">
+                <select>
+                  <option selected>All</option>
+                  <option>Claude</option>
+                  <option>Opencode</option>
+                  <option>Vim</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- Options Section -->
+        <div class="section">
+          <div class="section-header">
+            <span class="section-title">Options</span>
+          </div>
+          <div class="setting-group">
+            <div class="setting-row">
+              <div class="setting-label">
+                <div class="setting-name">Skip Welcome Banner</div>
+                <div class="setting-desc">Auto-add <code>--no-banner</code></div>
+              </div>
+              <div class="setting-control">
+                <div class="toggle on"></div>
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-label">
+                <div class="setting-name">Auto-Reconnect</div>
+                <div class="setting-desc">Reconnect on disconnect</div>
+              </div>
+              <div class="setting-control">
+                <div class="toggle on"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- Files Section -->
+        <div class="section">
+          <div class="file-tree-header">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+            <span>Project Files</span>
+            <span style="margin-left:auto;font-size:9px;color:var(--text-muted);">~/Desktop/tto-web</span>
+          </div>
+          <div class="file-tree">
+            <div class="tree-folder"><span class="tree-icon">📁</span> src</div>
+            <div class="tree-file"><span class="tree-icon">📄</span> App.tsx</div>
+            <div class="tree-file"><span class="tree-icon">📄</span> main.tsx</div>
+            <div class="tree-file"><span class="tree-icon">📄</span> workspace.ts</div>
+            <div class="tree-file"><span class="tree-icon">📄</span> types.ts</div>
+            <div class="tree-folder"><span class="tree-icon">📁</span> components</div>
+            <div class="tree-folder"><span class="tree-icon">📁</span> lib</div>
+            <div class="tree-folder"><span class="tree-icon">📁</span> views</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT AREA -->
+    <main class="main">
+      <div class="terminal-grid">
+        <!-- Claude Terminal (Fixed) -->
+        <div class="term-card focused">
+          <div class="term-header">
+            <div class="window-dots">
+              <div class="dot red"></div>
+              <div class="dot yellow"></div>
+              <div class="dot green"></div>
+            </div>
+            <div class="term-icon claude">C</div>
+            <span class="term-title">claude</span>
+            <div class="term-controls">
+              <div class="term-btn" title="Restart">↻</div>
+              <div class="term-btn" title="Close">×</div>
+            </div>
+          </div>
+          <div class="term-body">
+            <div class="line-prompt">$ claude --no-banner</div>
+            <div class="line-comment">Claude Code v2.1.282 · xhigh effort</div>
+            <div class="line-prompt" style="margin-top:8px;">$ <span class="cursor"></span></div>
+          </div>
+        </div>
+
+        <!-- Opencode Terminal -->
+        <div class="term-card">
+          <div class="term-header">
+            <div class="window-dots">
+              <div class="dot red"></div>
+              <div class="dot yellow"></div>
+              <div class="dot green"></div>
+            </div>
+            <div class="term-icon opencode">OC</div>
+            <span class="term-title">opencode</span>
+            <div class="term-controls">
+              <div class="term-btn" title="Restart">↻</div>
+              <div class="term-btn" title="Close">×</div>
+            </div>
+          </div>
+          <div class="term-body">
+            <div class="line-prompt">$ opencode</div>
+            <div class="line-output" style="margin-top:4px;">Connected to anthropic/claude-3-5-sonnet</div>
+            <div class="line-info" style="margin-top:4px;">> Hello! How can I help?</div>
+            <div class="line-prompt" style="margin-top:8px;">$ <span class="cursor"></span></div>
+          </div>
+        </div>
+
+        <!-- Git Terminal -->
+        <div class="term-card">
+          <div class="term-header">
+            <div class="window-dots">
+              <div class="dot red"></div>
+              <div class="dot yellow"></div>
+              <div class="dot green"></div>
+            </div>
+            <div class="term-icon git">G</div>
+            <span class="term-title">git</span>
+            <div class="term-controls">
+              <div class="term-btn" title="Restart">↻</div>
+              <div class="term-btn" title="Close">×</div>
+            </div>
+          </div>
+          <div class="term-body">
+            <div class="line-prompt">$ git status</div>
+            <div class="line-output" style="color:var(--warning);margin-top:4px;">On branch main</div>
+            <div class="line-output" style="margin-top:2px;">Changes not staged:</div>
+            <div class="line-error" style="margin-top:2px;">  modified: src/App.tsx</div>
+            <div class="line-prompt" style="margin-top:8px;">$ <span class="cursor"></span></div>
+          </div>
+        </div>
+
+        <!-- Vim Terminal -->
+        <div class="term-card">
+          <div class="term-header">
+            <div class="window-dots">
+              <div class="dot red"></div>
+              <div class="dot yellow"></div>
+              <div class="dot green"></div>
+            </div>
+            <div class="term-icon vim">V</div>
+            <span class="term-title">vim</span>
+            <div class="term-controls">
+              <div class="term-btn" title="Restart">↻</div>
+              <div class="term-btn" title="Close">×</div>
+            </div>
+          </div>
+          <div class="term-body" style="background:#131316;">
+            <div style="color:#e8e8e8;">~</div>
+            <div style="color:#e8e8e8;">~</div>
+            <div style="color:#e8e8e8;">~  App.tsx</div>
+            <div style="color:#e8e8e8;">245,1 All</div>
+            <div style="color:#e8e8e8;">"App.tsx" 245L, 8901B</div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- BEFORE/AFTER COMPARISON                                     -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <div class="preview-section">
+    <div class="preview-title">Before vs After: Claude Welcome Banner Fix</div>
+
+    <div class="comparison-grid">
+      <!-- BEFORE -->
+      <div class="compare-card">
+        <div class="compare-header">
+          <span class="compare-label">BEFORE — Welcome banner dominates small terminal</span>
+          <span class="compare-badge bad">Problem</span>
+        </div>
+        <div class="compare-body">
+          <div class="term-card">
+            <div class="term-header">
+              <div class="window-dots">
+                <div class="dot red"></div>
+                <div class="dot yellow"></div>
+                <div class="dot green"></div>
+              </div>
+              <div class="term-icon claude">C</div>
+              <span class="term-title">claude</span>
+            </div>
+            <div class="term-body" style="display:flex;align-items:center;justify-content:center;text-align:center;padding:8px;">
+              <div>
+                <div style="width:44px;height:44px;background:linear-gradient(135deg,#f97316,#fb923c);border-radius:9px;margin:0 auto 7px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:bold;color:white;">C</div>
+                <div style="font-size:10px;color:#e8e8e8;">Claude Code v2.1.282</div>
+                <div style="font-size:8px;color:#71717a;margin-top:2px;">nara/sorces-2.5-flash</div>
+                <div style="margin-top:7px;padding:3px 8px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:4px;font-size:8px;color:#a1a1aa;width:100%;">$ _</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AFTER -->
+      <div class="compare-card">
+        <div class="compare-header">
+          <span class="compare-label">AFTER — Starts at prompt immediately</span>
+          <span class="compare-badge good">Fixed</span>
+        </div>
+        <div class="compare-body">
+          <div class="term-card focused">
+            <div class="term-header">
+              <div class="window-dots">
+                <div class="dot red"></div>
+                <div class="dot yellow"></div>
+                <div class="dot green"></div>
+              </div>
+              <div class="term-icon claude">C</div>
+              <span class="term-title">claude</span>
+            </div>
+            <div class="term-body">
+              <div class="line-prompt">$ claude --no-banner</div>
+              <div class="line-comment" style="font-size:9px;">Claude Code v2.1.282 · xhigh effort</div>
+              <div class="line-prompt" style="margin-top:5px;">$ <span class="cursor"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- DESIGN SUMMARY                                              -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <div class="preview-section">
+    <div class="preview-title" style="border:none;padding-bottom:0;margin-bottom:16px;">Design Summary</div>
+
+    <div class="summary-grid">
+      <div class="summary-card">
+        <div class="summary-title">
+          <div class="summary-icon" style="background:var(--accent-light);color:var(--accent);">◫</div>
+          Sidebar Controls
+        </div>
+        <ul class="summary-list">
+          <li>Workspace list with avatars & badges</li>
+          <li>View mode tabs (Workspace, Grid, Kanban...)</li>
+          <li>Connection status indicator</li>
+          <li>Layout controls (Grid Mode, Template)</li>
+          <li>Appearance settings (Theme, CLI Filter)</li>
+          <li>Project file tree explorer</li>
+        </ul>
+      </div>
+
+      <div class="summary-card">
+        <div class="summary-title">
+          <div class="summary-icon" style="background:var(--success-light);color:var(--success);">✓</div>
+          Options & Toggles
+        </div>
+        <ul class="summary-list">
+          <li>Skip welcome banner toggle</li>
+          <li>Auto-reconnect toggle</li>
+          <li>Clean section grouping with dividers</li>
+          <li>Intuitive visual hierarchy</li>
+        </ul>
+      </div>
+
+      <div class="summary-card">
+        <div class="summary-title">
+          <div class="summary-icon" style="background:rgba(239,68,68,0.1);color:var(--danger);">✕</div>
+          Removed Topbar
+        </div>
+        <ul class="summary-list">
+          <li>No topbar — maximum terminal space</li>
+          <li>All controls moved to sidebar</li>
+          <li>Cleaner, less congested UI</li>
+          <li>Professional, modern aesthetic</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Hamburger toggle: sidebar collapse/expand
+    const sidebar = document.getElementById('sidebar');
+    const hamburger = document.getElementById('hamburger');
+    if (sidebar && hamburger) {
+      hamburger.addEventListener('click', () => {
+        sidebar.classList.toggle('collapsed');
+      });
+    }
+  </script>
+
+</body>
+</html>

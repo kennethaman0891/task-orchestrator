@@ -1,0 +1,504 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "TTO (Terminal Task Orchestrator) Architecture",
+    "output": ".archify/architecture-tto-system-20261003-171635/tto-system.html",
+    "quality_profile": "showcase",
+    "animation": "trace",
+    "repository": {
+      "url": "https://github.com/kennethaman0891/tto.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "c91d692f704f4abbf7d6bbb782f27a2450af6cbc"
+    },
+    "views": [
+      {
+        "id": "desktop_flow",
+        "label": "Local Workstation",
+        "focus": ["developer", "react_ui", "xterm_pool", "tauri_app", "pty_manager", "agent_runtimes"],
+        "note": "Direct keystroke-to-PTY developer execution path"
+      },
+      {
+        "id": "remote_flow",
+        "label": "Remote & Voice Ingress",
+        "focus": ["remote_users", "chat_gateways", "whisper_ai", "remote_hub", "command_relay", "pty_manager"],
+        "note": "Discord voice note and WhatsApp remote dispatch flow"
+      },
+      {
+        "id": "sidecar_flow",
+        "label": "Sidecar & State Sync",
+        "focus": ["fastapi_core", "sidecar_sup", "scanner_loop", "file_watcher", "react_ui"],
+        "note": "FastAPI daemon, process scanning, and WebSocket state broadcast"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "developer",
+      "type": "external",
+      "label": "Developer",
+      "sublabel": "Keyboard & Display",
+      "tag": "Workstation",
+      "pos": [40, 100],
+      "size": [140, 62]
+    },
+    {
+      "id": "react_ui",
+      "type": "frontend",
+      "label": "React 19 Shell",
+      "sublabel": "Panes, Grid, IDE, Jarvis",
+      "tag": "Vite + Tailwind",
+      "pos": [305, 100],
+      "size": [140, 62],
+      "sources": [
+        {
+          "path": "frontend/src/components/App.tsx",
+          "line": 41,
+          "end_line": 100,
+          "label": "App Component Shell"
+        }
+      ]
+    },
+    {
+      "id": "xterm_pool",
+      "type": "frontend",
+      "label": "xterm.js DOM Pool",
+      "sublabel": "Offscreen Parked Anchors",
+      "tag": "Canvas / Fit Addons",
+      "pos": [525, 100],
+      "size": [140, 62],
+      "sources": [
+        {
+          "path": "frontend/src/terminal/TerminalManager.ts",
+          "line": 30,
+          "end_line": 75,
+          "label": "Persistent DOM Pool"
+        }
+      ]
+    },
+    {
+      "id": "tauri_app",
+      "type": "security",
+      "label": "Tauri v2 Desktop",
+      "sublabel": "App State & Permissions",
+      "tag": "Rust Runtime",
+      "pos": [745, 100],
+      "size": [140, 62],
+      "sources": [
+        {
+          "path": "frontend/src-tauri/src/lib.rs",
+          "line": 60,
+          "end_line": 130,
+          "label": "AppState & Tauri Setup"
+        }
+      ]
+    },
+    {
+      "id": "pty_manager",
+      "type": "backend",
+      "label": "Native PTY Engine",
+      "sublabel": "portable-pty & Scheduler",
+      "tag": "Cross-Platform",
+      "pos": [965, 100],
+      "size": [140, 62],
+      "sources": [
+        {
+          "path": "frontend/src-tauri/src/terminal/manager.rs",
+          "line": 20,
+          "end_line": 80,
+          "label": "PTY Master Engine"
+        }
+      ]
+    },
+    {
+      "id": "agent_runtimes",
+      "type": "backend",
+      "label": "Agent Subprocesses",
+      "sublabel": "OpenCode, Claude, Codex",
+      "tag": "Terminal Runtimes",
+      "pos": [1185, 100],
+      "size": [140, 62]
+    },
+    {
+      "id": "tto_gateway",
+      "type": "cloud",
+      "label": "TTO Gateway",
+      "sublabel": "Node.js WSS Relay",
+      "tag": "Zero-Port-Forward",
+      "pos": [525, 280],
+      "size": [140, 62]
+    },
+    {
+      "id": "sidecar_sup",
+      "type": "security",
+      "label": "Sidecar Supervisor",
+      "sublabel": "TCC Directory Attributor",
+      "tag": "Process Supervisor",
+      "pos": [745, 280],
+      "size": [140, 62],
+      "sources": [
+        {
+          "path": "frontend/src-tauri/src/sidecar.rs",
+          "line": 295,
+          "end_line": 355,
+          "label": "Sidecar Lifecycle & Health"
+        }
+      ]
+    },
+    {
+      "id": "command_relay",
+      "type": "messagebus",
+      "label": "Command Relay",
+      "sublabel": "WS /ws/command-relay",
+      "tag": "Tokio Async Bridge",
+      "pos": [965, 280],
+      "size": [140, 62],
+      "sources": [
+        {
+          "path": "frontend/src-tauri/src/relay.rs",
+          "line": 35,
+          "end_line": 85,
+          "label": "Tokio Relay Task"
+        }
+      ]
+    },
+    {
+      "id": "scanner_loop",
+      "type": "backend",
+      "label": "Process Scanner",
+      "sublabel": "ps monitor & tmux capture",
+      "tag": "1s Async Loop",
+      "pos": [1185, 280],
+      "size": [140, 62],
+      "sources": [
+        {
+          "path": "backend/main.py",
+          "line": 1566,
+          "end_line": 1640,
+          "label": "Scanner & Output Capture"
+        }
+      ]
+    },
+    {
+      "id": "file_watcher",
+      "type": "backend",
+      "label": "Async File Watcher",
+      "sublabel": "mtime Poller & Change Events",
+      "tag": "Event Stream",
+      "pos": [525, 460],
+      "size": [140, 62],
+      "sources": [
+        {
+          "path": "backend/file_watcher.py",
+          "line": 43,
+          "end_line": 95,
+          "label": "Workspace Directory Poller"
+        }
+      ]
+    },
+    {
+      "id": "fastapi_core",
+      "type": "backend",
+      "label": "FastAPI Sidecar",
+      "sublabel": "Port :8765 Monolith Hub",
+      "tag": "REST & WebSockets",
+      "pos": [745, 460],
+      "size": [140, 62],
+      "sources": [
+        {
+          "path": "backend/main.py",
+          "line": 151,
+          "end_line": 210,
+          "label": "FastAPI Core Application"
+        }
+      ]
+    },
+    {
+      "id": "opencode_server",
+      "type": "backend",
+      "label": "OpenCode Server",
+      "sublabel": "Port :4097 HTTP & SSE",
+      "tag": "Agent Session Host",
+      "pos": [965, 460],
+      "size": [140, 62]
+    },
+    {
+      "id": "remote_users",
+      "type": "external",
+      "label": "Remote User",
+      "sublabel": "WhatsApp / Discord Voice",
+      "tag": "Mobile Client",
+      "pos": [40, 640],
+      "size": [140, 62]
+    },
+    {
+      "id": "chat_gateways",
+      "type": "cloud",
+      "label": "Chat Gateways",
+      "sublabel": "OpenWA & Discord Bot",
+      "tag": "REST / Gateway API",
+      "pos": [305, 640],
+      "size": [140, 62],
+      "sources": [
+        {
+          "path": "backend/remote/discord_bot.py",
+          "line": 45,
+          "end_line": 120,
+          "label": "Discord Client & Audio Streamer"
+        }
+      ]
+    },
+    {
+      "id": "whisper_ai",
+      "type": "backend",
+      "label": "Local Whisper AI",
+      "sublabel": "faster-whisper (int8 CPU)",
+      "tag": "Zero-Cloud Audio",
+      "pos": [525, 640],
+      "size": [140, 62],
+      "sources": [
+        {
+          "path": "backend/remote/whisper_local.py",
+          "line": 1,
+          "end_line": 50,
+          "label": "Offline Speech-to-Text"
+        }
+      ]
+    },
+    {
+      "id": "remote_hub",
+      "type": "security",
+      "label": "Remote Safety Hub",
+      "sublabel": "HMAC, Tokens & 2FA",
+      "tag": "Defense-in-Depth",
+      "pos": [745, 640],
+      "size": [140, 62],
+      "sources": [
+        {
+          "path": "backend/remote/webhook.py",
+          "line": 32,
+          "end_line": 180,
+          "label": "OpenWA Webhook Router"
+        },
+        {
+          "path": "backend/remote/safety.py",
+          "line": 24,
+          "end_line": 135,
+          "label": "Command Classifier"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Tauri v2 Desktop App Container (macOS / Windows / Linux)",
+      "wraps": ["react_ui", "xterm_pool", "tauri_app", "pty_manager", "tto_gateway", "sidecar_sup", "command_relay"],
+      "pad": 16
+    },
+    {
+      "kind": "security-group",
+      "label": "Python FastAPI Sidecar (127.0.0.1:8765)",
+      "wraps": ["file_watcher", "fastapi_core", "opencode_server", "scanner_loop", "whisper_ai", "remote_hub"],
+      "pad": 16
+    },
+    {
+      "kind": "region",
+      "label": "Remote Ingress & Chat Services",
+      "wraps": ["remote_users", "chat_gateways"],
+      "pad": 16
+    }
+  ],
+  "connections": [
+    {
+      "id": "dev_to_ui",
+      "from": "developer",
+      "to": "react_ui",
+      "label": "Keystrokes / Clicks",
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "id": "ui_to_pool",
+      "from": "react_ui",
+      "to": "xterm_pool",
+      "label": "Mounts / Pools",
+      "route": "straight"
+    },
+    {
+      "id": "pool_to_tauri",
+      "from": "xterm_pool",
+      "to": "tauri_app",
+      "label": "IPC Channel",
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "id": "tauri_to_pty",
+      "from": "tauri_app",
+      "to": "pty_manager",
+      "label": "portable-pty",
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "id": "pty_to_agents",
+      "from": "pty_manager",
+      "to": "agent_runtimes",
+      "label": "PTY I/O",
+      "variant": "emphasis",
+      "route": "straight"
+    },
+    {
+      "id": "tauri_to_sup",
+      "from": "tauri_app",
+      "to": "sidecar_sup",
+      "label": "Spawns & Supervises",
+      "route": "straight",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "sup_to_sidecar",
+      "from": "sidecar_sup",
+      "to": "fastapi_core",
+      "label": "TCC Directory Check",
+      "variant": "security",
+      "route": "straight",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "sidecar_to_ui",
+      "from": "fastapi_core",
+      "to": "react_ui",
+      "label": "WS State",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "via": [[815, 560], [220, 560], [220, 131]]
+    },
+    {
+      "id": "sidecar_to_scanner",
+      "from": "fastapi_core",
+      "to": "scanner_loop",
+      "label": "1s Loop",
+      "fromSide": "top",
+      "toSide": "left",
+      "via": [[815, 380], [1140, 380], [1140, 311]]
+    },
+    {
+      "id": "scanner_to_agents",
+      "from": "scanner_loop",
+      "to": "agent_runtimes",
+      "label": "ps / tmux",
+      "variant": "dashed",
+      "route": "straight",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "watcher_to_sidecar",
+      "from": "file_watcher",
+      "to": "fastapi_core",
+      "label": "mtime Events",
+      "variant": "dashed",
+      "route": "straight"
+    },
+    {
+      "id": "relay_to_pty",
+      "from": "command_relay",
+      "to": "pty_manager",
+      "label": "Injects Commands",
+      "variant": "emphasis",
+      "route": "straight",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "sidecar_to_relay",
+      "from": "fastapi_core",
+      "to": "command_relay",
+      "label": "WS Relay"
+    },
+    {
+      "id": "users_to_chats",
+      "from": "remote_users",
+      "to": "chat_gateways",
+      "label": "Voice / Chat",
+      "route": "straight"
+    },
+    {
+      "id": "chats_to_whisper",
+      "from": "chat_gateways",
+      "to": "whisper_ai",
+      "label": "Audio (.ogg)",
+      "route": "straight"
+    },
+    {
+      "id": "whisper_to_hub",
+      "from": "whisper_ai",
+      "to": "remote_hub",
+      "label": "Text",
+      "route": "straight"
+    },
+    {
+      "id": "hub_to_sidecar",
+      "from": "remote_hub",
+      "to": "fastapi_core",
+      "label": "Verified Command",
+      "variant": "security",
+      "route": "straight",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "tauri_to_gateway",
+      "from": "tauri_app",
+      "to": "tto_gateway",
+      "label": "Outbound WSS",
+      "variant": "security",
+      "fromSide": "left",
+      "toSide": "top",
+      "via": [[685, 131], [685, 220], [595, 220]]
+    },
+    {
+      "id": "sidecar_to_opencode",
+      "from": "fastapi_core",
+      "to": "opencode_server",
+      "label": "Proxy",
+      "variant": "dashed",
+      "route": "straight"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Multi-Process Runtime",
+      "items": [
+        "Tauri v2 Rust process manages native PTY descriptors and OS permissions",
+        "FastAPI sidecar runs on port 8765 handling state, scanner, and background loops",
+        "OpenCode server (:4097) provides headless agent session control and SSE events"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Interactive & Remote Dual Path",
+      "items": [
+        "Local developer inputs flow from React 19 through xterm.js pool to Rust PTY via IPC",
+        "Remote WhatsApp & Discord messages pass safety filtering before token injection",
+        "100% local faster-whisper transcribes Discord audio voice notes without cloud APIs"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Resilient State & Security Boundaries",
+      "items": [
+        "Sidecar supervisor attributes macOS TCC permissions and auto-restarts on port locks",
+        "Sliding-window rate limiting, HMAC webhooks, and 2-phase confirmation prevent destructive execution",
+        "Offscreen DOM pooling ensures xterm.js sessions maintain scrollback without re-rendering"
+      ]
+    }
+  ]
+}

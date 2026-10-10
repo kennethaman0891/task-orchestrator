@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tto-web Design v2</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-primary: #0a0a0a;
+      --bg-secondary: #111111;
+      --bg-tertiary: #1a1a1a;
+      --bg-elevated: #1e1e1e;
+      --border: #2a2a2a;
+      --border-subtle: #1a1a1a;
+      --text-primary: #e8e8e8;
+      --text-secondary: #999999;
+      --text-muted: #555555;
+      --accent: #4a9eff;
+      --accent-light: rgba(74,158,255,0.12);
+      --success: #22c55e;
+      --success-light: rgba(34,197,94,0.12);
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --radius-sm: 4px;
+      --radius-md: 6px;
+      --radius-lg: 8px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── App Shell ─────────────────────────────────────── */
+    .app {
+      display: flex;
+      height: 100vh;
+    }
+
+    /* ── Sidebar ───────────────────────────────────────── */
+    .sidebar {
+      width: 260px;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    /* Sidebar header */
+    .sidebar-header {
+      height: 48px;
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .logo {
+      width: 28px;
+      height: 28px;
+      background: linear-gradient(135deg, var(--accent), #2563eb);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 13px;
+      color: white;
+      flex-shrink: 0;
+    }
+
+    .app-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .app-version {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-left: auto;
+    }
+
+    /* Sidebar sections */
+    .sidebar-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+    }
+
+    .sidebar-section {
+      margin-bottom: 20px;
+    }
+
+    .section-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      padding: 0 8px 8px;
+    }
+
+    /* Workspace items */
+    .workspace-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .workspace-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      position: relative;
+    }
+
+    .workspace-item:hover {
+      background: var(--bg-tertiary);
+    }
+
+    .workspace-item.active {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+    }
+
+    .workspace-color {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .workspace-name {
+      flex: 1;
+      font-size: 13px;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .workspace-badge {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 10px;
+      background: var(--accent-light);
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    .workspace-actions {
+      display: flex;
+      gap: 2px;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    .workspace-item:hover .workspace-actions {
+      opacity: 1;
+    }
+
+    .ws-action-btn {
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .ws-action-btn:hover {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+    }
+
+    /* New workspace button */
+    .new-ws-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-md);
+      color: var(--text-muted);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      margin-top: 6px;
+      width: 100%;
+      background: transparent;
+    }
+
+    .new-ws-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-light);
+    }
+
+    /* Settings controls */
+    .setting-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .setting-row:last-child {
+      border-bottom: none;
+    }
+
+    .setting-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .setting-name {
+      font-size: 12px;
+      color: var(--text-primary);
+    }
+
+    .setting-hint {
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+
+    .setting-control {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Select styled */
+    .setting-select {
+      appearance: none;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 12px;
+      padding: 4px 24px 4px 8px;
+      cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg width='8' height='5' viewBox='0 0 8 5' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%23666' stroke-width='1.2' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 6px center;
+      min-width: 90px;
+    }
+
+    .setting-select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    /* Toggle switch */
+    .toggle {
+      width: 32px;
+      height: 18px;
+      background: var(--border);
+      border-radius: 9px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .toggle.on {
+      background: var(--accent);
+    }
+
+    .toggle::after {
+      content: '';
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      background: white;
+      border-radius: 50%;
+      top: 2px;
+      left: 2px;
+      transition: transform 0.2s ease;
+    }
+
+    .toggle.on::after {
+      transform: translateX(14px);
+    }
+
+    /* Sidebar footer */
+    .sidebar-footer {
+      padding: 12px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+    }
+
+    .footer-btn {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      color: var(--text-secondary);
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .footer-btn:hover {
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+    }
+
+    /* ── Main Content ──────────────────────────────────── */
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg-primary);
+    }
+
+    /* Top strip - minimal */
+    .top-strip {
+      height: 36px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .strip-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 6px rgba(34,197,94,0.4);
+    }
+
+    .strip-path {
+      flex: 1;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .strip-actions {
+      display: flex;
+      gap: 4px;
+    }
+
+    .strip-btn {
+      width: 26px;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.15s ease;
+    }
+
+    .strip-btn:hover {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+    }
+
+    /* Terminal area */
+    .terminal-area {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      grid-template-rows: repeat(2, 1fr);
+      gap: 6px;
+      padding: 10px;
+      overflow: hidden;
+    }
+
+    /* Terminal card */
+    .term-card {
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: border-color 0.15s ease;
+    }
+
+    .term-card:hover {
+      border-color: #333;
+    }
+
+    .term-card.focused {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(74,158,255,0.2);
+    }
+
+    .term-header {
+      height: 30px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .term-icon {
+      width: 16px;
+      height: 16px;
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .term-icon.claude { background: linear-gradient(135deg, #ff6b00, #ff9500); }
+    .term-icon.opencode { background: #3b82f6; }
+    .term-icon.git { background: #f59e0b; }
+    .term-icon.vim { background: #22c55e; }
+
+    .term-title {
+      flex: 1;
+      font-size: 11px;
+      color: var(--text-secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .term-controls {
+      display: flex;
+      gap: 2px;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    .term-card:hover .term-controls {
+      opacity: 1;
+    }
+
+    .term-ctrl-btn {
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    .term-ctrl-btn:hover {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+    }
+
+    .term-body {
+      flex: 1;
+      padding: 8px;
+      font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      overflow: auto;
+    }
+
+    /* Terminal content styles */
+    .line-prompt { color: var(--success); }
+    .line-output { color: var(--text-secondary); }
+    .line-error { color: var(--danger); }
+    .line-info { color: var(--accent); }
+    .line-comment { color: var(--text-muted); }
+
+    .cursor {
+      display: inline-block;
+      width: 6px;
+      height: 13px;
+      background: var(--accent);
+      animation: blink 1s infinite;
+      vertical-align: middle;
+      margin-left: 1px;
+    }
+
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+
+    /* ── Preview Sections ──────────────────────────────── */
+    .preview-section {
+      padding: 20px;
+      background: var(--bg-primary);
+      border-top: 1px solid var(--border);
+    }
+
+    .preview-title {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .comparison-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .compare-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+
+    .compare-header {
+      padding: 10px 14px;
+      background: var(--bg-tertiary);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .compare-label {
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .compare-badge {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+
+    .compare-badge.bad { background: rgba(239,68,68,0.12); color: var(--danger); }
+    .compare-badge.good { background: var(--success-light); color: var(--success); }
+
+    .compare-body {
+      padding: 12px;
+      height: 140px;
+    }
+
+    /* ── Summary ───────────────────────────────────────── */
+    .summary {
+      padding: 20px;
+      background: var(--bg-primary);
+      border-top: 1px solid var(--border);
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .summary-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+    }
+
+    .summary-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .summary-title .icon {
+      width: 20px;
+      height: 20px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+    }
+
+    .summary-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .summary-list li {
+      font-size: 11px;
+      color: var(--text-secondary);
+      padding-left: 14px;
+      position: relative;
+      line-height: 1.5;
+    }
+
+    .summary-list li::before {
+      content: '•';
+      position: absolute;
+      left: 0;
+      color: var(--accent);
+    }
+
+    code {
+      background: var(--bg-tertiary);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 10px;
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- MAIN PREVIEW: NO TOPBAR, SIDEBAR ONLY                     -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+
+  <div class="app">
+    <!-- LEFT SIDEBAR -->
+    <aside class="sidebar">
+      <!-- Header -->
+      <div class="sidebar-header">
+        <div class="logo">T</div>
+        <span class="app-title">tto-web</span>
+        <span class="app-version">v0.9.0</span>
+      </div>
+
+      <!-- Content -->
+      <div class="sidebar-content">
+        <!-- Workspaces -->
+        <div class="sidebar-section">
+          <div class="section-label">Workspaces</div>
+          <div class="workspace-list">
+            <div class="workspace-item active">
+              <div class="workspace-color" style="background:#ef4444;"></div>
+              <span class="workspace-name">tto-web</span>
+              <span class="workspace-badge">Quad</span>
+              <div class="workspace-actions">
+                <div class="ws-action-btn">⋯</div>
+              </div>
+            </div>
+            <div class="workspace-item">
+              <div class="workspace-color" style="background:#22c55e;"></div>
+              <span class="workspace-name">hccsolapur</span>
+              <span class="workspace-badge">Dual</span>
+              <div class="workspace-actions">
+                <div class="ws-action-btn">⋯</div>
+              </div>
+            </div>
+            <div class="workspace-item">
+              <div class="workspace-color" style="background:#f59e0b;"></div>
+              <span class="workspace-name">project-alpha</span>
+              <div class="workspace-actions">
+                <div class="ws-action-btn">⋯</div>
+              </div>
+            </div>
+          </div>
+          <button class="new-ws-btn">
+            <span style="font-size:14px;">+</span>
+            <span>New Workspace</span>
+          </button>
+        </div>
+
+        <!-- Layout Controls -->
+        <div class="sidebar-section">
+          <div class="section-label">Layout</div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">Grid Mode</span>
+              <span class="setting-hint">Auto / Grid / Compact / Large</span>
+            </div>
+            <div class="setting-control">
+              <select class="setting-select">
+                <option>Auto</option>
+                <option>Grid</option>
+                <option selected>Compact</option>
+                <option>Large</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">Template</span>
+              <span class="setting-hint">Number of terminal panes</span>
+            </div>
+            <div class="setting-control">
+              <select class="setting-select">
+                <option>Single (1)</option>
+                <option>Dual (2)</option>
+                <option selected>Quad (4)</option>
+                <option>Six (6)</option>
+                <option>Nine (9)</option>
+                <option>Twelve (12)</option>
+                <option>Sixteen (16)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Theme & Preferences -->
+        <div class="sidebar-section">
+          <div class="section-label">Appearance</div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">Theme</span>
+              <span class="setting-hint">Color scheme</span>
+            </div>
+            <div class="setting-control">
+              <select class="setting-select">
+                <option selected>Dark</option>
+                <option>Neon Tokyo</option>
+                <option>Synthwave</option>
+                <option>Paper</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">CLIs</span>
+              <span class="setting-hint">Filter visible terminals</span>
+            </div>
+            <div class="setting-control">
+              <select class="setting-select">
+                <option>All CLIs</option>
+                <option>Claude Code</option>
+                <option>Opencode</option>
+                <option>Vim</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Options -->
+        <div class="sidebar-section">
+          <div class="section-label">Options</div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">Skip Welcome Banner</span>
+              <span class="setting-hint">Auto-add --no-banner for Claude</span>
+            </div>
+            <div class="setting-control">
+              <div class="toggle on"></div>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">Auto-reconnect</span>
+              <span class="setting-hint">Reconnect on disconnect</span>
+            </div>
+            <div class="setting-control">
+              <div class="toggle on"></div>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-name">Show Unread Badge</span>
+              <span class="setting-hint">Display notification count</span>
+            </div>
+            <div class="setting-control">
+              <div class="toggle on"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="sidebar-footer">
+        <button class="footer-btn">
+          <span>📊</span>
+          <span>Analytics</span>
+        </button>
+        <button class="footer-btn">
+          <span>⚙️</span>
+          <span>Settings</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="main">
+      <!-- Minimal top strip -->
+      <div class="top-strip">
+        <div class="strip-status">
+          <div class="status-dot"></div>
+          <span>connected</span>
+        </div>
+        <div class="strip-path">~/Desktop/tto-web</div>
+        <div class="strip-actions">
+          <div class="strip-btn" title="Toggle sidebar">☰</div>
+          <div class="strip-btn" title="Search">⌕</div>
+          <div class="strip-btn" title="More">⋯</div>
+        </div>
+      </div>
+
+      <!-- Terminal grid -->
+      <div class="terminal-area">
+        <!-- Terminal 1: Claude (fixed) -->
+        <div class="term-card focused">
+          <div class="term-header">
+            <div class="term-icon claude">C</div>
+            <span class="term-title">claude</span>
+            <div class="term-controls">
+              <div class="term-ctrl-btn">↻</div>
+              <div class="term-ctrl-btn">×</div>
+            </div>
+          </div>
+          <div class="term-body">
+            <div class="line-prompt">$ claude --no-banner</div>
+            <div class="line-comment">Claude Code v2.1.282 · xhigh effort</div>
+            <div class="line-prompt" style="margin-top:8px;">$ <span class="cursor"></span></div>
+          </div>
+        </div>
+
+        <!-- Terminal 2: Opencode -->
+        <div class="term-card">
+          <div class="term-header">
+            <div class="term-icon opencode">OC</div>
+            <span class="term-title">opencode</span>
+            <div class="term-controls">
+              <div class="term-ctrl-btn">↻</div>
+              <div class="term-ctrl-btn">×</div>
+            </div>
+          </div>
+          <div class="term-body">
+            <div class="line-prompt">$ opencode</div>
+            <div class="line-output" style="margin-top:4px;">Connected to anthropic/claude-3-5-sonnet</div>
+            <div class="line-info" style="margin-top:4px;">> Hello! How can I help?</div>
+            <div class="line-prompt" style="margin-top:8px;">$ <span class="cursor"></span></div>
+          </div>
+        </div>
+
+        <!-- Terminal 3: Git -->
+        <div class="term-card">
+          <div class="term-header">
+            <div class="term-icon git">G</div>
+            <span class="term-title">git</span>
+            <div class="term-controls">
+              <div class="term-ctrl-btn">↻</div>
+              <div class="term-ctrl-btn">×</div>
+            </div>
+          </div>
+          <div class="term-body">
+            <div class="line-prompt">$ git status</div>
+            <div class="line-output" style="color:var(--warning); margin-top:4px;">On branch main</div>
+            <div class="line-output" style="margin-top:2px;">Changes not staged:</div>
+            <div class="line-error" style="margin-top:2px;">  modified: src/App.tsx</div>
+            <div class="line-prompt" style="margin-top:8px;">$ <span class="cursor"></span></div>
+          </div>
+        </div>
+
+        <!-- Terminal 4: Vim -->
+        <div class="term-card">
+          <div class="term-header">
+            <div class="term-icon vim">V</div>
+            <span class="term-title">vim</span>
+            <div class="term-controls">
+              <div class="term-ctrl-btn">↻</div>
+              <div class="term-ctrl-btn">×</div>
+            </div>
+          </div>
+          <div class="term-body" style="background:#141414;">
+            <div style="color:#e8e8e8;">~</div>
+            <div style="color:#e8e8e8;">~</div>
+            <div style="color:#e8e8e8;">~  App.tsx</div>
+            <div style="color:#e8e8e8;">245,1 All</div>
+            <div style="color:#e8e8e8;">"App.tsx" 245L, 8901B</div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- BEFORE/AFTER COMPARISON                                   -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <div class="preview-section">
+    <div class="preview-title">Before vs After: Claude Welcome Banner Fix</div>
+
+    <div class="comparison-grid">
+      <!-- BEFORE -->
+      <div class="compare-card">
+        <div class="compare-header">
+          <span class="compare-label">BEFORE — Large banner dominates viewport</span>
+          <span class="compare-badge bad">Problem</span>
+        </div>
+        <div class="compare-body">
+          <div class="term-card">
+            <div class="term-header">
+              <div class="term-icon claude">C</div>
+              <span class="term-title">claude</span>
+            </div>
+            <div class="term-body" style="display:flex;align-items:center;justify-content:center;text-align:center;padding:8px;">
+              <div>
+                <div style="width:48px;height:48px;background:linear-gradient(135deg,#ff6b00,#ff9500);border-radius:10px;margin:0 auto 8px;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:bold;color:white;">C</div>
+                <div style="font-size:11px;color:#e8e8e8;">Claude Code v2.1.282</div>
+                <div style="font-size:9px;color:#555;">nara/sorces-2.5-flash</div>
+                <div style="margin-top:8px;padding:4px 8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:4px;font-size:9px;color:#888;width:100%;">$ _</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AFTER -->
+      <div class="compare-card">
+        <div class="compare-header">
+          <span class="compare-label">AFTER — Starts at prompt immediately</span>
+          <span class="compare-badge good">Fixed</span>
+        </div>
+        <div class="compare-body">
+          <div class="term-card focused">
+            <div class="term-header">
+              <div class="term-icon claude">C</div>
+              <span class="term-title">claude</span>
+            </div>
+            <div class="term-body">
+              <div class="line-prompt">$ claude --no-banner</div>
+              <div class="line-comment" style="font-size:10px;">Claude Code v2.1.282 · xhigh effort</div>
+              <div class="line-prompt" style="margin-top:6px;">$ <span class="cursor"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- SUMMARY                                                     -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <div class="summary">
+    <div class="preview-title" style="border:none;padding-bottom:0;margin-bottom:16px;">Design Summary</div>
+
+    <div class="summary-grid">
+      <div class="summary-card">
+        <div class="summary-title">
+          <div class="icon" style="background:var(--accent-light);color:var(--accent);">◫</div>
+          Sidebar Controls
+        </div>
+        <ul class="summary-list">
+          <li>Workspace list with color indicators</li>
+          <li>Grid mode selector (Auto/Grid/Compact/Large)</li>
+          <li>Template selector (1-16 panes)</li>
+          <li>Theme picker (Dark/Neon Tokyo/Synthwave/Paper)</li>
+          <li>CLI filter dropdown</li>
+          <li>New workspace button</li>
+        </ul>
+      </div>
+
+      <div class="summary-card">
+        <div class="summary-title">
+          <div class="icon" style="background:var(--success-light);color:var(--success);">✓</div>
+          Options & Toggles
+        </div>
+        <ul class="summary-list">
+          <li>Skip welcome banner toggle</li>
+          <li>Auto-reconnect toggle</li>
+          <li>Show unread badge toggle</li>
+          <li>Footer: Analytics + Settings buttons</li>
+        </ul>
+      </div>
+
+      <div class="summary-card">
+        <div class="summary-title">
+          <div class="icon" style="background:rgba(239,68,68,0.12);color:var(--danger);">✕</div>
+          Removed Topbar
+        </div>
+        <ul class="summary-list">
+          <li>No more cluttered topbar</li>
+          <li>Minimal status strip (36px)</li>
+          <li>Shows connection status + path</li>
+          <li>Maximum terminal space</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

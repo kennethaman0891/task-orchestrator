@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>tto — Download</title>
+  <meta name="description" content="Download tto for macOS and Windows." />
+  <style>
+    :root {
+      --bg: #090a09;
+      --panel: #101210;
+      --border: #292c29;
+      --text: #f0f1ee;
+      --muted: #929791;
+      --accent: #3b9cff;
+      --green: #4ade80;
+      --red: #f87171;
+      --yellow: #facc15;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; padding: 24px;
+    }
+    .card {
+      max-width: 560px; width: 100%;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 40px 36px;
+      box-shadow: 0 24px 64px rgba(0,0,0,.5);
+    }
+    .logo { font-size: 28px; font-weight: 800; letter-spacing: -.02em; margin-bottom: 4px; }
+    .logo span { color: var(--accent); }
+    .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 32px; line-height: 1.5; }
+    h2 { font-size: 13px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+    .platforms { display: flex; flex-direction: column; gap: 10px; margin-bottom: 28px; }
+    .platform-row {
+      display: flex; align-items: center; gap: 14px;
+      padding: 14px 16px;
+      border: 1px solid var(--border); border-radius: 10px;
+      background: var(--bg);
+      transition: border-color .15s, background .15s;
+    }
+    .platform-row:hover { border-color: var(--accent); background: rgba(59,156,255,.05); }
+    .plat-icon { font-size: 24px; flex: none; }
+    .plat-info { flex: 1; min-width: 0; }
+    .plat-name { font-size: 14px; font-weight: 600; }
+    .plat-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .plat-badge {
+      font-size: 10px; font-weight: 700; letter-spacing: .06em;
+      padding: 2px 8px; border-radius: 4px; text-transform: uppercase;
+    }
+    .badge-ready { background: rgba(74,222,128,.15); color: var(--green); }
+    .badge-soon  { background: rgba(250,204,21,.12); color: var(--yellow); }
+    .btn-dl {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--accent); color: #04121f;
+      border: none; border-radius: 8px;
+      padding: 8px 16px; font-size: 13px; font-weight: 700;
+      cursor: pointer; text-decoration: none; white-space: nowrap;
+      transition: filter .15s; flex: none;
+    }
+    .btn-dl:hover { filter: brightness(1.1); }
+    .btn-dl:disabled { opacity: .4; cursor: not-allowed; filter: none; }
+    .btn-dl:not(:disabled)::before { content: "↓"; font-size: 12px; }
+    .version-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 8px; font-size: 12px; color: var(--muted);
+    }
+    .version-row strong { color: var(--text); font-size: 13px; }
+    .footer { margin-top: 24px; font-size: 11px; color: var(--muted); text-align: center; line-height: 1.6; }
+    .footer a { color: var(--accent); text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">tto<span>.</span></div>
+    <div class="subtitle">Terminal Task Orchestrator — monitor and orchestrate AI-agent terminals from anywhere.</div>
+
+    <h2>Downloads</h2>
+    <div class="platforms">
+
+      <!-- macOS -->
+      <div class="platform-row">
+        <span class="plat-icon">🍎</span>
+        <div class="plat-info">
+          <div class="plat-name">macOS</div>
+          <div class="plat-desc">Apple Silicon (M1/M2/M3) &amp; Intel — universal binary</div>
+        </div>
+        <span class="plat-badge badge-ready">Ready</span>
+        <a class="btn-dl" id="dl-macos" href="#" download>Download .dmg</a>
+      </div>
+
+      <!-- Windows -->
+      <div class="platform-row">
+        <span class="plat-icon">🪟</span>
+        <div class="plat-info">
+          <div class="plat-name">Windows</div>
+          <div class="plat-desc">Windows 10+ (64-bit) — MSI installer</div>
+        </div>
+        <span class="plat-badge badge-soon">Coming Soon</span>
+        <button class="btn-dl" disabled title="Windows build is being prepared">Build Pending</button>
+      </div>
+
+    </div>
+
+    <div class="version-row">
+      <span>Current version</span>
+      <strong>v0.1.0</strong>
+    </div>
+
+    <div class="footer">
+      Open-source under MIT license.<br/>
+      <a href="https://github.com/kennethaman/tto-web" target="_blank" rel="noopener">GitHub</a> ·
+      <a href="#privacy">Privacy</a> ·
+      <a href="#issues">Report an Issue</a>
+    </div>
+  </div>
+
+  <script>
+    // Download link is wired by the sidecar at runtime via /api/version.
+    // Falls back gracefully if the API is unavailable.
+    (async () => {
+      try {
+        const res = await fetch('/api/version');
+        const data = await res.json();
+        if (data.ok && data.downloads?.macos) {
+          const btn = document.getElementById('dl-macos');
+          if (btn) btn.href = data.downloads.macos;
+        }
+      } catch (_) { /* static fallback */ }
+    })();
+  </script>
+</body>
+</html>

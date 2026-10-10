@@ -1,0 +1,26 @@
+{
+  "name": "tto-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT OR Apache-2.0 OR GPL-3.0",
+  "description": "TTO Gateway — secure WSS relay between remote clients and TTO desktop instances. Outbound-only for devices; no inbound ports required.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "node --watch dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test-build.json && node --test 'dist-test/test/*.test.js'"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2"
+  }
+}
