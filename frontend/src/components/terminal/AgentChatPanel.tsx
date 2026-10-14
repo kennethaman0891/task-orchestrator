@@ -11,7 +11,7 @@
 //   PTY via TerminalManager.sendCommand() — a true control channel into the
 //   running CLI's prompt with zero session bifurcation.
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
 import type { UnifiedTerminal, Task } from '@/types';
 import { TerminalManager } from '@/terminal/TerminalManager';
@@ -21,6 +21,8 @@ import {
   parseTerminalDialogue,
   type UnifiedChatMessage,
   type UnifiedToolCall,
+  type InteractivePrompt,
+  type PromptOption,
 } from '@/terminal/dialogueParser';
 import {
   X,
@@ -34,6 +36,9 @@ import {
   CheckCircle2,
   AlertCircle,
   Clock,
+  ShieldAlert,
+  Copy,
+  Check,
 } from 'lucide-react';
 
 /** CLIs that run an agent conversation in the TUI — the chat panel applies
@@ -52,26 +57,35 @@ export const AGENT_CLIS = new Set([
   'cursor',
   'cursor-agent',
   'qwen',
+  'aider',
+  'ollama',
+  'copilot',
+  'gh-copilot',
+  'github-copilot',
+  'gpt',
+  'chatgpt',
+  'openhands',
+  'devin',
+  'interpreter',
+  'open-interpreter',
+  'sgpt',
+  'plandex',
+  'mentat',
+  'cline',
+  'roo',
+  'continue',
+  'shell',
+  'bash',
+  'zsh',
+  'sh',
+  'fish',
+  'python',
+  'node',
 ]);
 
-export function isAgentCli(entry?: UnifiedTerminal, lines?: string[]): boolean {
-  if (!entry) return false;
-  const c = (entry.cli || '').toLowerCase().trim();
-  if (AGENT_CLIS.has(c)) return true;
-  if (Boolean(entry.opencode_running || entry.claude_running)) return true;
-  const a = (entry.agent || '').toLowerCase().trim();
-  if (AGENT_CLIS.has(a)) return true;
-  const sn = (entry.session_name || '').toLowerCase().trim();
-  for (const agent of AGENT_CLIS) {
-    if (sn.includes(agent)) return true;
-  }
-  if (lines && lines.length > 0) {
-    const detected = detectCLI(lines, entry.cli, entry.agent);
-    if (detected && detected.cli && detected.cli !== 'shell' && detected.cli !== 'unknown') {
-      return true;
-    }
-  }
-  return false;
+export function isAgentCli(entry?: UnifiedTerminal, _lines?: string[]): boolean {
+  // Chat UI is supported for all live terminal sessions (Claude Code, OpenCode, Gemini, Codex, Aider, Ollama, Python, Shell, etc.)
+  return Boolean(entry);
 }
 
 /** Live state pill for the panel header. */
@@ -237,22 +251,368 @@ function ToolItem({ tool, theme }: { tool: UnifiedToolCall; theme: ReturnType<ty
   );
 }
 
+/** Render an interactive question or permission request card with clickable options & dropdown */
+function InteractivePromptCard({
+  prompt,
+  theme,
+  onSelect,
+  onCancel,
+}: {
+  prompt: InteractivePrompt;
+  theme: ReturnType<typeof useTheme>['theme'];
+  onSelect?: (option: PromptOption) => void;
+  onCancel?: () => void;
+}) {
+  const t = theme;
+  const [copied, setCopied] = useState(false);
+  const [selectedKey, setSelectedKey] = useState<string>(
+    prompt.options.find((o) => o.selected)?.key || prompt.options[0]?.key || '1'
+  );
+
+  const copyCommand = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!prompt.command) return;
+    navigator.clipboard.writeText(prompt.command);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 2000);
+  };
+
+  const isResolved = prompt.resolved || Boolean(prompt.selectedKey);
+  const selectedOption = prompt.options.find((o) => o.key === prompt.selectedKey);
+
+  return (
+    <div
+      style={{
+        marginTop: '8px',
+        background: isResolved ? 'rgba(0,0,0,0.1)' : 'rgba(245, 158, 11, 0.08)',
+        border: `1px solid ${isResolved ? t.colors.border.subtle : 'rgba(245, 158, 11, 0.35)'}`,
+        borderRadius: '8px',
+        padding: '10px 11px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px',
+      }}
+    >
+      {/* Header with Title and Action Badge */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '6px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <ShieldAlert size={14} color={isResolved ? t.colors.text.muted : '#f59e0b'} />
+          <span
+            style={{
+              fontSize: '10.5px',
+              fontWeight: 700,
+              letterSpacing: '0.3px',
+              textTransform: 'uppercase',
+              color: isResolved ? t.colors.text.muted : '#f59e0b',
+            }}
+          >
+            {prompt.title || 'Permission Request'}
+          </span>
+        </div>
+        <span
+          style={{
+            fontSize: '9px',
+            fontWeight: 700,
+            padding: '2px 6px',
+            borderRadius: '4px',
+            background: isResolved ? 'rgba(34, 197, 94, 0.15)' : 'rgba(245, 158, 11, 0.2)',
+            color: isResolved ? '#22c55e' : '#f59e0b',
+            border: `1px solid ${isResolved ? 'rgba(34, 197, 94, 0.3)' : 'rgba(245, 158, 11, 0.35)'}`,
+          }}
+        >
+          {isResolved ? '✓ Completed' : 'Action Required'}
+        </span>
+      </div>
+
+      {/* Main Question Text */}
+      <div
+        style={{
+          fontSize: '12px',
+          fontWeight: 600,
+          color: t.colors.text.primary,
+          lineHeight: 1.4,
+        }}
+      >
+        {prompt.question}
+      </div>
+
+      {/* Command Block (if present) */}
+      {prompt.command && (
+        <div
+          style={{
+            background: 'rgba(0, 0, 0, 0.25)',
+            border: `1px solid ${t.colors.border.subtle}`,
+            borderRadius: '5px',
+            padding: '6px 8px',
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: '6px',
+          }}
+        >
+          <code
+            style={{
+              fontFamily: t.fontFamily.mono,
+              fontSize: '10px',
+              color: '#38bdf8',
+              wordBreak: 'break-all',
+              whiteSpace: 'pre-wrap',
+              flex: 1,
+            }}
+          >
+            {prompt.command}
+          </code>
+          <button
+            onClick={copyCommand}
+            title="Copy command"
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: copied ? '#22c55e' : t.colors.text.muted,
+              cursor: 'pointer',
+              padding: '2px',
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+            }}
+          >
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+          </button>
+        </div>
+      )}
+
+      {/* Description / Rationale */}
+      {prompt.description && (
+        <div
+          style={{
+            fontSize: '9.5px',
+            lineHeight: 1.45,
+            color: t.colors.text.secondary,
+            fontStyle: 'italic',
+          }}
+        >
+          {prompt.description}
+        </div>
+      )}
+
+      {/* Interactive Options or Resolved Pill */}
+      {isResolved ? (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            fontSize: '10px',
+            fontWeight: 600,
+            color: '#22c55e',
+            background: 'rgba(34, 197, 94, 0.1)',
+            padding: '4px 8px',
+            borderRadius: '4px',
+            width: 'fit-content',
+          }}
+        >
+          <CheckCircle2 size={12} />
+          <span>
+            Selected:{' '}
+            {selectedOption?.rawText ||
+              selectedOption?.label ||
+              (prompt.selectedKey === 'esc' ? 'Cancelled' : prompt.selectedKey)}
+          </span>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '2px' }}>
+          {/* 1-Click Action Buttons */}
+          <div
+            style={{
+              display: 'flex',
+              gap: '6px',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+            }}
+          >
+            {prompt.options.map((opt) => {
+              const isPositive =
+                opt.index === 1 ||
+                /yes|allow|proceed|approve|continue/i.test(opt.label);
+              const isNegative =
+                opt.index === 2 || /no|deny|reject|cancel|skip/i.test(opt.label);
+
+              return (
+                <button
+                  key={opt.key}
+                  onClick={() => onSelect?.(opt)}
+                  style={{
+                    padding: '5px 12px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    borderRadius: '5px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    transition: 'all 0.15s ease',
+                    border: isPositive
+                      ? '1px solid #16a34a'
+                      : isNegative
+                      ? '1px solid #dc2626'
+                      : `1px solid ${t.colors.border.subtle}`,
+                    background: isPositive
+                      ? '#16a34a'
+                      : isNegative
+                      ? 'rgba(220, 38, 38, 0.15)'
+                      : t.colors.bg.elevated,
+                    color: isPositive ? '#ffffff' : isNegative ? '#ef4444' : t.colors.text.primary,
+                  }}
+                  onMouseEnter={(e) => {
+                    if (isPositive) e.currentTarget.style.background = '#15803d';
+                    else if (isNegative) e.currentTarget.style.background = 'rgba(220, 38, 38, 0.25)';
+                    else e.currentTarget.style.background = t.colors.bg.tertiary;
+                  }}
+                  onMouseLeave={(e) => {
+                    if (isPositive) e.currentTarget.style.background = '#16a34a';
+                    else if (isNegative) e.currentTarget.style.background = 'rgba(220, 38, 38, 0.15)';
+                    else e.currentTarget.style.background = t.colors.bg.elevated;
+                  }}
+                >
+                  {isPositive && <Check size={11} />}
+                  {isNegative && <X size={11} />}
+                  <span>{opt.rawText || `${opt.key}. ${opt.label}`}</span>
+                </button>
+              );
+            })}
+
+            {/* Cancel (Esc) button */}
+            <button
+              onClick={() => onCancel?.()}
+              style={{
+                padding: '5px 9px',
+                fontSize: '10px',
+                fontWeight: 500,
+                borderRadius: '5px',
+                cursor: 'pointer',
+                background: 'transparent',
+                border: `1px solid ${t.colors.border.subtle}`,
+                color: t.colors.text.muted,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = t.colors.bg.elevated;
+                e.currentTarget.style.color = t.colors.text.primary;
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent';
+                e.currentTarget.style.color = t.colors.text.muted;
+              }}
+            >
+              <X size={10} />
+              <span>Cancel (Esc)</span>
+            </button>
+          </div>
+
+          {/* Optional Dropdown Selector for all options */}
+          {prompt.options.length > 2 && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                marginTop: '4px',
+                paddingTop: '6px',
+                borderTop: `1px solid ${t.colors.border.subtle}`,
+              }}
+            >
+              <span style={{ fontSize: '9.5px', color: t.colors.text.muted }}>Or choose:</span>
+              <select
+                value={selectedKey}
+                onChange={(e) => setSelectedKey(e.target.value)}
+                style={{
+                  fontSize: '10.5px',
+                  padding: '3px 8px',
+                  borderRadius: '4px',
+                  background: t.colors.bg.elevated,
+                  border: `1px solid ${t.colors.border.subtle}`,
+                  color: t.colors.text.primary,
+                  outline: 'none',
+                  flex: 1,
+                  maxWidth: '190px',
+                }}
+              >
+                {prompt.options.map((opt) => (
+                  <option key={opt.key} value={opt.key}>
+                    {opt.rawText || `${opt.key}. ${opt.label}`}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => {
+                  const opt = prompt.options.find((o) => o.key === selectedKey);
+                  if (opt) onSelect?.(opt);
+                }}
+                style={{
+                  fontSize: '10px',
+                  fontWeight: 600,
+                  padding: '3px 8px',
+                  borderRadius: '4px',
+                  background: t.colors.accent.primary,
+                  color: '#fff',
+                  border: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                Submit
+              </button>
+            </div>
+          )}
+
+          {/* Hints note */}
+          {prompt.hints && (
+            <div
+              style={{
+                fontSize: '8.5px',
+                fontFamily: t.fontFamily.mono,
+                color: t.colors.text.muted,
+                opacity: 0.8,
+              }}
+            >
+              {prompt.hints}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Render a single message bubble in the conversation */
 function MessageBubble({
   message,
   cli,
   theme,
+  onSelectOption,
+  onCancelPrompt,
 }: {
   message: UnifiedChatMessage;
   cli: string;
   theme: ReturnType<typeof useTheme>['theme'];
+  onSelectOption?: (prompt: InteractivePrompt, option: PromptOption) => void;
+  onCancelPrompt?: (prompt: InteractivePrompt) => void;
 }) {
   const t = theme;
   const isUser = message.role === 'user';
   const hasContent =
     message.textParts.length > 0 ||
     message.reasoningParts.length > 0 ||
-    message.toolParts.length > 0;
+    message.toolParts.length > 0 ||
+    Boolean(message.interactivePrompt);
 
   if (!hasContent) return null;
 
@@ -454,6 +814,26 @@ function MessageBubble({
               {text}
             </div>
           ))}
+
+          {/* Interactive Prompt / Question / Permission Card */}
+          {message.interactivePrompt && (
+            <div style={{ marginTop: message.textParts.length > 0 ? '8px' : '0' }}>
+              <InteractivePromptCard
+                prompt={message.interactivePrompt}
+                theme={t}
+                onSelect={
+                  onSelectOption
+                    ? (opt) => onSelectOption(message.interactivePrompt!, opt)
+                    : undefined
+                }
+                onCancel={
+                  onCancelPrompt
+                    ? () => onCancelPrompt(message.interactivePrompt!)
+                    : undefined
+                }
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -491,9 +871,9 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
       ? 'claude'
       : entry.opencode_running
       ? 'opencode'
-      : detected.cli && detected.cli !== 'shell' && detected.cli !== 'unknown'
+      : detected.cli && detected.cli !== 'unknown'
       ? detected.cli
-      : (entry.cli || entry.agent || '').toLowerCase().trim();
+      : (entry.cli || entry.agent || '').toLowerCase().trim() || 'shell';
 
   const displayName =
     effectiveCli === 'claude' || effectiveCli === 'claude-code'
@@ -506,9 +886,31 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
       ? 'Codex'
       : effectiveCli === 'gemini' || effectiveCli === 'gemini-cli'
       ? 'Gemini'
+      : effectiveCli === 'aider'
+      ? 'Aider'
+      : effectiveCli === 'ollama'
+      ? 'Ollama'
+      : effectiveCli === 'qwen'
+      ? 'Qwen'
+      : effectiveCli === 'cursor' || effectiveCli === 'cursor-agent'
+      ? 'Cursor'
+      : effectiveCli === 'antigravity'
+      ? 'Antigravity'
+      : effectiveCli === 'copilot' || effectiveCli === 'gh-copilot'
+      ? 'GitHub Copilot'
+      : effectiveCli === 'python'
+      ? 'Python'
+      : effectiveCli === 'node'
+      ? 'Node.js'
+      : effectiveCli === 'bash'
+      ? 'Bash'
+      : effectiveCli === 'zsh'
+      ? 'Zsh'
+      : effectiveCli === 'shell'
+      ? 'Shell'
       : effectiveCli
       ? effectiveCli.charAt(0).toUpperCase() + effectiveCli.slice(1)
-      : 'Agent';
+      : 'Terminal';
 
   const oc = (
     entry as {
@@ -675,11 +1077,59 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
     setDraft('');
     setSentFlash(true);
 
-    // Write command into PTY with Enter (\r)
-    await TerminalManager.sendCommand(sessionId, msg);
+    // Submit prompt with decoupled Enter so CLI TUIs execute immediately
+    await TerminalManager.sendPrompt(sessionId, msg);
 
     inputRef.current?.focus();
   };
+
+  // Handle option selection for interactive CLI prompts (e.g. Claude Code permission questions)
+  const handleSelectPromptOption = useCallback(
+    async (prompt: InteractivePrompt, opt: PromptOption) => {
+      prompt.resolved = true;
+      prompt.selectedKey = opt.key;
+      const userMsg: UnifiedChatMessage = {
+        id: `local-user-choice-${Date.now()}`,
+        role: 'user',
+        time: Date.now(),
+        textParts: [opt.rawText || `${opt.key}. ${opt.label}`],
+        reasoningParts: [],
+        toolParts: [],
+      };
+      setMessages((prev) => [...prev, userMsg]);
+      await TerminalManager.sendMenuSelection(sessionId, opt.key);
+    },
+    [sessionId]
+  );
+
+  const handleCancelPrompt = useCallback(
+    async (prompt: InteractivePrompt) => {
+      prompt.resolved = true;
+      prompt.selectedKey = 'esc';
+      const userMsg: UnifiedChatMessage = {
+        id: `local-user-choice-${Date.now()}`,
+        role: 'user',
+        time: Date.now(),
+        textParts: ['Cancelled (Esc)'],
+        reasoningParts: [],
+        toolParts: [],
+      };
+      setMessages((prev) => [...prev, userMsg]);
+      await TerminalManager.sendMenuSelection(sessionId, 'escape');
+    },
+    [sessionId]
+  );
+
+  // Identify any currently pending, unresolved prompt in the session
+  const activePrompt = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const p = messages[i].interactivePrompt;
+      if (p && !p.resolved) {
+        return p;
+      }
+    }
+    return null;
+  }, [messages]);
 
   return (
     <div
@@ -887,7 +1337,14 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
             {messages.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column' }}>
                 {messages.map((msg) => (
-                  <MessageBubble key={msg.id} message={msg} cli={effectiveCli} theme={t} />
+                  <MessageBubble
+                    key={msg.id}
+                    message={msg}
+                    cli={effectiveCli}
+                    theme={t}
+                    onSelectOption={handleSelectPromptOption}
+                    onCancelPrompt={handleCancelPrompt}
+                  />
                 ))}
                 <div ref={messagesEndRef} />
               </div>
@@ -1060,6 +1517,131 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
           </div>
         )}
       </div>
+
+      {/* ── Active Prompt Bar above Composer ── */}
+      {activePrompt && (
+        <div
+          style={{
+            padding: '8px 10px',
+            background: 'rgba(234, 179, 8, 0.08)',
+            borderTop: `1px solid rgba(234, 179, 8, 0.35)`,
+            borderBottom: `1px solid rgba(234, 179, 8, 0.2)`,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px',
+            flexShrink: 0,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '6px',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                fontSize: '10.5px',
+                fontWeight: 600,
+                color: '#eab308',
+              }}
+            >
+              <ShieldAlert size={13} />
+              <span>{activePrompt.title || 'Terminal awaiting input:'}</span>
+            </div>
+            <span
+              style={{
+                fontSize: '9px',
+                color: '#eab308',
+                background: 'rgba(234, 179, 8, 0.15)',
+                padding: '1px 5px',
+                borderRadius: '3px',
+                fontWeight: 600,
+              }}
+            >
+              Action Required
+            </span>
+          </div>
+
+          {activePrompt.command && (
+            <div
+              style={{
+                fontSize: '9.5px',
+                fontFamily: t.fontFamily.mono,
+                background: t.colors.bg.primary,
+                border: `1px solid ${t.colors.border.subtle}`,
+                borderRadius: '4px',
+                padding: '4px 6px',
+                color: t.colors.accent.primary,
+                overflowX: 'auto',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              $ {activePrompt.command}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', alignItems: 'center' }}>
+            {activePrompt.options.map((opt) => {
+              const isPositive = /yes|allow|approve|proceed|confirm|run/i.test(opt.label);
+              const isNegative = /no|deny|reject|cancel|skip|exit/i.test(opt.label);
+              return (
+                <button
+                  key={opt.key}
+                  onClick={() => handleSelectPromptOption(activePrompt, opt)}
+                  style={{
+                    padding: '4px 8px',
+                    fontSize: '10.5px',
+                    fontWeight: 600,
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    border: isPositive
+                      ? 'none'
+                      : isNegative
+                      ? '1px solid rgba(220, 38, 38, 0.4)'
+                      : `1px solid ${t.colors.border.subtle}`,
+                    background: isPositive
+                      ? '#16a34a'
+                      : isNegative
+                      ? 'rgba(220, 38, 38, 0.15)'
+                      : t.colors.bg.elevated,
+                    color: isPositive ? '#ffffff' : isNegative ? '#ef4444' : t.colors.text.primary,
+                  }}
+                >
+                  {isPositive && <Check size={11} />}
+                  {isNegative && <X size={11} />}
+                  <span>{opt.rawText || `${opt.key}. ${opt.label}`}</span>
+                </button>
+              );
+            })}
+            <button
+              onClick={() => handleCancelPrompt(activePrompt)}
+              style={{
+                padding: '4px 7px',
+                fontSize: '10px',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                background: 'transparent',
+                border: `1px solid ${t.colors.border.subtle}`,
+                color: t.colors.text.muted,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '3px',
+              }}
+            >
+              <X size={10} />
+              <span>Esc</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Composer: writes command directly into terminal PTY with Enter (\r) ── */}
       <div

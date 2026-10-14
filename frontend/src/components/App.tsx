@@ -638,7 +638,13 @@ export default function App() {
       // pool's cleanup loop never disposes the card.
       setNativeSessions((prev) => prev.filter((s) => s.id !== tty));
     }
-    if (tty && focusedTerminal === tty) setFocusedTerminal(null);
+    if (tty && focusedTerminal === tty) {
+      const remainingTtys = workspaces
+        .flatMap((w) => w.panes)
+        .map((p) => p.tty)
+        .filter((t): t is string => Boolean(t && t !== tty));
+      setFocusedTerminal(remainingTtys[0] || null);
+    }
   }, [workspaces, focusedTerminal]);
 
   // ── Reorder / Swap panes within grid via drag-and-drop ──────────────

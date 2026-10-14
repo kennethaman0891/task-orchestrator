@@ -11,6 +11,7 @@ import { deriveTaskStatus, statusLabel, minTerminal } from '@/lib/status';
 import { TerminalSquare, Plus, X, Pencil, MessageSquare } from 'lucide-react';
 import { DropChipStrip, type DropChip } from '@/components/DroppedFileChip';
 import { AgentChatPanel, isAgentCli } from '@/components/terminal/AgentChatPanel';
+import { CardComposer } from '@/components/terminal/CardComposer';
 import { TerminalManager } from '@/terminal/TerminalManager';
 import { extractDropPaths } from '@/terminal/dropPaths';
 import { CliLogo } from '@/lib/cliLogos';
@@ -234,7 +235,16 @@ export function WorkspaceView({
               />
             </div>
           )}
-          <TerminalAnchor sessionId={focusedTerminal} />
+          <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
+            <TerminalAnchor sessionId={focusedTerminal} />
+          </div>
+          <CardComposer
+            sessionId={focusedTerminal}
+            displayName={focusedLabel}
+            cli={focusedCli}
+            isCompact={false}
+            isUltraCompact={false}
+          />
         </div>
       ) : (
         <div style={{

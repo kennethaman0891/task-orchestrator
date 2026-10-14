@@ -190,10 +190,15 @@ impl TerminalSession {
     }
 
     /// Write a full command line (text + Enter) into the PTY.
+    /// Decouples writing the command payload from the carriage return (\r)
+    /// with a brief 60ms pause so interactive TUIs (Claude Code, OpenCode, etc.)
+    /// process \r as an explicit Return key submission rather than a pasted newline.
     pub fn send_command(&self, command: &str) -> Result<(), String> {
-        let mut data = command.as_bytes().to_vec();
-        data.push(b'\r');
-        self.write(&data)
+        if !command.is_empty() {
+            self.write(command.as_bytes())?;
+            std::thread::sleep(std::time::Duration::from_millis(60));
+        }
+        self.write(b"\r")
     }
 
     /// Compute the scheduler mode for this session.

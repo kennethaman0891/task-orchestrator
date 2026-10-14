@@ -1339,13 +1339,9 @@ h1 {
 }
 .term-pane .xterm-viewport {
   background: #000;
-  overscroll-behavior: contain;
-  /* xterm.js 6.0 manages scrolling via SmoothScrollableElement with
-     transform:translateY(). Do NOT set overflow-y:auto here — it creates
-     a non-functional native scrollbar that doesn't control xterm's JS scroll.
-     Instead, xterm renders its own custom scrollbar (.xterm-scrollable-element >
-     .scrollbar) which is styled below to be always visible. */
-  overflow: hidden;
+  overflow-y: scroll !important;
+  overscroll-behavior: contain !important;
+  overscroll-behavior-y: contain !important;
 }
 
 /* When a TUI (alternate screen) is active, lock the viewport to prevent
@@ -14554,15 +14550,24 @@ h1 {
   pointer-events: none !important;
 }
 
-/* Also ensure the xterm-viewport does NOT have a native scrollbar that
-   conflicts with xterm's custom one. The native scrollbar would appear
-   but not control xterm's JS-based scroll — creating a dead button. */
+/* Sleek, contained scrollbar for terminal history navigation */
 .term-pane .xterm-viewport::-webkit-scrollbar {
-  width: 0;
-  height: 0;
+  width: 6px;
+  background: transparent;
+}
+.term-pane .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.term-pane .xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+.term-pane .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
 }
 .term-pane .xterm-viewport {
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
 }
 
 /* Terminal workspace scrollbar (left panel) */
@@ -15074,5 +15079,24 @@ h1 {
 .ide-tree-row:hover .ide-tree-actions {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* ── Permanent Visible Scrollbar for Grid View ────────────── */
+.grid-scroll-container::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+.grid-scroll-container::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+}
+.grid-scroll-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.grid-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.5);
 }
 

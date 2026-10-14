@@ -409,10 +409,17 @@ export function TerminalAnchor({ sessionId }: { sessionId: string }) {
       }
       window.addEventListener('resize', requestFit);
 
+      const onWheel = (e: WheelEvent) => {
+        // Prevent terminal history scroll from bubbling up and displacing/scrolling outer grid or workspace view
+        e.stopPropagation();
+      };
+      container.addEventListener('wheel', onWheel, { passive: true });
+
       teardownEvents = () => {
         clearTimeout(stabilizeTimer);
         ro?.disconnect();
         window.removeEventListener('resize', requestFit);
+        container.removeEventListener('wheel', onWheel);
         ro = null;
       };
       console.log(`[TerminalAnchor] Attached and visible: ${sessionId}`);
@@ -442,6 +449,10 @@ export function TerminalAnchor({ sessionId }: { sessionId: string }) {
   return (
     <div
       ref={containerRef}
+      onWheel={(e) => {
+        // React synthetic wheel event barrier
+        e.stopPropagation();
+      }}
       onClick={() => {
         const handle = TerminalManager.get(sessionId);
         try {
@@ -458,6 +469,7 @@ export function TerminalAnchor({ sessionId }: { sessionId: string }) {
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
+        overscrollBehavior: 'contain',
         background: '#0a0a0a',
       }}
     />

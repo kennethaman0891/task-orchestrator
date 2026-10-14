@@ -1,5 +1,6 @@
-// status.ts — Derive terminal task status from multiple signals.
-// Ported from src-legacy/components/WorkspaceControlPanel.tsx
+// status.ts — Derive terminal task status from ground-truth CLI signals.
+// Accurately differentiates RUNNING vs ASKING vs STOPPED / OVER across Claude Code,
+// OpenAI Codex, OpenCode, Antigravity CLI, and generic shells.
 
 import type { UnifiedTerminal } from '@/types';
 import { TerminalManager } from '@/terminal/TerminalManager';
@@ -12,106 +13,162 @@ export type TermStatus = 'empty' | 'closed' | 'running' | 'stopped' | 'over' | '
 export function minTerminal(tty: string): UnifiedTerminal {
   return {
     tty,
-    agent: '', cli: '', cwd: '', is_live: false,
+    agent: '',
+    cli: '',
+    cwd: '',
+    is_live: false,
     tokens: { tokens_input: 0, tokens_output: 0, cost: 0, model: '' },
-    session_name: tty, window_name: '', pane_title: tty,
-    session_context: '', session_summary: '',
-    pending_cli: false, live_output: '', suggested_task: '',
-    current_task: null, next_task: null, queue: [], history: [],
+    session_name: tty,
+    window_name: '',
+    pane_title: tty,
+    session_context: '',
+    session_summary: '',
+    pending_cli: false,
+    live_output: '',
+    suggested_task: '',
+    current_task: null,
+    next_task: null,
+    queue: [],
+    history: [],
     session_id: tty,
   };
 }
 
 /**
- * Derive the RIGHT-SIDE status for a terminal by asking the CLI what it is
- * ACTUALLY doing — not by guessing from shell activity.
+ * Derive the RIGHT-SIDE status for a terminal by inspecting live CLI state,
+ * sidecar status, and terminal buffer ground truth.
  */
 export function deriveTaskStatus(
   tty: string | null,
   entry: UnifiedTerminal | undefined,
-  closed: boolean,
+  closed: boolean
 ): TermStatus {
   if (!tty) return 'empty';
   if (closed) return 'closed';
   if (!entry) return 'stopped';
 
   const st = (entry.current_task?.status ?? '').toLowerCase();
-  const paused = false;
-
-  const tui = TerminalManager.isTui(tty);
+  const now = Date.now();
   const lastOut = TerminalManager.outputAt(tty);
   const hasRenderer = lastOut !== 0;
-  const now = Date.now();
 
+  // 1. App-level task reached terminal state
+  if (['done', 'completed', 'success', 'succeeded', 'finished'].includes(st)) {
+    TerminalManager.setWorkEnded(tty);
+    return 'over';
+  }
+  if (['cancelled', 'canceled', 'blocked', 'failed', 'error'].includes(st)) {
+    TerminalManager.setWorkEnded(tty);
+    return 'stopped';
+  }
+
+  // 2. Fetch live terminal buffer
   const linesList = TerminalManager.lastLines(tty, 60);
   const recentLines = linesList.join('\n');
   const nonBlankLines = linesList.map((l) => l.trim()).filter(Boolean);
   const lastLine = nonBlankLines[nonBlankLines.length - 1] || '';
   const secondLastLine = nonBlankLines[nonBlankLines.length - 2] || '';
+  const tail = `${secondLastLine}\n${lastLine}`;
 
-  const claude = (entry.cli || '').toLowerCase().includes('claude') ||
-                 /claude\s+code|anthropics?\/claude|auto\s+mode|api usage billing|laguna-|thought for\s+\d+/i.test(recentLines);
+  // 3. Identify active CLI type
+  const cliLower = (entry.cli || '').toLowerCase().trim();
+  const claude =
+    cliLower.includes('claude') ||
+    /claude\s+code|anthropics?\/claude|auto\s+mode|api usage billing/i.test(recentLines);
+  const codex =
+    cliLower.includes('codex') ||
+    /\bcodex\b|openai-codex|codex-cli|\bopenai\s+codex\b/i.test(recentLines);
+  const opencode =
+    cliLower.includes('opencode') ||
+    /\bopencode\b/i.test(recentLines);
+  const antigravity =
+    cliLower.includes('antigravity') ||
+    cliLower === 'agy' ||
+    cliLower === 'jetski' ||
+    /\bantigravity\b|\bagy\b|google\s+antigravity|google\s+deepmind/i.test(recentLines);
 
-  // Check if Claude Code is in an active working / thinking / tool execution state
-  const claudeWorking = /(thought for\s+\d+|thinking\.\.\.|\*\s+(update|explore|read|edit|bash|let me|write)|added \d+ line|removed \d+ line|running tool)/i.test(recentLines);
+  // 4. Genuine question or permission check
+  // NOTE: Static tips, welcome banners, shortcuts, and root prompts are NOT questions!
+  const hasInteractiveMenu =
+    /([>❯*]\s*)?\d+[.)]\s+.+\n.*([>❯*]\s*)?\d+[.)]\s+/i.test(recentLines) || // 1. ... \n 2. ...
+    /(\([yY]\/[nN]\)|\[[yY]\/[nN]\])/i.test(tail);
 
-  // Check if prompt is waiting for user or asking for permission
-  const promptAsks =
-    /^([❯>]{1,2})\s*$/.test(lastLine) ||
-    /\?\s*\(y\/n\)/i.test(lastLine) ||
-    /\b(allow|access permission|permit|proceed\?|continue\?|confirm\?|yes\/no|\(y\/n\))\b/i.test(lastLine) ||
-    (secondLastLine.startsWith('>') && /auto mode on/i.test(lastLine));
+  const hasPermissionPhrase =
+    /\b(allow tool execution|permission request|permission required|do you want to proceed|authorize tool|allow this action)\b/i.test(
+      recentLines
+    ) ||
+    (/\b(proceed\?|continue\?|confirm\?|allow\s+.*\?)\b/i.test(tail) &&
+      !/shortcuts|tips|hints/i.test(tail));
 
-  // Sidecar's opencode status
+  const isGenuineQuestion =
+    hasInteractiveMenu ||
+    hasPermissionPhrase ||
+    (/\?\s*$/.test(lastLine) && !/shortcuts|hints|\? for|tips|help/i.test(lastLine));
+
+  // 5. OpenCode: ground truth from sidecar / OpenCode SQLite database
   const ocState: string = (entry as any)?.opencode_status?.state ?? 'off';
-  const ocQuestion: boolean = Boolean((entry as any)?.opencode_status?.last_text?.toString().trim().endsWith('?'));
+  const ocLastText: string = (entry as any)?.opencode_status?.last_text ?? '';
+  const ocQuestion: boolean = Boolean(
+    ocLastText.trim().endsWith('?') && !ocLastText.includes('? for shortcuts')
+  );
 
-  // Output flowing within 6s = actively working
-  const recentOutput = hasRenderer && now - lastOut < 6000;
-  // Quiet gap 1-300s after output = CLI paused to ask/await input.
-  const quietWindow = hasRenderer && now - lastOut > 1000 && now - lastOut < 300000;
-  const taskInFlight = st.length > 0;
-  const askedQuietly = tui && quietWindow && promptAsks && taskInFlight;
-  const pausedAsking = quietWindow && promptAsks && (taskInFlight || ocState === 'working' || ocState === 'waiting' || claude);
-
-  // Task reached terminal state
-  if (['done', 'completed', 'success', 'succeeded', 'finished'].includes(st)) {
-    TerminalManager.setWorkEnded(tty);
-    return 'over';
-  }
-  if (['cancelled', 'canceled', 'blocked', 'failed', 'error', 'stopped'].includes(st) || paused) {
-    TerminalManager.setWorkEnded(tty);
-    return 'stopped';
+  if (opencode || ocState !== 'off') {
+    if (ocState === 'working') return 'running';
+    if (ocState === 'waiting') {
+      if (ocQuestion || isGenuineQuestion) return 'asking';
+      return 'stopped';
+    }
   }
 
-  // App-tracked task in flight
-  if (taskInFlight) {
-    return askedQuietly || pausedAsking || ocQuestion ? 'asking' : 'running';
-  }
-
-  // No app task. opencode signals
-  if (ocState === 'working') {
-    return askedQuietly || pausedAsking ? 'asking' : 'running';
-  }
-  if (ocState === 'waiting') {
-    if (ocQuestion || pausedAsking || promptAsks) return 'asking';
-    return 'stopped';
-  }
-
-  // Claude Code
+  // 6. Claude Code
   if (claude) {
-    if (recentOutput || claudeWorking) return 'running';
-    if (askedQuietly || pausedAsking || promptAsks) return 'asking';
-    return 'asking'; // Ready at prompt
+    const claudeWorking =
+      /(thought for\s+\d+|thinking\.\.\.|\*\s+(update|explore|read|edit|bash|let me|write)|added \d+ line|removed \d+ line|running tool|executing bash)/i.test(
+        recentLines
+      );
+    if (claudeWorking) return 'running';
+    if (isGenuineQuestion) return 'asking';
+    // Sitting at idle prompt (e.g. > Try "..." or >> auto mode on or root prompt) -> STOPPED
+    return 'stopped';
   }
 
-  // opencode running but session reports off
-  if (entry.opencode_running) return 'stopped';
+  // 7. OpenAI Codex
+  if (codex) {
+    const codexIdle =
+      /ask codex to do anything|for agents\s*·\s*\?\s*for shortcuts/i.test(recentLines) ||
+      /[❯>$]\s*$/.test(lastLine);
+    const codexWorking =
+      /(?:editing|reading|running|building|testing)\s+\S+/i.test(recentLines) && !codexIdle;
+    if (codexWorking) return 'running';
+    if (isGenuineQuestion) return 'asking';
+    return 'stopped';
+  }
 
-  // Renderer + TUI rear guard
-  if (recentOutput) return 'running';
-  if (tui) return now - lastOut > 60000 ? 'stopped' : 'running';
-  if (promptAsks && hasRenderer) return 'asking';
+  // 8. Antigravity CLI
+  if (antigravity) {
+    const agyWorking =
+      /(thinking|editing|running|analyzing|generating|searching)/i.test(recentLines);
+    if (agyWorking && !/[❯>$]\s*$/.test(lastLine)) return 'running';
+    if (isGenuineQuestion) return 'asking';
+    return 'stopped';
+  }
+
+  // 9. App-tracked task in flight
+  if (st.length > 0) {
+    if (isGenuineQuestion) return 'asking';
+    return 'running';
+  }
+
+  // 10. Generic shell process: streaming output without an idle shell prompt
+  const idleShellPrompt =
+    /^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+.*[$#%➜❯]|\$|%|>|❯)\s*$/.test(
+      lastLine
+    );
+  if (hasRenderer && now - lastOut < 2000 && !idleShellPrompt) {
+    return 'running';
+  }
+
+  if (isGenuineQuestion) return 'asking';
 
   return 'stopped';
 }
@@ -119,17 +176,26 @@ export function deriveTaskStatus(
 /** Short label + color for a derived status. */
 export function statusLabel(s: TermStatus): { text: string; color: string } {
   switch (s) {
-    case 'running':  return { text: 'RUNNING', color: '#22c55e' };
-    case 'asking':   return { text: 'ASKING',  color: '#a855f7' };
-    case 'stopped':  return { text: 'STOPPED', color: '#ef4444' };
-    case 'over':     return { text: 'OVER',    color: '#3b82f6' };
-    case 'closed':   return { text: 'EXITED',  color: '#6b7280' };
-    default:         return { text: 'EMPTY',   color: '#374151' };
+    case 'running':
+      return { text: 'RUNNING', color: '#22c55e' };
+    case 'asking':
+      return { text: 'ASKING', color: '#a855f7' };
+    case 'stopped':
+      return { text: 'STOPPED', color: '#64748b' };
+    case 'over':
+      return { text: 'OVER', color: '#3b82f6' };
+    case 'closed':
+      return { text: 'EXITED', color: '#475569' };
+    default:
+      return { text: 'EMPTY', color: '#334155' };
   }
 }
 
 /** Helper to retrieve live elapsed working duration and formatted timestamps for a terminal. */
-export function getTerminalWorkDuration(tty: string, status: TermStatus): {
+export function getTerminalWorkDuration(
+  tty: string,
+  status: TermStatus
+): {
   durationStr: string;
   startTs: number;
   endTs: number;
@@ -137,7 +203,8 @@ export function getTerminalWorkDuration(tty: string, status: TermStatus): {
   endTimeFormatted: string;
   isLive: boolean;
 } {
-  const start = TerminalManager.workStartedAt(tty) || TerminalManager.createdAt(tty) || Date.now();
+  const start =
+    TerminalManager.workStartedAt(tty) || TerminalManager.createdAt(tty) || Date.now();
   const ended = TerminalManager.workEndedAt(tty);
   const now = Date.now();
   const startTimeFormatted = formatTimeOfDay(start);
@@ -168,7 +235,7 @@ export function getTerminalWorkDuration(tty: string, status: TermStatus): {
   }
 
   if (status === 'over' || status === 'stopped') {
-    const endTs = ended > start ? ended : (TerminalManager.outputAt(tty) || now);
+    const endTs = ended > start ? ended : TerminalManager.outputAt(tty) || now;
     const elapsed = Math.max(0, endTs - start);
     return {
       durationStr: formatLiveDuration(elapsed),

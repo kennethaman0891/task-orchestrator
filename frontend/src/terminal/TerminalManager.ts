@@ -318,6 +318,50 @@ export const TerminalManager = {
     }
   },
 
+  /**
+   * Send an interactive prompt/message to a terminal PTY.
+   * Decouples the prompt text from the carriage return (\r) with a brief delay (60ms)
+   * so that interactive TUIs (Claude Code, OpenCode, Codex, Gemini) process \r
+   * as an explicit onSubmit submission rather than treating it as a pasted newline.
+   */
+  async sendPrompt(id: string, prompt: string): Promise<void> {
+    const h = TerminalManager.handles.get(id);
+    if (h) {
+      h.lastOutputAt = Date.now();
+      if (!h.workStartedAt) h.workStartedAt = Date.now();
+    }
+    await ensureTauri();
+    // 1. Write prompt text payload
+    if (prompt) {
+      await this.write(id, prompt);
+      // 2. Allow event loop / Ink TUI input buffer to ingest the text
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    // 3. Write carriage return as distinct event to trigger onSubmit
+    await this.write(id, '\r');
+  },
+
+  /**
+   * Select a choice option in an interactive CLI menu/question prompt.
+   * Sends the selection key (e.g. "1", "2", "y", "n") followed by Enter,
+   * or sends Escape (\x1b) for cancellation.
+   */
+  async sendMenuSelection(id: string, keyOrEscape: string): Promise<void> {
+    const h = TerminalManager.handles.get(id);
+    if (h) {
+      h.lastOutputAt = Date.now();
+      if (!h.workStartedAt) h.workStartedAt = Date.now();
+    }
+    await ensureTauri();
+    if (keyOrEscape.toLowerCase() === 'escape' || keyOrEscape === '\x1b') {
+      await this.write(id, '\x1b');
+      return;
+    }
+    await this.write(id, keyOrEscape);
+    await new Promise((r) => setTimeout(r, 60));
+    await this.write(id, '\r');
+  },
+
   /** Send a command followed by Enter (\r) to the terminal via Tauri IPC */
   async sendCommand(id: string, command: string): Promise<void> {
     const h = TerminalManager.handles.get(id);
@@ -329,8 +373,8 @@ export const TerminalManager = {
     try {
       await cachedInvoke('terminal_send_command', { id, command });
     } catch (err) {
-      console.warn(`[TerminalManager] sendCommand failed for ${id}, falling back to write:`, err);
-      await this.write(id, `${command}\r`);
+      console.warn(`[TerminalManager] sendCommand failed for ${id}, falling back to sendPrompt:`, err);
+      await this.sendPrompt(id, command);
     }
   },
 

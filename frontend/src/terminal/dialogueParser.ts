@@ -10,6 +10,28 @@ export interface UnifiedToolCall {
   error?: string;
 }
 
+export interface PromptOption {
+  index: number;
+  key: string;        // "1", "2", "y", "n", "esc"
+  label: string;      // "Yes", "No", "Always allow"
+  rawText: string;    // "1. Yes"
+  selected?: boolean; // true if cursor (❯ or >) is pointing at it
+  value: string;      // payload to send to PTY: "1\r", "2\r", "y\r", "\x1b"
+}
+
+export interface InteractivePrompt {
+  id: string;
+  type: 'permission' | 'question' | 'select' | 'confirm';
+  question: string;         // e.g. "Do you want to proceed?"
+  title?: string;           // e.g. "Bash command"
+  command?: string;         // e.g. "source venv/bin/activate && python manage.py migrate --plan"
+  description?: string;     // e.g. "'source' evaluates arguments as shell code..."
+  options: PromptOption[];
+  hints?: string;           // e.g. "Esc to cancel · Tab to amend"
+  resolved?: boolean;
+  selectedKey?: string;
+}
+
 export interface UnifiedChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -20,6 +42,7 @@ export interface UnifiedChatMessage {
   textParts: string[];
   reasoningParts: string[];
   toolParts: UnifiedToolCall[];
+  interactivePrompt?: InteractivePrompt;
 }
 
 export function stripAnsi(str: string): string {
@@ -55,6 +78,15 @@ export function parseTerminalDialogue(
   let thoughtLines: string[] = [];
   let textLines: string[] = [];
 
+  // Interactive prompt tracking
+  let promptOptions: PromptOption[] = [];
+  let promptQuestion = '';
+  let promptCommand = '';
+  let promptTitle = '';
+  let promptDesc: string[] = [];
+  let promptHints = '';
+  let inDivider = false;
+
   const flushThought = () => {
     if (thoughtLines.length > 0 && currentMsg) {
       const thoughtText = thoughtLines.join('\n').trim();
@@ -87,11 +119,38 @@ export function parseTerminalDialogue(
     flushText();
     flushTool();
 
+    if (promptOptions.length > 0 && currentMsg && currentMsg.role === 'assistant') {
+      currentMsg.interactivePrompt = {
+        id: `prompt-${Date.now()}-${messages.length}`,
+        type:
+          promptTitle?.toLowerCase().includes('permission') ||
+          promptTitle?.toLowerCase().includes('bash') ||
+          promptQuestion?.toLowerCase().includes('proceed')
+            ? 'permission'
+            : 'select',
+        title: promptTitle || 'Action Required',
+        command: promptCommand || '',
+        question: promptQuestion || 'Please choose an option to continue',
+        description: promptDesc.join(' ').trim(),
+        options: [...promptOptions],
+        hints: promptHints,
+        resolved: false,
+      };
+      promptOptions = [];
+      promptQuestion = '';
+      promptCommand = '';
+      promptTitle = '';
+      promptDesc = [];
+      promptHints = '';
+      inDivider = false;
+    }
+
     if (
       currentMsg &&
       (currentMsg.textParts.length > 0 ||
         currentMsg.reasoningParts.length > 0 ||
-        currentMsg.toolParts.length > 0)
+        currentMsg.toolParts.length > 0 ||
+        currentMsg.interactivePrompt)
     ) {
       messages.push(currentMsg);
     }
@@ -103,41 +162,118 @@ export function parseTerminalDialogue(
 
     if (!line) continue;
 
+    // ── Check if this line is an interactive menu option or hint ──
+    const optionMatch = line.match(/^([>❯*]\s*)?(\d+)[.)]\s+(.+)$/);
+    const isHintLine = /^(?:Esc to cancel|Enter to confirm|Tab to amend|\? for shortcuts)/i.test(line);
+
+    if (optionMatch) {
+      const isSelected = Boolean(optionMatch[1]);
+      const key = optionMatch[2];
+      const label = optionMatch[3].trim();
+      promptOptions.push({
+        index: parseInt(key, 10),
+        key,
+        label,
+        rawText: `${key}. ${label}`,
+        selected: isSelected,
+        value: `${key}\r`,
+      });
+      continue;
+    }
+
+    if (isHintLine) {
+      promptHints = line;
+      continue;
+    }
+
     // ── Skip decorative banners, dividers, shortcuts ──
-    if (/^[─━═┄┈┌┐└┘├┤┬┴┼╭╮╯╰│\|\s]+$/.test(line)) continue;
+    if (/^[─━═┄┈┌┐└┘├┤┬┴┼╭╮╯╰│\|\s]+$/.test(line)) {
+      if (promptTitle || currentTool) {
+        inDivider = !inDivider;
+      }
+      continue;
+    }
+
+    if (inDivider) {
+      promptCommand = promptCommand ? promptCommand + '\n' + line : line;
+      continue;
+    }
+
     if (/^[│|]\s*.*[│|]$/.test(line) && /claude\s+code|welcome|tips|version|opencode/i.test(line)) continue;
     if (/^\? for shortcuts|^shift\+tab to cycle|^\(ctrl\+o to expand\)/i.test(line)) continue;
     if (/^claude\s+code\s+v\d+|^opencode\s+v\d+/i.test(line)) continue;
-    if (/^auto mode on|^compact mode|^shift\+tab to cycle/i.test(line)) continue;
+    if (/^(?:[▶►]+\s*)?(?:auto mode on|compact mode|shift\+tab to cycle|\? for shortcuts)/i.test(line)) continue;
+    if (/image in clipboard|ctrl\+v to paste/i.test(line)) continue;
+    if (/auto-coding\s*·\s*API Usage Billing/i.test(line)) continue;
 
     // ── Detect User Prompt ──
-    const userPromptMatch = line.match(/^([>❯]{1,2})\s+(.+)/);
-    const isUserPrompt =
-      Boolean(userPromptMatch) &&
-      !/^[>❯]\s*(thought|running|bash|read|edit|write|view|tool)/i.test(line);
+    // GUARD: Option lines (e.g. ❯ 1. Yes) MUST NOT be treated as user prompts
+    const isOptionLine =
+      Boolean(optionMatch) ||
+      /^([>❯*]\s*)?\d+[.)]\s+/i.test(line) ||
+      /^([>❯*]\s*)?(yes|no|always|never|allow|deny|cancel|proceed|skip|not now|don't show)\b/i.test(line);
 
-    if (isUserPrompt && userPromptMatch) {
-      const promptText = userPromptMatch[2].trim();
-      if (promptText) {
-        commitCurrentMessage();
-        currentMsg = createMessage('user', messages.length + 1);
-        currentMsg.textParts.push(promptText);
-        currentBlock = 'user';
-        continue;
+    let extractedUserPrompt: string | null = null;
+
+    if (!isOptionLine) {
+      // 1. Arrow prompts: > prompt or ❯ prompt (Claude Code, interactive arrows)
+      const arrowMatch = line.match(/^([>❯]{1,2})\s+(.+)/);
+      if (
+        arrowMatch &&
+        !/^[>❯]\s*(thought|running|bash|read|edit|write|view|tool|error|waiting)/i.test(line)
+      ) {
+        extractedUserPrompt = arrowMatch[2].trim();
+      }
+
+      // 2. Multi-turn prefixes: User: / You: / Human: / Q: / Question:
+      if (!extractedUserPrompt) {
+        const prefixMatch = line.match(/^(?:User|You|Human|Q|Question):\s*(.+)/i);
+        if (prefixMatch) {
+          extractedUserPrompt = prefixMatch[1].trim();
+        }
+      }
+
+      // 3. Named CLI agent prompts: gemini> / codex> / opencode> / aider> / ollama>
+      if (!extractedUserPrompt) {
+        const agentPromptMatch = line.match(
+          /^(?:gemini|codex|opencode|aider|ollama|agent|assistant)\s*>\s*(.+)/i
+        );
+        if (agentPromptMatch) {
+          extractedUserPrompt = agentPromptMatch[1].trim();
+        }
+      }
+
+      // 4. Python / Node REPL prompts: >>> <command>
+      if (!extractedUserPrompt) {
+        const replMatch = line.match(/^(?:>>>|\.\.\.)\s+(.+)/);
+        if (replMatch) {
+          extractedUserPrompt = replMatch[1].trim();
+        }
+      }
+
+      // 5. Standard shell prompts (bash, zsh, fish, venv):
+      // Examples: user@host:dir$ cmd, ~/dir % cmd, ➜ dir git:(main) cmd, (venv) $ cmd, $ cmd
+      if (!extractedUserPrompt) {
+        const shellMatch = line.match(
+          /^(?:(?:\([^)]+\)\s*)?(?:[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+[:\w/~.-]*|[~/\w.-]+)?\s*[$#%➜❯]\s+)(.+)/
+        );
+        if (
+          shellMatch &&
+          !/^(?:bash|sh|zsh|git|npm|python|node|echo|cat|curl|source)\b.*: (?:command not found|No such file)/i.test(
+            shellMatch[1]
+          )
+        ) {
+          extractedUserPrompt = shellMatch[1].trim();
+        }
       }
     }
 
-    // Also support "User: <text>" or "You: <text>" prompts
-    const userPrefixMatch = line.match(/^(?:User|You):\s*(.+)/i);
-    if (userPrefixMatch) {
-      const promptText = userPrefixMatch[1].trim();
-      if (promptText) {
-        commitCurrentMessage();
-        currentMsg = createMessage('user', messages.length + 1);
-        currentMsg.textParts.push(promptText);
-        currentBlock = 'user';
-        continue;
-      }
+    if (extractedUserPrompt) {
+      commitCurrentMessage();
+      currentMsg = createMessage('user', messages.length + 1);
+      currentMsg.textParts.push(extractedUserPrompt);
+      currentBlock = 'user';
+      continue;
     }
 
     // ── Detect Thought / Reasoning ──
@@ -205,6 +341,52 @@ export function parseTerminalDialogue(
       continue;
     }
 
+    // ── Tool Output / Context ──
+    if (currentBlock === 'tool' && currentTool) {
+      if (/^(Error:|Waiting\.\.\.|\d+\s+__pycache__|\.\.\.\s+\+\d+\s+lines)/.test(line)) {
+        if (currentTool.output) currentTool.output += '\n';
+        currentTool.output += line;
+        continue;
+      }
+    }
+
+    // ── Detect Question / Permission Headers ──
+    if (/^(?:Bash command|Tool call|Tool execution|Permission Request|Permission required|Confirmation Required|Authorize tool|Allow action)/i.test(line)) {
+      promptTitle = line;
+      continue;
+    }
+
+    if (
+      /\?$/.test(line) ||
+      /(?:do you want|allow this|allow tool|allow command|are you sure|select|choose|teach auto mode|proceed|confirm|continue|override|overwrite|press enter|which one|pick one|permission to|authorize)/i.test(
+        line
+      ) ||
+      /\[[yY]\/[nN]\]|\([yY]\/[nN]\)/i.test(line)
+    ) {
+      promptQuestion = line;
+      continue;
+    }
+
+    // Context / description under permission prompt
+    if (promptTitle && !promptQuestion) {
+      if (
+        !promptCommand &&
+        (line.startsWith('$') ||
+          line.includes('/') ||
+          line.includes('\\') ||
+          /^(?:python|python3|node|npm|npx|pnpm|cargo|go|git|bash|sh|zsh|cat|ls|rm|mv|cp|echo|curl|wget)\b/i.test(line))
+      ) {
+        promptCommand = line.replace(/^\$\s*/, '');
+      } else {
+        promptDesc.push(line);
+      }
+      continue;
+    }
+    if (promptQuestion && promptOptions.length === 0) {
+      promptDesc.push(line);
+      continue;
+    }
+
     // ── Continuing Thought Block ──
     if (currentBlock === 'thought') {
       const isStillThought =
@@ -254,7 +436,53 @@ export function parseTerminalDialogue(
     }
   }
 
+  // Synthesize binary y/n if question has [y/N] and no numbered options
+  if (promptQuestion && promptOptions.length === 0) {
+    if (/\([yY]\/[nN]\)|\[[yY]\/[nN]\]/i.test(promptQuestion)) {
+      promptOptions.push({ index: 1, key: 'y', label: 'Yes', rawText: 'Yes (y)', selected: true, value: 'y\r' });
+      promptOptions.push({ index: 2, key: 'n', label: 'No', rawText: 'No (n)', selected: false, value: 'n\r' });
+    }
+  }
+
+  // If there are accumulated prompt options at the end, attach to active message
+  if (promptOptions.length > 0) {
+    if (!currentMsg || currentMsg.role !== 'assistant') {
+      commitCurrentMessage();
+      currentMsg = createMessage('assistant', messages.length + 1);
+    }
+    currentMsg.interactivePrompt = {
+      id: `prompt-${Date.now()}-${messages.length}`,
+      type:
+        promptTitle?.toLowerCase().includes('permission') ||
+        promptTitle?.toLowerCase().includes('bash') ||
+        promptTitle?.toLowerCase().includes('tool') ||
+        promptTitle?.toLowerCase().includes('allow') ||
+        promptTitle?.toLowerCase().includes('authorize') ||
+        promptQuestion?.toLowerCase().includes('proceed') ||
+        promptQuestion?.toLowerCase().includes('allow') ||
+        promptQuestion?.toLowerCase().includes('permit') ||
+        promptQuestion?.toLowerCase().includes('authorize') ||
+        promptQuestion?.toLowerCase().includes('permission')
+          ? 'permission'
+          : 'select',
+      title: promptTitle || 'Permission Request',
+      command: promptCommand || (currentTool ? currentTool.input : ''),
+      question: promptQuestion || 'Do you want to proceed?',
+      description: promptDesc.join(' ').trim(),
+      options: [...promptOptions],
+      hints: promptHints,
+      resolved: false,
+    };
+  }
+
   commitCurrentMessage();
+
+  // Mark prior prompts resolved if followed by subsequent messages
+  for (let i = 0; i < messages.length - 1; i++) {
+    if (messages[i].interactivePrompt) {
+      messages[i].interactivePrompt!.resolved = true;
+    }
+  }
 
   return messages;
 }
