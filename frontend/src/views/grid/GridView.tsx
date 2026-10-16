@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
+import { useMemo, useState, useEffect, useCallback, useRef, memo } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
 import { scrollbarStyle } from '@/lib/theme';
 import type { UnifiedTerminal } from '@/types';
@@ -246,10 +246,23 @@ function EmptyGridSlot({
                 e.currentTarget.style.color = t.colors.accent.primary;
               }
             }}
-            title={`Launch a new terminal in Slot ${slotIndex + 1}`}
+            title={`Launch a new terminal in Slot ${slotIndex + 1} (⌘T)`}
           >
             <Plus size={12} />
             <span>Add Terminal</span>
+            <span
+              style={{
+                fontSize: '9px',
+                padding: '1px 4px',
+                borderRadius: '3px',
+                background: isOverThis ? 'rgba(0,0,0,0.25)' : `${t.colors.accent.primary}30`,
+                color: isOverThis ? '#ffffff' : t.colors.accent.primary,
+                fontWeight: 600,
+                marginLeft: '2px',
+              }}
+            >
+              ⌘T
+            </span>
           </button>
         )}
 
@@ -268,7 +281,7 @@ function EmptyGridSlot({
   );
 }
 
-function GridCard({
+const GridCard = memo(function GridCard({
   pane,
   index,
   status,
@@ -310,18 +323,12 @@ function GridCard({
   const handleModeSelect = (mode: GridMode) => {
     setDropdownOpen(false);
     onSetPaneSizeMode?.(pane.id, mode);
-    setTimeout(() => {
+    requestAnimationFrame(() => {
       for (const [tty] of TerminalManager.handles) {
         TerminalManager.fitNow(tty);
-        TerminalManager.refresh(tty);
+        TerminalManager.repaint(tty);
       }
-    }, 50);
-    setTimeout(() => {
-      for (const [tty] of TerminalManager.handles) {
-        TerminalManager.fitNow(tty);
-        TerminalManager.refresh(tty);
-      }
-    }, 180);
+    });
   };
 
   useEffect(() => {
@@ -353,7 +360,7 @@ function GridCard({
   };
   const agentDetected = isAgentCli(
     entry,
-    pane.tty ? TerminalManager.lastLines(pane.tty, 25) : undefined
+    !entry?.cli && !entry?.agent && pane.tty ? TerminalManager.lastLines(pane.tty, 25) : undefined
   );
 
   const commitRename = () => {
@@ -385,6 +392,8 @@ function GridCard({
           ? '0 8px 32px rgba(0,0,0,0.85)'
           : isOverThis
           ? `0 0 10px ${t.colors.accent.primary}40`
+          : isSelected
+          ? `0 0 0 1px ${t.colors.accent.primary}, 0 0 12px ${t.colors.accent.primary}25`
           : 'none',
         transition: isExpanded ? 'none' : 'border 0.15s ease, background 0.15s ease, opacity 0.15s ease',
         position: isExpanded ? 'fixed' : 'relative',
@@ -759,7 +768,7 @@ function GridCard({
       ) : null}
     </div>
   );
-}
+});
 
 export function GridView({
   activeWorkspace,
@@ -818,12 +827,12 @@ export function GridView({
     try {
       localStorage.setItem('tto-grid-density', d);
     } catch {}
-    setTimeout(() => {
+    requestAnimationFrame(() => {
       for (const [tty] of TerminalManager.handles) {
         TerminalManager.fitNow(tty);
-        TerminalManager.refresh(tty);
+        TerminalManager.repaint(tty);
       }
-    }, 60);
+    });
   };
 
   const handleSetColOverride = (c: string) => {
@@ -831,12 +840,12 @@ export function GridView({
     try {
       localStorage.setItem('tto-grid-cols', c);
     } catch {}
-    setTimeout(() => {
+    requestAnimationFrame(() => {
       for (const [tty] of TerminalManager.handles) {
         TerminalManager.fitNow(tty);
-        TerminalManager.refresh(tty);
+        TerminalManager.repaint(tty);
       }
-    }, 60);
+    });
   };
 
   useEffect(() => {
@@ -923,20 +932,16 @@ export function GridView({
     [slotItems]
   );
 
-  // Trigger terminal refits when layout, sizes, or window geometry change
+  // Trigger terminal refits when layout, sizes, or window geometry change (debounced via rAF)
   useEffect(() => {
-    const refitAll = () => {
+    const rafId = window.requestAnimationFrame(() => {
       for (const [tty] of TerminalManager.handles) {
         TerminalManager.fitNow(tty);
-        TerminalManager.refresh(tty);
+        TerminalManager.repaint(tty);
       }
-    };
-    refitAll();
-    const t1 = window.setTimeout(refitAll, 80);
-    const t2 = window.setTimeout(refitAll, 200);
+    });
     return () => {
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
+      window.cancelAnimationFrame(rafId);
     };
   }, [cols, rows, density, containerWidth, containerHeight, paneLayoutKey]);
 
@@ -1175,6 +1180,39 @@ export function GridView({
           >
             {cols} cols × {rows} rows {density === 'fit' ? '(Fit)' : '(Scroll)'}
           </span>
+
+          {onAddPane && (
+            <button
+              onClick={() => onAddPane()}
+              title="Add a new terminal to the grid (⌘T)"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '2px 8px',
+                borderRadius: '4px',
+                background: `${t.colors.accent.primary}20`,
+                border: `1px solid ${t.colors.accent.primary}50`,
+                color: t.colors.accent.primary,
+                fontSize: '10px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                transition: 'all 0.12s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = t.colors.accent.primary;
+                e.currentTarget.style.color = '#ffffff';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = `${t.colors.accent.primary}20`;
+                e.currentTarget.style.color = t.colors.accent.primary;
+              }}
+            >
+              <Plus size={11} />
+              <span>Add Terminal</span>
+              <span style={{ fontSize: '8.5px', opacity: 0.85, padding: '0 3px', borderRadius: '3px', background: 'rgba(0,0,0,0.2)' }}>⌘T</span>
+            </button>
+          )}
         </div>
 
         {/* Right: Density toggle + Column selector + Quick scroll */}

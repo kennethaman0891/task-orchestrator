@@ -98,7 +98,9 @@ export function IDEView({
   const [searchResults, setSearchResults] = useState<FileSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [loadingTree, setLoadingTree] = useState(false);
-  const [creatingItem, setCreatingItem] = useState<{ parentPath: string; isDir: boolean } | null>(null);
+  const [creatingItem, setCreatingItem] = useState<{ parentPath: string; isDir: boolean } | null>(
+    null,
+  );
   const [newItemName, setNewItemName] = useState('');
   const [renamingItem, setRenamingItem] = useState<{ path: string; oldName: string } | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
@@ -124,9 +126,7 @@ export function IDEView({
   }, [activeWorkspace?.idePanes]);
 
   const availableSessionIds = useMemo(() => {
-    return idePanes
-      .map((p) => p.tty)
-      .filter((tty): tty is string => !!tty);
+    return idePanes.map((p) => p.tty).filter((tty): tty is string => !!tty);
   }, [idePanes]);
 
   const [selectedIdeTerminalId, setSelectedIdeTerminalId] = useState<string | null>(null);
@@ -242,18 +242,20 @@ export function IDEView({
   const fetchDirectory = useCallback(async (dirPath: string): Promise<TreeNode[]> => {
     try {
       const res = await listFiles(dirPath);
-      return (res.files || []).map((f) => ({
-        name: f.name,
-        path: dirPath ? `${dirPath}/${f.name}` : f.name,
-        is_dir: f.is_dir,
-        size: f.size,
-        mtime: f.mtime,
-        children: f.is_dir ? [] : undefined,
-        loaded: false,
-      })).sort((a, b) => {
-        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
+      return (res.files || [])
+        .map((f) => ({
+          name: f.name,
+          path: dirPath ? `${dirPath}/${f.name}` : f.name,
+          is_dir: f.is_dir,
+          size: f.size,
+          mtime: f.mtime,
+          children: f.is_dir ? [] : undefined,
+          loaded: false,
+        }))
+        .sort((a, b) => {
+          if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
     } catch {
       return [];
     }
@@ -276,7 +278,7 @@ export function IDEView({
               return { ...n, children, loaded: true };
             }
             return n;
-          })
+          }),
         );
       };
       const rootFiles = await loadTreeRecursively(rootPath);
@@ -305,36 +307,41 @@ export function IDEView({
   }, [refreshTree, refreshGit]);
 
   // Toggle folder expansion and dynamically load contents if not loaded yet
-  const toggleFolder = useCallback(async (folderPath: string) => {
-    setExpandedFolders((prev) => {
-      const next = new Set(prev);
-      if (next.has(folderPath)) {
-        next.delete(folderPath);
-      } else {
-        next.add(folderPath);
-      }
-      return next;
-    });
-
-    // Populate children in tree data if needed
-    const updateNode = async (nodes: TreeNode[]): Promise<TreeNode[]> => {
-      return Promise.all(nodes.map(async (n) => {
-        if (n.path === folderPath && n.is_dir && !n.loaded) {
-          const children = await fetchDirectory(folderPath);
-          return { ...n, children, loaded: true };
+  const toggleFolder = useCallback(
+    async (folderPath: string) => {
+      setExpandedFolders((prev) => {
+        const next = new Set(prev);
+        if (next.has(folderPath)) {
+          next.delete(folderPath);
+        } else {
+          next.add(folderPath);
         }
-        if (n.children && n.children.length > 0) {
-          return { ...n, children: await updateNode(n.children) };
-        }
-        return n;
-      }));
-    };
+        return next;
+      });
 
-    setTreeData((curr) => {
-      updateNode(curr).then((updated) => setTreeData(updated));
-      return curr;
-    });
-  }, [fetchDirectory]);
+      // Populate children in tree data if needed
+      const updateNode = async (nodes: TreeNode[]): Promise<TreeNode[]> => {
+        return Promise.all(
+          nodes.map(async (n) => {
+            if (n.path === folderPath && n.is_dir && !n.loaded) {
+              const children = await fetchDirectory(folderPath);
+              return { ...n, children, loaded: true };
+            }
+            if (n.children && n.children.length > 0) {
+              return { ...n, children: await updateNode(n.children) };
+            }
+            return n;
+          }),
+        );
+      };
+
+      setTreeData((curr) => {
+        updateNode(curr).then((updated) => setTreeData(updated));
+        return curr;
+      });
+    },
+    [fetchDirectory],
+  );
 
   // Load content of active file
   useEffect(() => {
@@ -387,26 +394,29 @@ export function IDEView({
   const isBinary = Boolean(
     activeFile &&
     (isBinaryFile(activeFile) || detectedBinaryFiles.has(activeFile)) &&
-    forceRawText !== activeFile
+    forceRawText !== activeFile,
   );
 
   // Save active file
-  const handleSaveCurrentFile = useCallback(async (text?: string) => {
-    if (!activeFile) return;
-    const contentToSave = text !== undefined ? text : fileContent;
-    if (contentToSave === null) return;
-    try {
-      if (onSaveFile) {
-        await onSaveFile(activeFile, contentToSave);
-      } else {
-        await putFile(activeFile, contentToSave);
+  const handleSaveCurrentFile = useCallback(
+    async (text?: string) => {
+      if (!activeFile) return;
+      const contentToSave = text !== undefined ? text : fileContent;
+      if (contentToSave === null) return;
+      try {
+        if (onSaveFile) {
+          await onSaveFile(activeFile, contentToSave);
+        } else {
+          await putFile(activeFile, contentToSave);
+        }
+        onMarkDirty?.(activeFile, false);
+        onToast('File saved');
+      } catch (err: any) {
+        onToast(`Failed to save: ${err?.message || err}`, true);
       }
-      onMarkDirty?.(activeFile, false);
-      onToast('File saved');
-    } catch (err: any) {
-      onToast(`Failed to save: ${err?.message || err}`, true);
-    }
-  }, [activeFile, fileContent, onSaveFile, onMarkDirty, onToast]);
+    },
+    [activeFile, fileContent, onSaveFile, onMarkDirty, onToast],
+  );
 
   // Create new file or folder
   const handleCreateConfirm = useCallback(async () => {
@@ -446,19 +456,22 @@ export function IDEView({
   }, [renamingItem, renameDraft, onToast, refreshTree]);
 
   // Delete item
-  const handleDeleteItem = useCallback(async (path: string, name: string) => {
-    if (!window.confirm(`Are you sure you want to delete "${name}"?`)) return;
-    try {
-      await deleteFile(path);
-      onToast(`Deleted "${name}"`);
-      if (activeFile === path) {
-        onCloseFile(path);
+  const handleDeleteItem = useCallback(
+    async (path: string, name: string) => {
+      if (!window.confirm(`Are you sure you want to delete "${name}"?`)) return;
+      try {
+        await deleteFile(path);
+        onToast(`Deleted "${name}"`);
+        if (activeFile === path) {
+          onCloseFile(path);
+        }
+        refreshTree();
+      } catch (err: any) {
+        onToast(`Delete failed: ${err?.message || err}`, true);
       }
-      refreshTree();
-    } catch (err: any) {
-      onToast(`Delete failed: ${err?.message || err}`, true);
-    }
-  }, [activeFile, onCloseFile, onToast, refreshTree]);
+    },
+    [activeFile, onCloseFile, onToast, refreshTree],
+  );
 
   // Recursive Tree Node Renderer
   const renderNode = (node: TreeNode, depth = 0) => {
@@ -541,8 +554,12 @@ export function IDEView({
                     setNewItemName('');
                   }}
                   style={{
-                    background: 'none', border: 'none', cursor: 'pointer',
-                    color: 'inherit', padding: 2, display: 'flex',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: 'inherit',
+                    padding: 2,
+                    display: 'flex',
                   }}
                 >
                   <FilePlus size={12} />
@@ -555,8 +572,12 @@ export function IDEView({
                     setNewItemName('');
                   }}
                   style={{
-                    background: 'none', border: 'none', cursor: 'pointer',
-                    color: 'inherit', padding: 2, display: 'flex',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: 'inherit',
+                    padding: 2,
+                    display: 'flex',
                   }}
                 >
                   <FolderPlus size={12} />
@@ -571,8 +592,12 @@ export function IDEView({
                 setRenameDraft(node.name);
               }}
               style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                color: 'inherit', padding: 2, display: 'flex',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                color: 'inherit',
+                padding: 2,
+                display: 'flex',
               }}
             >
               <Edit2 size={12} />
@@ -582,8 +607,12 @@ export function IDEView({
               title="Delete"
               onClick={() => handleDeleteItem(node.path, node.name)}
               style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                color: t.colors.danger.primary, padding: 2, display: 'flex',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                color: t.colors.danger.primary,
+                padding: 2,
+                display: 'flex',
               }}
             >
               <Trash2 size={12} />
@@ -709,13 +738,27 @@ export function IDEView({
               borderBottom: `1px solid ${t.colors.border.subtle}`,
             }}
           >
-            <span style={{ fontSize: t.fontSize.xs, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: t.colors.text.muted }}>
+            <span
+              style={{
+                fontSize: t.fontSize.xs,
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                color: t.colors.text.muted,
+              }}
+            >
               Explorer
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
               <button
                 type="button"
-                style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), padding: 3, height: 'auto' }}
+                style={{
+                  ...buttonBase(t),
+                  ...buttonSize(t, 'sm'),
+                  ...buttonVariant(t, 'ghost'),
+                  padding: 3,
+                  height: 'auto',
+                }}
                 title="Open File from Finder (⌘O)"
                 onClick={handlePickFile}
               >
@@ -723,7 +766,13 @@ export function IDEView({
               </button>
               <button
                 type="button"
-                style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), padding: 3, height: 'auto' }}
+                style={{
+                  ...buttonBase(t),
+                  ...buttonSize(t, 'sm'),
+                  ...buttonVariant(t, 'ghost'),
+                  padding: 3,
+                  height: 'auto',
+                }}
                 title="Open Project Folder from Finder"
                 onClick={handlePickFolder}
               >
@@ -731,7 +780,13 @@ export function IDEView({
               </button>
               <button
                 type="button"
-                style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), padding: 3, height: 'auto' }}
+                style={{
+                  ...buttonBase(t),
+                  ...buttonSize(t, 'sm'),
+                  ...buttonVariant(t, 'ghost'),
+                  padding: 3,
+                  height: 'auto',
+                }}
                 title="New File in Root"
                 onClick={() => {
                   setCreatingItem({ parentPath: rootPath, isDir: false });
@@ -742,7 +797,13 @@ export function IDEView({
               </button>
               <button
                 type="button"
-                style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), padding: 3, height: 'auto' }}
+                style={{
+                  ...buttonBase(t),
+                  ...buttonSize(t, 'sm'),
+                  ...buttonVariant(t, 'ghost'),
+                  padding: 3,
+                  height: 'auto',
+                }}
                 title="New Folder in Root"
                 onClick={() => {
                   setCreatingItem({ parentPath: rootPath, isDir: true });
@@ -753,7 +814,13 @@ export function IDEView({
               </button>
               <button
                 type="button"
-                style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), padding: 3, height: 'auto' }}
+                style={{
+                  ...buttonBase(t),
+                  ...buttonSize(t, 'sm'),
+                  ...buttonVariant(t, 'ghost'),
+                  padding: 3,
+                  height: 'auto',
+                }}
                 title="Refresh Explorer"
                 onClick={refreshTree}
               >
@@ -765,7 +832,10 @@ export function IDEView({
           {/* Quick Search */}
           <div style={{ padding: '6px 8px', borderBottom: `1px solid ${t.colors.border.subtle}` }}>
             <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-              <Search size={12} style={{ position: 'absolute', left: 8, opacity: 0.5, pointerEvents: 'none' }} />
+              <Search
+                size={12}
+                style={{ position: 'absolute', left: 8, opacity: 0.5, pointerEvents: 'none' }}
+              />
               <input
                 type="text"
                 placeholder="Search files in project..."
@@ -808,7 +878,13 @@ export function IDEView({
 
           {/* Creation input modal / inline */}
           {creatingItem && (
-            <div style={{ padding: '6px 8px', backgroundColor: t.colors.bg.tertiary, borderBottom: `1px solid ${t.colors.border.subtle}` }}>
+            <div
+              style={{
+                padding: '6px 8px',
+                backgroundColor: t.colors.bg.tertiary,
+                borderBottom: `1px solid ${t.colors.border.subtle}`,
+              }}
+            >
               <div style={{ fontSize: t.fontSize.xs, color: t.colors.text.muted, marginBottom: 4 }}>
                 New {creatingItem.isDir ? 'Folder' : 'File'}
               </div>
@@ -823,18 +899,36 @@ export function IDEView({
                     if (e.key === 'Enter') handleCreateConfirm();
                     if (e.key === 'Escape') setCreatingItem(null);
                   }}
-                  style={{ ...inputBase(t), flex: 1, padding: '3px 6px', fontSize: t.fontSize.xs, height: '24px' }}
+                  style={{
+                    ...inputBase(t),
+                    flex: 1,
+                    padding: '3px 6px',
+                    fontSize: t.fontSize.xs,
+                    height: '24px',
+                  }}
                 />
                 <button
                   type="button"
-                  style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'primary'), height: '24px', padding: '0 8px' }}
+                  style={{
+                    ...buttonBase(t),
+                    ...buttonSize(t, 'sm'),
+                    ...buttonVariant(t, 'primary'),
+                    height: '24px',
+                    padding: '0 8px',
+                  }}
                   onClick={handleCreateConfirm}
                 >
                   OK
                 </button>
                 <button
                   type="button"
-                  style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), height: '24px', padding: '0 6px' }}
+                  style={{
+                    ...buttonBase(t),
+                    ...buttonSize(t, 'sm'),
+                    ...buttonVariant(t, 'ghost'),
+                    height: '24px',
+                    padding: '0 6px',
+                  }}
                   onClick={() => setCreatingItem(null)}
                 >
                   ✕
@@ -845,7 +939,13 @@ export function IDEView({
 
           {/* Renaming inline prompt */}
           {renamingItem && (
-            <div style={{ padding: '6px 8px', backgroundColor: t.colors.bg.tertiary, borderBottom: `1px solid ${t.colors.border.subtle}` }}>
+            <div
+              style={{
+                padding: '6px 8px',
+                backgroundColor: t.colors.bg.tertiary,
+                borderBottom: `1px solid ${t.colors.border.subtle}`,
+              }}
+            >
               <div style={{ fontSize: t.fontSize.xs, color: t.colors.text.muted, marginBottom: 4 }}>
                 Rename: {renamingItem.oldName}
               </div>
@@ -859,18 +959,36 @@ export function IDEView({
                     if (e.key === 'Enter') handleRenameConfirm();
                     if (e.key === 'Escape') setRenamingItem(null);
                   }}
-                  style={{ ...inputBase(t), flex: 1, padding: '3px 6px', fontSize: t.fontSize.xs, height: '24px' }}
+                  style={{
+                    ...inputBase(t),
+                    flex: 1,
+                    padding: '3px 6px',
+                    fontSize: t.fontSize.xs,
+                    height: '24px',
+                  }}
                 />
                 <button
                   type="button"
-                  style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'primary'), height: '24px', padding: '0 8px' }}
+                  style={{
+                    ...buttonBase(t),
+                    ...buttonSize(t, 'sm'),
+                    ...buttonVariant(t, 'primary'),
+                    height: '24px',
+                    padding: '0 8px',
+                  }}
                   onClick={handleRenameConfirm}
                 >
                   OK
                 </button>
                 <button
                   type="button"
-                  style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), height: '24px', padding: '0 6px' }}
+                  style={{
+                    ...buttonBase(t),
+                    ...buttonSize(t, 'sm'),
+                    ...buttonVariant(t, 'ghost'),
+                    height: '24px',
+                    padding: '0 6px',
+                  }}
                   onClick={() => setRenamingItem(null)}
                 >
                   ✕
@@ -904,7 +1022,14 @@ export function IDEView({
                 </div>
 
                 {searchResults.length === 0 && !isSearching && (
-                  <div style={{ padding: '16px 12px', textAlign: 'center', fontSize: t.fontSize.xs, color: t.colors.text.muted }}>
+                  <div
+                    style={{
+                      padding: '16px 12px',
+                      textAlign: 'center',
+                      fontSize: t.fontSize.xs,
+                      color: t.colors.text.muted,
+                    }}
+                  >
                     No files found matching &quot;{searchFilter}&quot;
                   </div>
                 )}
@@ -971,8 +1096,17 @@ export function IDEView({
             ) : (
               <>
                 {treeData.length === 0 && !loadingTree && (
-                  <div style={{ padding: 16, textAlign: 'center', fontSize: t.fontSize.xs, color: t.colors.text.muted }}>
-                    {rootPath ? 'No files found in directory' : 'Select a project path in workspace'}
+                  <div
+                    style={{
+                      padding: 16,
+                      textAlign: 'center',
+                      fontSize: t.fontSize.xs,
+                      color: t.colors.text.muted,
+                    }}
+                  >
+                    {rootPath
+                      ? 'No files found in directory'
+                      : 'Select a project path in workspace'}
                   </div>
                 )}
                 {treeData.map((node) => renderNode(node, 0))}
@@ -1005,21 +1139,35 @@ export function IDEView({
             zIndex: 10,
             transition: 'background-color 0.15s ease',
           }}
-          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = t.colors.accent.primary; }}
-          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = t.colors.accent.primary;
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = 'transparent';
+          }}
           title="Drag to resize explorer"
         />
 
         {/* Center: Multi-Tab Code Editor & Welcome Area */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-          {/* File Tab Strip */}
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            minWidth: 0,
+            overflow: 'hidden',
+          }}
+        >
+          {/* File Tab Strip (Authentic VS Code Tabs) */}
           <div
             style={{
               display: 'flex',
               alignItems: 'center',
-              backgroundColor: t.colors.bg.secondary,
-              borderBottom: `1px solid ${t.colors.border.subtle}`,
+              backgroundColor: '#181818',
+              borderBottom: '1px solid #2d2d2d',
+              height: '35px',
               overflowX: 'auto',
+              flexShrink: 0,
               ...scrollbarStyle(t),
             }}
           >
@@ -1029,69 +1177,123 @@ export function IDEView({
                 <div
                   key={file.path}
                   onClick={() => onOpenFile(file.path, file.name)}
+                  onAuxClick={(e) => {
+                    if (e.button === 1) {
+                      e.preventDefault();
+                      onCloseFile(file.path);
+                    }
+                  }}
+                  className="ide-tab-item"
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 6,
-                    padding: '8px 12px',
-                    fontSize: t.fontSize.sm,
+                    gap: 7,
+                    height: '35px',
+                    padding: '0 12px',
+                    fontSize: '12px',
                     cursor: 'pointer',
                     userSelect: 'none',
-                    borderRight: `1px solid ${t.colors.border.subtle}`,
-                    borderTop: isActive ? `2px solid ${t.colors.accent.primary}` : '2px solid transparent',
-                    backgroundColor: isActive ? t.colors.bg.primary : 'transparent',
-                    color: isActive ? t.colors.text.primary : t.colors.text.muted,
+                    borderRight: isActive ? '1px solid #2d2d2d' : '1px solid #252526',
+                    borderTop: isActive
+                      ? `2px solid ${t.colors.accent.primary}`
+                      : '2px solid transparent',
+                    backgroundColor: isActive ? '#1e1e1e' : '#181818',
+                    color: isActive ? '#ffffff' : '#969696',
+                    transition: 'all 0.15s ease',
+                    position: 'relative',
                   }}
+                  title={file.path}
                 >
                   <FileIcon name={file.name} size={14} />
-                  <span style={{ fontFamily: t.fontFamily.mono, fontSize: t.fontSize.xs }}>{file.name}</span>
-                  {file.dirty && (
-                    <span
-                      style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: '50%',
-                        backgroundColor: t.colors.accent.primary,
-                        display: 'inline-block',
-                      }}
-                    />
-                  )}
-                  <button
-                    type="button"
-                    title="Close File"
+                  <span
+                    style={{
+                      fontFamily: t.fontFamily.mono,
+                      fontSize: '12px',
+                      fontWeight: isActive ? 500 : 400,
+                    }}
+                  >
+                    {file.name}
+                  </span>
+
+                  {/* Dirty indicator & Close button */}
+                  <div
+                    style={{
+                      width: 16,
+                      height: 16,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginLeft: 2,
+                    }}
                     onClick={(e) => {
                       e.stopPropagation();
                       onCloseFile(file.path);
                     }}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      cursor: 'pointer',
-                      padding: 2,
-                      display: 'flex',
-                      color: 'inherit',
-                      opacity: 0.6,
-                      borderRadius: t.borderRadius.sm,
-                    }}
                   >
-                    <X size={12} />
-                  </button>
+                    {file.dirty && (
+                      <span
+                        className="tab-dirty-dot"
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: '50%',
+                          backgroundColor: '#e2c08d',
+                          display: 'inline-block',
+                        }}
+                      />
+                    )}
+                    <button
+                      type="button"
+                      className="tab-close-btn"
+                      title="Close (⌘W)"
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        padding: 2,
+                        display: file.dirty ? 'none' : 'flex',
+                        color: 'inherit',
+                        opacity: 0.6,
+                        borderRadius: t.borderRadius.sm,
+                      }}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
                 </div>
               );
             })}
 
             {openFiles.length === 0 && (
-              <div style={{ padding: '8px 14px', fontSize: t.fontSize.xs, color: t.colors.text.muted }}>
+              <div
+                style={{ padding: '8px 14px', fontSize: t.fontSize.xs, color: t.colors.text.muted }}
+              >
                 No files open
               </div>
             )}
           </div>
 
           {/* Editor Body */}
-          <div style={{ flex: 1, position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <div
+            style={{
+              flex: 1,
+              position: 'relative',
+              overflow: 'hidden',
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
             {activeFile ? (
               isImageFile(activeFile) ? (
-                <div style={{ flex: 1, overflow: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div
+                  style={{
+                    flex: 1,
+                    overflow: 'auto',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
                   <ImageViewer path={activeFile} />
                 </div>
               ) : isBinary ? (
@@ -1105,6 +1307,7 @@ export function IDEView({
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                   <CodeEditor
                     path={activeFile}
+                    rootPath={rootPath}
                     initialContent={fileContent ?? ''}
                     onSave={(newText) => handleSaveCurrentFile(newText)}
                     onChange={(val) => {
@@ -1147,26 +1350,59 @@ export function IDEView({
                   <Code2 size={36} />
                 </div>
                 <div style={{ textAlign: 'center' }}>
-                  <h3 style={{ margin: '0 0 6px 0', fontSize: t.fontSize.xl, color: t.colors.text.primary }}>
+                  <h3
+                    style={{
+                      margin: '0 0 6px 0',
+                      fontSize: t.fontSize.xl,
+                      color: t.colors.text.primary,
+                    }}
+                  >
                     Antigravity Developer IDE
                   </h3>
                   <p style={{ margin: 0, fontSize: t.fontSize.sm, maxWidth: 460 }}>
-                    Open any file or folder from your Mac Finder, browse your workspace, or launch the interactive terminal dock below.
+                    Open any file or folder from your Mac Finder, browse your workspace, or launch
+                    the interactive terminal dock below.
                   </p>
                 </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'center' }}>
+                <div
+                  style={{ display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'center' }}
+                >
                   <button
                     type="button"
-                    style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'primary'), display: 'flex', alignItems: 'center', gap: 6 }}
+                    style={{
+                      ...buttonBase(t),
+                      ...buttonSize(t, 'sm'),
+                      ...buttonVariant(t, 'primary'),
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
                     onClick={handlePickFile}
                   >
                     <FileUp size={14} />
                     <span>Open File...</span>
-                    <span style={{ fontSize: '10px', opacity: 0.7, padding: '1px 4px', borderRadius: '3px', background: 'rgba(255,255,255,0.2)' }}>⌘O</span>
+                    <span
+                      style={{
+                        fontSize: '10px',
+                        opacity: 0.7,
+                        padding: '1px 4px',
+                        borderRadius: '3px',
+                        background: 'rgba(255,255,255,0.2)',
+                      }}
+                    >
+                      ⌘O
+                    </span>
                   </button>
                   <button
                     type="button"
-                    style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'secondary'), display: 'flex', alignItems: 'center', gap: 6 }}
+                    style={{
+                      ...buttonBase(t),
+                      ...buttonSize(t, 'sm'),
+                      ...buttonVariant(t, 'secondary'),
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
                     onClick={handlePickFolder}
                   >
                     <FolderOpen size={14} />
@@ -1175,7 +1411,11 @@ export function IDEView({
                   {treeData[0] && (
                     <button
                       type="button"
-                      style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'secondary') }}
+                      style={{
+                        ...buttonBase(t),
+                        ...buttonSize(t, 'sm'),
+                        ...buttonVariant(t, 'secondary'),
+                      }}
                       onClick={() => onOpenFile(treeData[0].path, treeData[0].name)}
                     >
                       Open First File ({treeData[0].name})
@@ -1183,7 +1423,11 @@ export function IDEView({
                   )}
                   <button
                     type="button"
-                    style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'secondary') }}
+                    style={{
+                      ...buttonBase(t),
+                      ...buttonSize(t, 'sm'),
+                      ...buttonVariant(t, 'secondary'),
+                    }}
                     onClick={() => setTerminalDockOpen(true)}
                   >
                     Focus Terminal
@@ -1218,8 +1462,12 @@ export function IDEView({
                 zIndex: 10,
                 transition: 'background-color 0.15s ease',
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = t.colors.accent.primary; }}
-              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = t.colors.accent.primary;
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'transparent';
+              }}
               title="Drag to resize terminal dock"
             />
           )}
@@ -1295,7 +1543,13 @@ export function IDEView({
                   {onAddIdeTerminal && (
                     <button
                       type="button"
-                      style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), padding: '2px 5px', height: '24px' }}
+                      style={{
+                        ...buttonBase(t),
+                        ...buttonSize(t, 'sm'),
+                        ...buttonVariant(t, 'ghost'),
+                        padding: '2px 5px',
+                        height: '24px',
+                      }}
                       title="New Dedicated IDE Terminal"
                       onClick={async () => {
                         const sid = await onAddIdeTerminal();
@@ -1309,7 +1563,13 @@ export function IDEView({
                   {availableSessionIds.length > 1 && activeTerminalId && onRemoveIdeTerminal && (
                     <button
                       type="button"
-                      style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), padding: '2px 5px', height: '24px' }}
+                      style={{
+                        ...buttonBase(t),
+                        ...buttonSize(t, 'sm'),
+                        ...buttonVariant(t, 'ghost'),
+                        padding: '2px 5px',
+                        height: '24px',
+                      }}
                       title="Close Current IDE Terminal"
                       onClick={() => onRemoveIdeTerminal(activeTerminalId)}
                     >
@@ -1321,7 +1581,13 @@ export function IDEView({
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                   <button
                     type="button"
-                    style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), padding: 3, height: 'auto' }}
+                    style={{
+                      ...buttonBase(t),
+                      ...buttonSize(t, 'sm'),
+                      ...buttonVariant(t, 'ghost'),
+                      padding: 3,
+                      height: 'auto',
+                    }}
                     title={terminalMaximized ? 'Restore' : 'Maximize'}
                     onClick={() => setTerminalMaximized((v) => !v)}
                   >
@@ -1329,7 +1595,13 @@ export function IDEView({
                   </button>
                   <button
                     type="button"
-                    style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, 'ghost'), padding: 3, height: 'auto' }}
+                    style={{
+                      ...buttonBase(t),
+                      ...buttonSize(t, 'sm'),
+                      ...buttonVariant(t, 'ghost'),
+                      padding: 3,
+                      height: 'auto',
+                    }}
                     title="Close Terminal Dock"
                     onClick={() => setTerminalDockOpen(false)}
                   >
@@ -1375,39 +1647,59 @@ export function IDEView({
             </div>
           )}
 
-          {/* Bottom Status Bar */}
+          {/* Bottom Status Bar (VS Code Fidelity) */}
           <div
             style={{
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              padding: '2px 10px',
-              backgroundColor: t.colors.bg.tertiary,
-              borderTop: `1px solid ${t.colors.border.subtle}`,
+              padding: '0 10px',
+              height: '22px',
+              backgroundColor: '#181818',
+              borderTop: '1px solid #2d2d2d',
               fontSize: '11px',
-              color: t.colors.text.muted,
+              color: '#858585',
+              userSelect: 'none',
+              flexShrink: 0,
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
               {gitStatus?.branch ? (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: t.colors.text.primary }}>
+                <span
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#cccccc' }}
+                >
                   <GitBranch size={11} /> {gitStatus.branch}
                 </span>
               ) : (
-                <span>No Git repo</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <GitBranch size={11} style={{ opacity: 0.5 }} /> main
+                </span>
               )}
               {activeFile && (
-                <span style={{ fontFamily: t.fontFamily.mono }}>{baseName(activeFile)}</span>
+                <span style={{ fontFamily: t.fontFamily.mono, color: '#cccccc' }}>
+                  {baseName(activeFile)}
+                </span>
               )}
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span>Ln {cursorPos.line}, Col {cursorPos.col}</span>
-              <span>{activeLanguage}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+              <span>
+                Ln {cursorPos.line}, Col {cursorPos.col}
+              </span>
+              <span>
+                Spaces:{' '}
+                {['python', 'rust', 'yaml', 'yml'].includes(activeLanguage.toLowerCase()) ? 4 : 2}
+              </span>
               <span>UTF-8</span>
+              <span>LF</span>
+              <span style={{ color: '#cccccc' }}>{activeLanguage}</span>
               {activeTerminalId && (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                  <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#38bdf8' }} />
+                <span
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#38bdf8' }}
+                >
+                  <span
+                    style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#38bdf8' }}
+                  />
                   IDE PTY: {activeTerminalId}
                 </span>
               )}

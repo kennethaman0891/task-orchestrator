@@ -170,7 +170,7 @@ export function WorkspaceView({
             )}
             <button
               onClick={onAddPane}
-              title="New terminal"
+              title="New terminal (⌘T)"
               style={{
                 width: '22px', height: '22px', borderRadius: '4px',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -193,6 +193,7 @@ export function WorkspaceView({
       {focusedTerminal ? (
         <div
           className={`term-pane${dragOverTerminal ? ' drag-over' : ''}`}
+          data-agent={focusedCli || (agentDetected ? 'opencode' : undefined)}
           data-tto-session={focusedTerminal}
           data-drop-target="terminal"
           onDragOver={(e) => {
@@ -321,7 +322,7 @@ export function WorkspaceView({
         overflowX: 'auto', ...scrollbarStyle(t, false),
         height: '32px', flexShrink: 0,
       }}>
-        {terminalList.map(({ paneId, tty, entry, status, paneLabel, registeredAt }) => {
+        {terminalList.map(({ paneId, tty, entry, status, paneLabel, registeredAt }, idx) => {
           const { color } = statusLabel(status);
           const label = displayLabel(entry, paneLabel);
           const isEditing = editingTty === tty;
@@ -329,6 +330,7 @@ export function WorkspaceView({
           const isHovered = hoveredTty === tty;
           const cliVal = (entry?.cli || '').toLowerCase().trim();
           const uptime = formatUptime(registeredAt ? Math.max(0, Date.now() / 1000 - registeredAt) : 0);
+          const shortcutKey = idx < 9 ? `⌘${idx + 1}` : null;
           return (
             <div
               key={tty}
@@ -338,7 +340,7 @@ export function WorkspaceView({
                 borderRight: `1px solid ${t.colors.border.subtle}`,
                 borderBottom: `2px solid ${isActive ? t.colors.accent.primary : 'transparent'}`,
                 background: isActive ? t.colors.bg.hover : 'transparent',
-                maxWidth: '180px', height: '100%', flexShrink: 0,
+                maxWidth: '190px', height: '100%', flexShrink: 0,
                 transition: 'background 0.12s ease',
               }}
               onMouseEnter={() => setHoveredTty(tty)}
@@ -351,14 +353,22 @@ export function WorkspaceView({
                   padding: 0,
                   color: isActive ? t.colors.text.primary : t.colors.text.secondary,
                   fontSize: '11px', whiteSpace: 'nowrap', minWidth: 0,
-                  maxWidth: '140px', overflow: 'hidden',
+                  maxWidth: '145px', overflow: 'hidden',
                   height: '100%', cursor: 'pointer', flexShrink: 1,
                 }}
                 onClick={() => onSelectTerminal(tty)}
                 onDoubleClick={() => startRename(tty || paneId, label)}
-                title={`${label} — ${statusLabel(status).text} (double-click to rename)`}
+                title={`${label} — ${statusLabel(status).text}${shortcutKey ? ` · ${shortcutKey}` : ''} (double-click to rename)`}
               >
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                {shortcutKey && (
+                  <span style={{
+                    fontSize: '8px', color: isActive ? t.colors.accent.primary : t.colors.text.muted,
+                    opacity: 0.75, fontFamily: t.fontFamily.mono, fontWeight: 600, flexShrink: 0,
+                  }}>
+                    {shortcutKey}
+                  </span>
+                )}
                 {cliVal && <CliLogo cli={cliVal} size={10} />}
                 {cliVal && (
                   <span style={{
@@ -397,7 +407,7 @@ export function WorkspaceView({
                 ) : (
                   <span style={{
                     overflow: 'hidden', textOverflow: 'ellipsis',
-                    fontWeight: isActive ? 500 : 400,
+                    fontWeight: isActive ? 600 : 400,
                   }}>
                     {label}
                   </span>
@@ -436,7 +446,7 @@ export function WorkspaceView({
                       onClick={(e) => { e.stopPropagation(); onRemovePane(paneId); }}
                       onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.15)'; e.currentTarget.style.color = '#f87171'; }}
                       onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = t.colors.text.muted; }}
-                      title="Close terminal"
+                      title="Close terminal (⌘W)"
                     >
                       <X size={10} />
                     </button>
@@ -448,18 +458,19 @@ export function WorkspaceView({
         })}
         <button
           onClick={onAddPane}
-          title="Add terminal"
+          title="New terminal tab (⌘T)"
           style={{
             ...buttonBase(t),
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: '28px', height: '100%', flexShrink: 0, margin: '0 8px',
-            background: 'transparent', border: 'none', borderRadius: '4px',
-            color: t.colors.text.muted, cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px',
+            height: '24px', flexShrink: 0, margin: '4px 8px', padding: '0 8px',
+            background: 'rgba(255, 255, 255, 0.04)', border: `1px solid ${t.colors.border.subtle}`, borderRadius: '4px',
+            color: t.colors.text.muted, cursor: 'pointer', fontSize: '10px',
           }}
           onMouseEnter={(e) => { e.currentTarget.style.background = t.colors.bg.elevated; e.currentTarget.style.color = t.colors.accent.primary; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = t.colors.text.muted; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)'; e.currentTarget.style.color = t.colors.text.muted; }}
         >
           <Plus size={12} />
+          <span style={{ fontSize: '9px', fontWeight: 600, opacity: 0.85 }}>⌘T</span>
         </button>
       </div>
     </div>

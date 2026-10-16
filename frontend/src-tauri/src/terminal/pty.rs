@@ -79,6 +79,8 @@ pub fn tty_for_pid(pid: u32) -> String {
     {
         let out = std::process::Command::new("ps")
             .args(["-o", "tty=", "-p", &pid.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .output()
             .ok();
         match out {
@@ -105,6 +107,8 @@ pub fn active_child_process(shell_pid: u32) -> Option<String> {
     {
         let out = std::process::Command::new("pgrep")
             .args(["-P", &shell_pid.to_string(), "-l"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .output()
             .ok()?;
         if !out.status.success() {
@@ -120,10 +124,12 @@ pub fn active_child_process(shell_pid: u32) -> Option<String> {
             if let Some(cmd) = parts.next() {
                 let name = cmd.rsplit('/').next().unwrap_or(cmd).to_lowercase();
                 if name != "zsh" && name != "bash" && name != "sh" && name != "login" {
-                    // If the child is a runner like node, python, or bun, inspect its full args
-                    if name == "node" || name == "python" || name == "python3" || name == "bun" {
+                    // If the child is a runner like node, python, bun, npx, pnpm, etc., inspect its full args
+                    if name == "node" || name == "python" || name == "python3" || name == "bun" || name == "npx" || name == "pnpm" || name == "bunx" || name == "yarn" || name == "uvx" {
                         if let Ok(args_out) = std::process::Command::new("ps")
                             .args(["-o", "args=", "-p", child_pid_str])
+                            .stdin(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
                             .output()
                         {
                             let args = String::from_utf8_lossy(&args_out.stdout).to_lowercase();
@@ -194,6 +200,20 @@ pub fn spawn_shell(
     {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+
+        // Ensure ~/.local/bin and Homebrew bin paths are on PATH for GUI launches
+        let home = std::env::var("HOME").unwrap_or_default();
+        let existing_path = std::env::var("PATH").unwrap_or_default();
+        let mut path_entries = vec![
+            format!("{home}/.local/bin"),
+            format!("{home}/.cargo/bin"),
+            "/opt/homebrew/bin".to_string(),
+            "/usr/local/bin".to_string(),
+        ];
+        if !existing_path.is_empty() {
+            path_entries.push(existing_path);
+        }
+        cmd.env("PATH", path_entries.join(":"));
     }
 
     let child = pair

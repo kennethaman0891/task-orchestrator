@@ -271,6 +271,21 @@ impl TerminalManager {
         Ok(meta)
     }
 
+    /// Resolve a session by its canonical id or slave tty (e.g. "ttys004" or "/dev/ttys004").
+    pub fn get_session(&self, id: &str) -> Result<Arc<TerminalSession>, String> {
+        let sessions = self.sessions.lock();
+        if let Some(session) = sessions.get(id) {
+            return Ok(session.clone());
+        }
+        for session in sessions.values() {
+            let meta = session.meta.lock();
+            if meta.id == id || meta.tty == id || (!id.is_empty() && (meta.tty.contains(id) || id.contains(&meta.tty))) {
+                return Ok(session.clone());
+            }
+        }
+        Err(format!("no session {id}"))
+    }
+
     /// Attach a frontend renderer channel + exit channel to an existing session
     /// (spec §28: reattach, never restart the process).
     pub fn attach(
@@ -280,9 +295,8 @@ impl TerminalManager {
         on_exit: Channel<()>,
     ) -> Result<(), String> {
         eprintln!("[MANAGER] attach() id={}", id);
-        let sessions = self.sessions.lock();
-        let session = sessions.get(id).ok_or_else(|| format!("no session {id}"))?;
-        recovery::attach(session, on_output, on_exit);
+        let session = self.get_session(id)?;
+        recovery::attach(&session, on_output, on_exit);
         eprintln!("[MANAGER] attach() id={} -> OK", id);
 
         // If this session has a pending initial command, execute it now that the
@@ -312,52 +326,34 @@ impl TerminalManager {
     /// Explicitly detach (e.g. window unload). PTY keeps running; output stays
     /// bounded in the queue.
     pub fn detach(&self, id: &str) -> Result<(), String> {
-        let sessions = self.sessions.lock();
-        if let Some(session) = sessions.get(id) {
-            recovery::detach(session);
+        if let Ok(session) = self.get_session(id) {
+            recovery::detach(&session);
         }
         Ok(())
     }
 
     /// Register a secondary read-only mirror subscriber (Space view renderer).
     pub fn subscribe(&self, id: &str, sub_id: u64, channel: Channel<Vec<u8>>) -> Result<(), String> {
-        let sessions = self.sessions.lock();
-        let session = sessions.get(id).ok_or_else(|| format!("no session {id}"))?;
-        recovery::subscribe(session, sub_id, channel);
+        let session = self.get_session(id)?;
+        recovery::subscribe(&session, sub_id, channel);
         Ok(())
     }
 
     /// Remove a secondary subscriber (idempotent).
     pub fn unsubscribe(&self, id: &str, sub_id: u64) -> Result<(), String> {
-        let sessions = self.sessions.lock();
-        if let Some(session) = sessions.get(id) {
-            recovery::unsubscribe(session, sub_id);
+        if let Ok(session) = self.get_session(id) {
+            recovery::unsubscribe(&session, sub_id);
         }
         Ok(())
     }
 
     pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
-        let sessions = self.sessions.lock();
-        if let Some(session) = sessions.get(id) {
-            return session.write(data);
-        }
-        for session in sessions.values() {
-            let meta = session.meta.lock();
-            if meta.id == id || meta.tty == id || (!id.is_empty() && meta.tty.contains(id)) {
-                return session.write(data);
-            }
-        }
-        Err(format!("no session {id}"))
+        let session = self.get_session(id)?;
+        session.write(data)
     }
 
     pub fn send_command(&self, id: &str, command: &str) -> Result<(), String> {
-        let sessions = self.sessions.lock();
-        let session = sessions.get(id).cloned().or_else(|| {
-            sessions.values().find(|s| {
-                let meta = s.meta.lock();
-                meta.id == id || meta.tty == id || (!id.is_empty() && meta.tty.contains(id))
-            }).cloned()
-        }).ok_or_else(|| format!("no session {id}"))?;
+        let session = self.get_session(id)?;
         eprintln!("[MANAGER] send_command id={} cmd={:?}", id, command);
         let agent = detect_agent(command);
         // Auto-append --no-banner only when the command *invokes* claude
@@ -468,8 +464,7 @@ impl TerminalManager {
 
     pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
         use super::resize as rz;
-        let sessions = self.sessions.lock();
-        let session = sessions.get(id).ok_or_else(|| format!("no session {id}"))?;
+        let session = self.get_session(id)?;
         let (cols, rows) = rz::clamp(cols, rows);
         {
             let m = session.meta.lock();
@@ -492,9 +487,23 @@ impl TerminalManager {
     /// Kill the process and drop the session. The frontend recreates on demand.
     pub fn close(&self, id: &str) -> Result<(), String> {
         let mut sessions = self.sessions.lock();
-        if let Some(session) = sessions.remove(id) {
-            let _ = session.pty.lock().child.kill();
-            let _ = session.pty.lock().child.wait();
+        let target_key = if sessions.contains_key(id) {
+            Some(id.to_string())
+        } else {
+            sessions.iter().find_map(|(k, s)| {
+                let meta = s.meta.lock();
+                if meta.id == id || meta.tty == id || (!id.is_empty() && (meta.tty.contains(id) || id.contains(&meta.tty))) {
+                    Some(k.clone())
+                } else {
+                    None
+                }
+            })
+        };
+        if let Some(k) = target_key {
+            if let Some(session) = sessions.remove(&k) {
+                let _ = session.pty.lock().child.kill();
+                let _ = session.pty.lock().child.wait();
+            }
         }
         let _ = self.app.emit("terminal-updated", ());
         Ok(())
@@ -515,8 +524,7 @@ impl TerminalManager {
     /// Restart the shell process inside the same session (same id, same cwd).
     /// The renderer channel is preserved; the reader queue is swapped.
     pub fn restart(&self, id: &str) -> Result<(), String> {
-        let sessions = self.sessions.lock();
-        let session = sessions.get(id).ok_or_else(|| format!("no session {id}"))?;
+        let session = self.get_session(id)?;
 
         let (cwd, cols, rows, grid_mode) = {
             let m = session.meta.lock();
@@ -535,7 +543,7 @@ impl TerminalManager {
         let _reader = spawn_reader(reader, tx);
 
         // Swap PTY + queue; keep id + channels (detach/re-attach handled by UI).
-        recovery::detach(session);
+        recovery::detach(&session);
         session.reset_scrollback();
         *session.pty.lock() = handle;
         *session.rx.lock() = Some(rx);
@@ -554,92 +562,53 @@ impl TerminalManager {
 
     pub fn list(&self) -> Vec<SessionMeta> {
         let sessions = self.sessions.lock();
-        sessions.values().map(|s| {
-            let pid = s.meta.lock().pid;
-            let current_cli = s.meta.lock().cli.clone();
-            if let Some(active) = pty::active_child_process(pid) {
-                let detected = detect_cli(&active);
-                let cli_to_set = if !detected.is_empty() { detected } else { active };
-                s.meta.lock().cli = cli_to_set.clone();
-                s.meta.lock().agent = cli_to_set;
-            } else if !current_cli.is_empty() && current_cli != "zsh" && current_cli != "bash" && current_cli != "sh" {
-                s.meta.lock().cli = "zsh".to_string();
-                s.meta.lock().agent = "shell".to_string();
-            }
-            s.meta()
-        }).collect()
+        sessions.values().map(|s| s.meta()).collect()
     }
 
     pub fn get_meta(&self, id: &str) -> Option<SessionMeta> {
-        let sessions = self.sessions.lock();
-        sessions.get(id).map(|s| {
-            let pid = s.meta.lock().pid;
-            let current_cli = s.meta.lock().cli.clone();
-            if let Some(active) = pty::active_child_process(pid) {
-                let detected = detect_cli(&active);
-                let cli_to_set = if !detected.is_empty() { detected } else { active };
-                s.meta.lock().cli = cli_to_set.clone();
-                s.meta.lock().agent = cli_to_set;
-            } else if !current_cli.is_empty() && current_cli != "zsh" && current_cli != "bash" && current_cli != "sh" {
-                s.meta.lock().cli = "zsh".to_string();
-                s.meta.lock().agent = "shell".to_string();
-            }
-            s.meta()
-        })
+        self.get_session(id).ok().map(|s| s.meta())
     }
 
     /// Return the full persistent scrollback for a session (FIX: full-history
     /// replay). The frontend calls this after (re)creating a renderer so the
     /// terminal shows the ENTIRE output history, not just the newest chunks.
     pub fn get_scrollback(&self, id: &str) -> Result<Vec<u8>, String> {
-        let sessions = self.sessions.lock();
-        let session = sessions.get(id).ok_or_else(|| format!("no session {id}"))?;
+        let session = self.get_session(id)?;
         Ok(session.scrollback_copy())
     }
 
     pub fn set_title(&self, id: &str, title: &str) {
-        let sessions = self.sessions.lock();
-        if let Some(session) = sessions.get(id) {
+        if let Ok(session) = self.get_session(id) {
             session.meta.lock().title = title.to_string();
-        } else if let Some(session) = sessions.values().find(|s| {
-            let meta = s.meta.lock();
-            meta.id == id || meta.tty == id || (!id.is_empty() && meta.tty.contains(id))
-        }) {
-            session.meta.lock().title = title.to_string();
+            let _ = self.app.emit("terminal-updated", ());
         }
-        let _ = self.app.emit("terminal-updated", ());
     }
 
     pub fn set_tui(&self, id: &str, active: bool) {
-        let sessions = self.sessions.lock();
-        if let Some(session) = sessions.get(id) {
+        if let Ok(session) = self.get_session(id) {
             session.meta.lock().tui_active = active;
         }
     }
 
     pub fn set_focus(&self, id: &str, focused: bool) {
-        let sessions = self.sessions.lock();
-        if let Some(session) = sessions.get(id) {
+        if let Ok(session) = self.get_session(id) {
             let changed = session.focused.load(std::sync::atomic::Ordering::Relaxed) != focused;
             session
                 .focused
                 .store(focused, std::sync::atomic::Ordering::Relaxed);
             if changed {
-                drop(sessions);
                 let _ = self.app.emit("terminal-updated", ());
             }
         }
     }
 
     pub fn set_visible(&self, id: &str, visible: bool) {
-        let sessions = self.sessions.lock();
-        if let Some(session) = sessions.get(id) {
+        if let Ok(session) = self.get_session(id) {
             let changed = session.visible.load(std::sync::atomic::Ordering::Relaxed) != visible;
             session
                 .visible
                 .store(visible, std::sync::atomic::Ordering::Relaxed);
             if changed {
-                drop(sessions);
                 let _ = self.app.emit("terminal-updated", ());
             }
         }
@@ -807,4 +776,70 @@ fn base36(mut v: u64) -> String {
     }
     out.reverse();
     String::from_utf8(out).expect("base36 digits are ASCII")
+}
+
+/// Background worker that queries child processes asynchronously.
+/// Runs completely off the central sessions lock and off the main thread,
+/// eliminating any process-spawning lock contention or beachballs.
+pub fn spawn_detector(manager: Arc<TerminalManager>) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(2000));
+        loop {
+            interval.tick().await;
+
+            // 1. Snapshot running sessions without holding sessions lock during external process queries
+            let targets: Vec<(String, u32, String)> = {
+                let sessions = manager.sessions.lock();
+                sessions
+                    .values()
+                    .filter_map(|s| {
+                        let m = s.meta.lock();
+                        if m.status == "running" && m.pid > 0 {
+                            Some((m.id.clone(), m.pid, m.cli.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+
+            if targets.is_empty() {
+                continue;
+            }
+
+            let mut updates = Vec::new();
+            for (id, pid, current_cli) in targets {
+                let active = tokio::task::spawn_blocking(move || {
+                    pty::active_child_process(pid)
+                })
+                .await
+                .unwrap_or(None);
+
+                if let Some(active_cmd) = active {
+                    let detected = detect_cli(&active_cmd);
+                    let cli_to_set = if !detected.is_empty() { detected } else { active_cmd };
+                    if cli_to_set != current_cli {
+                        updates.push((id, cli_to_set));
+                    }
+                } else if !current_cli.is_empty() && current_cli != "zsh" && current_cli != "bash" && current_cli != "sh" {
+                    updates.push((id, "zsh".to_string()));
+                }
+            }
+
+            if !updates.is_empty() {
+                {
+                    let sessions = manager.sessions.lock();
+                    for (id, cli_name) in updates {
+                        if let Some(session) = sessions.get(&id) {
+                            let mut m = session.meta.lock();
+                            let agent_name = if cli_name == "zsh" { "shell".to_string() } else { cli_name.clone() };
+                            m.cli = cli_name;
+                            m.agent = agent_name;
+                        }
+                    }
+                }
+                let _ = manager.app.emit("terminal-updated", ());
+            }
+        }
+    });
 }

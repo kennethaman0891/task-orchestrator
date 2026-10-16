@@ -1835,6 +1835,7 @@ def detect_agent(cmd: str) -> str:
     if "agent.py" in cmd_lower: return "tto-agent"
     if "opencode" in cmd_lower: return "opencode"
     if "prime-agent" in cmd_lower: return "prime-agent"
+    if "antigravity" in cmd_lower or "agy" in cmd_lower or "jetski" in cmd_lower: return "antigravity"
     if "claude" in cmd_lower:
         # Guard against merely mentioning claude (e.g. `echo hello claude`,
         # scripts that take a path under a claude-named dir) when it isn't an
@@ -1855,6 +1856,9 @@ def detect_agent(cmd: str) -> str:
     if "gemini" in cmd_lower: return "gemini"
     if "deepcode" in cmd_lower: return "deepcode"
     if "aider" in cmd_lower: return "aider"
+    if "cursor" in cmd_lower: return "cursor"
+    if "qwen" in cmd_lower: return "qwen"
+    if "ollama" in cmd_lower: return "ollama"
     return ""
 
 # General CLI detection — matches ANY recognizable terminal foreground tool by
@@ -1895,6 +1899,8 @@ def detect_cli(cmd: str) -> str:
         "kubectl": "kubectl", "minikube": "kubernetes",
         "code": "vscode", "cursor": "cursor",
         # AI / coding agents
+        "agy": "antigravity", "antigravity": "antigravity", "jetski": "antigravity",
+        "qwen": "qwen", "ollama": "ollama",
         "freebuff": "freebuff", "atomic-agent": "atomic-agent",
         "codeium": "codeium", "continue": "continue", "amp": "amp",
         "zed": "zed",
@@ -3126,16 +3132,10 @@ def _resolve_opencode_session(conn, cwd: str, boot: tuple or None, committed_sid
     return committed_sid
 
 def _opencode_live_status(tty: str) -> dict:
-    with open("/tmp/func_calls.log", "a") as f:
-        f.write(f"_opencode_live_status called for {tty}\n")
-        f.flush()
-    print("=== UNIQUE MARKER: Function started ===", flush=True)
     now = time.time()
     cached = _opencode_live_cache.get(tty)
     if cached and now - cached[0] < _OPC_LIVE_TTL_S:
-        print(f"[DEBUG _opencode_live_status] CACHE HIT for {tty}: state={cached[1].get('state')}, last_text_len={len(cached[1].get('last_text', ''))}", flush=True)
         return cached[1]
-    print(f"[DEBUG _opencode_live_status] CACHE MISS for {tty}, cached={cached is not None}, ttl={_OPC_LIVE_TTL_S}", flush=True)
     result = {"state": "off", "last_update_ms": -1, "last_text": "", "session_id": "", "session_slug": "", "session_title": ""}
     t = terminals.get(tty)
     cwd = t.info.cwd if t and t.info.cwd else None

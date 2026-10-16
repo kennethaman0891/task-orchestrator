@@ -63,7 +63,7 @@ export function deriveTaskStatus(
   }
 
   // 2. Fetch live terminal buffer
-  const linesList = TerminalManager.lastLines(tty, 60);
+  const linesList = TerminalManager.lastLines(tty, 80);
   const recentLines = linesList.join('\n');
   const nonBlankLines = linesList.map((l) => l.trim()).filter(Boolean);
   const lastLine = nonBlankLines[nonBlankLines.length - 1] || '';
@@ -86,6 +86,12 @@ export function deriveTaskStatus(
     cliLower === 'agy' ||
     cliLower === 'jetski' ||
     /\bantigravity\b|\bagy\b|google\s+antigravity|google\s+deepmind/i.test(recentLines);
+  const cursor =
+    cliLower.includes('cursor') ||
+    /\bcursor\b/i.test(recentLines);
+  const gemini =
+    cliLower.includes('gemini') ||
+    /\bgemini\b/i.test(recentLines);
 
   // 4. Genuine question or permission check
   // NOTE: Static tips, welcome banners, shortcuts, and root prompts are NOT questions!
@@ -120,13 +126,16 @@ export function deriveTaskStatus(
     }
   }
 
-  // 6. Claude Code
+  // 6. Claude Code (stabilized against status badge flickering during tool runs)
   if (claude) {
+    const isAtPrompt = /[>❯]\s*$/.test(lastLine) || /^[>❯]\s*Try\s+["']/i.test(lastLine);
     const claudeWorking =
-      /(thought for\s+\d+|thinking\.\.\.|\*\s+(update|explore|read|edit|bash|let me|write)|added \d+ line|removed \d+ line|running tool|executing bash)/i.test(
+      /(thought for\s+\d+|thinking\.\.\.|\*\s+(update|explore|read|edit|bash|let me|write)|added \d+ line|removed \d+ line|running tool|executing bash|●\s+\w+\(|Investigating|Searching)/i.test(
         recentLines
-      );
-    if (claudeWorking) return 'running';
+      ) ||
+      Boolean((entry as any)?.claude_running && !isAtPrompt) ||
+      (now - lastOut < 3000 && !isAtPrompt);
+    if (claudeWorking && !isAtPrompt) return 'running';
     if (isGenuineQuestion) return 'asking';
     // Sitting at idle prompt (e.g. > Try "..." or >> auto mode on or root prompt) -> STOPPED
     return 'stopped';
@@ -146,9 +155,20 @@ export function deriveTaskStatus(
 
   // 8. Antigravity CLI
   if (antigravity) {
+    const isAtPrompt = /[❯>$?]\s*$/.test(lastLine);
     const agyWorking =
-      /(thinking|editing|running|analyzing|generating|searching)/i.test(recentLines);
-    if (agyWorking && !/[❯>$]\s*$/.test(lastLine)) return 'running';
+      /(thinking|editing|running|analyzing|generating|searching|tool call|executing)/i.test(recentLines) ||
+      (now - lastOut < 3000 && !isAtPrompt);
+    if (agyWorking && !isAtPrompt) return 'running';
+    if (isGenuineQuestion) return 'asking';
+    return 'stopped';
+  }
+
+  // 9. Cursor and Gemini
+  if (cursor || gemini) {
+    const isAtPrompt = /[❯>$]\s*$/.test(lastLine);
+    const working = now - lastOut < 3000 && !isAtPrompt;
+    if (working) return 'running';
     if (isGenuineQuestion) return 'asking';
     return 'stopped';
   }

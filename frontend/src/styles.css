@@ -10231,6 +10231,31 @@ h1 {
   margin-left: auto;
   flex: none;
 }
+
+/* Authentic VS Code Tab Strip Interaction */
+.ide-tab-item {
+  position: relative;
+}
+.ide-tab-item:hover {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+}
+.ide-tab-item .tab-close-btn {
+  opacity: 0.5;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+.ide-tab-item:hover .tab-close-btn {
+  opacity: 0.85;
+}
+.ide-tab-item .tab-close-btn:hover {
+  opacity: 1 !important;
+  background-color: rgba(255, 255, 255, 0.15) !important;
+}
+.ide-tab-item:hover .tab-dirty-dot {
+  display: none !important;
+}
+.ide-tab-item:hover .tab-close-btn {
+  display: flex !important;
+}
 .ide-welcome {
   flex: 1;
   display: flex;

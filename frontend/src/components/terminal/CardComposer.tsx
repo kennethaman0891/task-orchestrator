@@ -1,14 +1,13 @@
 // CardComposer.tsx — Dedicated inline command & prompt text box below terminal cards
 // Compatible with all CLIs: Claude Code, Codex, Antigravity, OpenCode, Gemini, Bash, Zsh, REPLs
-// Includes 15-second automatic permission granting specifically for Antigravity CLI (agy)
 'use client';
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
 import { TerminalManager } from '@/terminal/TerminalManager';
 import { parseTerminalDialogue, type InteractivePrompt, type PromptOption } from '@/terminal/dialogueParser';
 import { CliLogo } from '@/lib/cliLogos';
-import { Send, Check, CornerDownLeft, Sparkles, ShieldCheck } from 'lucide-react';
+import { Send, Check, CornerDownLeft, Sparkles, AlertCircle } from 'lucide-react';
 
 interface CardComposerProps {
   sessionId: string;
@@ -19,7 +18,7 @@ interface CardComposerProps {
   onSent?: (text: string) => void;
 }
 
-export function CardComposer({
+export const CardComposer = memo(function CardComposer({
   sessionId,
   displayName,
   cli,
@@ -30,31 +29,12 @@ export function CardComposer({
   const { theme: t } = useTheme();
   const [draft, setDraft] = useState('');
   const [sentFlash, setSentFlash] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const [isFocused, setIsFocused] = useState(false);
   const [activePrompt, setActivePrompt] = useState<InteractivePrompt | null>(null);
 
-  // ── Antigravity 15-Second Auto-Permission State ──
-  const [autoApproveCountdown, setAutoApproveCountdown] = useState<number | null>(null);
-  const [autoApproveCancelled, setAutoApproveCancelled] = useState(false);
-  const trackedPromptIdRef = useRef<string | null>(null);
-
   const inputRef = useRef<HTMLInputElement>(null);
   const lastSyncRef = useRef<number>(0);
-
-  // Check if active CLI is strictly Antigravity
-  const isAntigravity = useMemo(() => {
-    const c = (cli || displayName || '').toLowerCase();
-    return c.includes('antigravity') || c.includes('agy') || c === 'jetski';
-  }, [cli, displayName]);
-
-  // Check if the prompt is specifically a permission / tool execution request
-  const isPermissionPrompt = Boolean(
-    activePrompt &&
-      (activePrompt.type === 'permission' ||
-        activePrompt.type === 'confirm' ||
-        /permission|allow|permit|authorize|proceed|confirm/i.test(activePrompt.question || '') ||
-        /permission|tool/i.test(activePrompt.title || ''))
-  );
 
   // Dynamic placeholder text tailored to active CLI tool
   const placeholderText = useMemo(() => {
@@ -84,7 +64,7 @@ export function CardComposer({
       }
 
       // 1. Try parsing structured dialogue from buffer lines
-      const parsed = parseTerminalDialogue(lines, cli || 'claude');
+      const parsed = parseTerminalDialogue(lines, cli || 'shell');
       const withPrompt = parsed
         .slice()
         .reverse()
@@ -153,90 +133,54 @@ export function CardComposer({
     async (opt: PromptOption) => {
       if (!sessionId) return;
       setActivePrompt(null);
-      setAutoApproveCountdown(null);
       setSentFlash(true);
       setTimeout(() => setSentFlash(false), 900);
 
-      await TerminalManager.sendMenuSelection(sessionId, opt.key);
-      onSent?.(opt.key);
+      try {
+        await TerminalManager.sendMenuSelection(sessionId, opt.key);
+        onSent?.(opt.key);
+      } catch (err) {
+        console.warn(`[CardComposer] Option selection failed for ${sessionId}:`, err);
+      }
     },
     [sessionId, onSent]
   );
-
-  // Track prompt changes and initiate 15s timer for Antigravity permission requests
-  useEffect(() => {
-    if (activePrompt && activePrompt.options.length > 0) {
-      if (activePrompt.id !== trackedPromptIdRef.current) {
-        trackedPromptIdRef.current = activePrompt.id;
-        setAutoApproveCancelled(false);
-        if (isAntigravity && isPermissionPrompt) {
-          setAutoApproveCountdown(15);
-        } else {
-          setAutoApproveCountdown(null);
-        }
-      }
-    } else {
-      trackedPromptIdRef.current = null;
-      setAutoApproveCountdown(null);
-      setAutoApproveCancelled(false);
-    }
-  }, [activePrompt, isAntigravity, isPermissionPrompt]);
-
-  // 15-second countdown timer effect for Antigravity auto-permission
-  useEffect(() => {
-    if (!isAntigravity || !isPermissionPrompt || autoApproveCancelled || !activePrompt) {
-      return;
-    }
-
-    if (autoApproveCountdown === null) return;
-
-    if (autoApproveCountdown <= 0) {
-      // 15 seconds elapsed without manual intervention -> Automatically grant permission!
-      const approvalOpt =
-        activePrompt.options.find(
-          (o) =>
-            o.key.toLowerCase() === 'y' ||
-            o.key === '1' ||
-            /allow|yes|proceed/i.test(o.label || o.rawText || '')
-        ) || activePrompt.options[0];
-
-      if (approvalOpt) {
-        console.log(`[Antigravity Auto-Permission] 15s timeout reached for ${sessionId}. Auto-granting:`, approvalOpt);
-        handleSelectOption(approvalOpt);
-      }
-      setAutoApproveCountdown(null);
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      setAutoApproveCountdown((prev) => (prev !== null && prev > 0 ? prev - 1 : prev));
-    }, 1000);
-
-    return () => window.clearTimeout(timer);
-  }, [isAntigravity, isPermissionPrompt, autoApproveCountdown, autoApproveCancelled, activePrompt, handleSelectOption, sessionId]);
 
   // Send message / command directly into terminal PTY with decoupled Enter (\r)
   const handleSend = async () => {
     if (!sessionId) return;
     const text = draft.trim();
+    if (!text) {
+      try {
+        await TerminalManager.sendPrompt(sessionId, '');
+      } catch (err) {
+        console.warn(`[CardComposer] Empty prompt send failed for ${sessionId}:`, err);
+      }
+      return;
+    }
 
-    setDraft('');
-    setActivePrompt(null);
-    setAutoApproveCountdown(null);
-    setSentFlash(true);
-    setTimeout(() => setSentFlash(false), 900);
-
-    await TerminalManager.sendPrompt(sessionId, text);
-    onSent?.(text);
-
-    // Keep focus in input for smooth follow-up typing
-    inputRef.current?.focus();
+    try {
+      setSendError(null);
+      await TerminalManager.sendPrompt(sessionId, text);
+      // ONLY wipe draft if the prompt was actually accepted by IPC
+      setDraft('');
+      setActivePrompt(null);
+      setSentFlash(true);
+      setTimeout(() => setSentFlash(false), 900);
+      onSent?.(text);
+    } catch (err: any) {
+      console.error(`[CardComposer] sendPrompt failed for ${sessionId}:`, err);
+      setSendError('Delivery failed (click to retry)');
+      setTimeout(() => setSendError(null), 3500);
+    } finally {
+      // Keep focus in input for smooth follow-up typing
+      inputRef.current?.focus();
+    }
   };
 
   const handleCancelPrompt = async () => {
     if (!sessionId) return;
     setActivePrompt(null);
-    setAutoApproveCountdown(null);
     await TerminalManager.sendMenuSelection(sessionId, 'escape');
   };
 
@@ -261,91 +205,6 @@ export function CardComposer({
         transition: 'border-color 0.15s ease',
       }}
     >
-      {/* ── Antigravity 15-Second Auto-Permission Countdown Strip ── */}
-      {isAntigravity && isPermissionPrompt && autoApproveCountdown !== null && !autoApproveCancelled && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: isCompact ? '2px 6px' : '3px 8px',
-            background: 'linear-gradient(90deg, rgba(99, 102, 241, 0.20) 0%, rgba(16, 185, 129, 0.15) 100%)',
-            borderBottom: `1px solid ${t.colors.accent.primary}40`,
-            fontSize: isCompact ? '9px' : '10px',
-            color: t.colors.text.primary,
-            flexShrink: 0,
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0, overflow: 'hidden' }}>
-            <span
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#10b981',
-                flexShrink: 0,
-              }}
-            >
-              <ShieldCheck size={isCompact ? 11 : 13} />
-            </span>
-            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              Antigravity Permission: Auto-approving in{' '}
-              <strong style={{ color: autoApproveCountdown <= 5 ? '#f59e0b' : '#10b981', fontFamily: t.fontFamily.mono }}>
-                {autoApproveCountdown}s
-              </strong>
-            </span>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
-            <button
-              type="button"
-              onClick={() => {
-                const approvalOpt =
-                  activePrompt?.options.find(
-                    (o) =>
-                      o.key.toLowerCase() === 'y' ||
-                      o.key === '1' ||
-                      /allow|yes|proceed/i.test(o.label || o.rawText || '')
-                  ) || activePrompt?.options[0];
-                if (approvalOpt) handleSelectOption(approvalOpt);
-              }}
-              style={{
-                padding: '1px 6px',
-                borderRadius: '3px',
-                border: 'none',
-                background: '#10b981',
-                color: '#ffffff',
-                fontSize: '9.5px',
-                fontWeight: 600,
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              Allow Now
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setAutoApproveCancelled(true);
-                setAutoApproveCountdown(null);
-              }}
-              style={{
-                padding: '1px 6px',
-                borderRadius: '3px',
-                border: `1px solid ${t.colors.border.subtle}`,
-                background: 'rgba(255, 255, 255, 0.08)',
-                color: t.colors.text.muted,
-                fontSize: '9.5px',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
-              title="Don't auto-approve. Wait for manual decision."
-            >
-              Cancel Auto
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* ── Optional Quick Choice Pills (shown when CLI asks questions / permissions) ── */}
       {activePrompt && activePrompt.options && activePrompt.options.length > 0 && (
@@ -468,14 +327,7 @@ export function CardComposer({
           ref={inputRef}
           type="text"
           value={draft}
-          onChange={(e) => {
-            setDraft(e.target.value);
-            // Cancel auto-approve timer if user begins typing
-            if (autoApproveCountdown !== null) {
-              setAutoApproveCancelled(true);
-              setAutoApproveCountdown(null);
-            }
-          }}
+          onChange={(e) => setDraft(e.target.value)}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
           onKeyDown={(e) => {
@@ -502,22 +354,46 @@ export function CardComposer({
           }}
         />
 
+        {/* Error notification badge if prompt delivery failed */}
+        {sendError && (
+          <span
+            style={{
+              fontSize: '10px',
+              color: '#ef4444',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '3px',
+              padding: '0 4px',
+              cursor: 'pointer',
+            }}
+            onClick={handleSend}
+            title="Click to retry delivery"
+          >
+            <AlertCircle size={11} />
+            {!isCompact && sendError}
+          </span>
+        )}
+
         {/* Send / Confirmation Action Button */}
         <button
           type="button"
           onClick={handleSend}
-          title={sentFlash ? 'Sent!' : 'Send command / prompt (Enter)'}
+          title={sendError ? 'Retry sending prompt' : sentFlash ? 'Sent!' : 'Send command / prompt (Enter)'}
           style={{
             width: isCompact ? '18px' : '22px',
             height: isCompact ? '18px' : '22px',
             borderRadius: '4px',
             border: 'none',
-            background: sentFlash
+            background: sendError
+              ? 'rgba(239, 68, 68, 0.2)'
+              : sentFlash
               ? 'rgba(16, 185, 129, 0.18)'
               : draft.trim()
               ? t.colors.accent.primary
               : 'transparent',
-            color: sentFlash
+            color: sendError
+              ? '#ef4444'
+              : sentFlash
               ? '#10b981'
               : draft.trim()
               ? '#ffffff'
@@ -531,19 +407,21 @@ export function CardComposer({
             padding: 0,
           }}
           onMouseEnter={(e) => {
-            if (!draft.trim() && !sentFlash) {
+            if (!draft.trim() && !sentFlash && !sendError) {
               e.currentTarget.style.color = t.colors.text.primary;
               e.currentTarget.style.background = t.colors.bg.elevated || 'rgba(255,255,255,0.06)';
             }
           }}
           onMouseLeave={(e) => {
-            if (!draft.trim() && !sentFlash) {
+            if (!draft.trim() && !sentFlash && !sendError) {
               e.currentTarget.style.color = t.colors.text.muted;
               e.currentTarget.style.background = 'transparent';
             }
           }}
         >
-          {sentFlash ? (
+          {sendError ? (
+            <AlertCircle size={iconSize} />
+          ) : sentFlash ? (
             <Check size={iconSize} strokeWidth={2.5} />
           ) : draft.trim() ? (
             <CornerDownLeft size={iconSize} />
@@ -554,4 +432,4 @@ export function CardComposer({
       </div>
     </div>
   );
-}
+});

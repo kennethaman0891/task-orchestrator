@@ -30,6 +30,7 @@ import { AgentView } from '@/views/agent/AgentView';
 import { DevicesView } from '@/views/devices/DevicesView';
 import { DjangoView } from '@/views/django/DjangoView';
 import { useTerminals } from '@/hooks/useTerminals';
+import { useGlobalShortcuts } from '@/hooks/useGlobalShortcuts';
 import { putFile } from '@/lib/api';
 import type { NativeSessionEntry, UnifiedTerminal } from '@/types';
 import type { DropChip } from '@/components/DroppedFileChip';
@@ -229,27 +230,41 @@ export default function App() {
   useEffect(() => { saveWorkspaces(workspaces); }, [workspaces]);
   useEffect(() => { saveActiveWsId(activeWsId); }, [activeWsId]);
 
-  // ── Boot: auto-spawn Rust PTY sessions for tty:null panes ─────
+  // ── Auto-spawn Rust PTY sessions for tty:null panes on the ACTIVE workspace ─────
+  // Spawns lazily on-demand: only the active workspace spawns PTYs.
+  // Inactive workspaces keep their panes unspawned until switched to, preventing
+  // 40+ concurrent zsh fork storms, pre-exec crashes, and main-thread freezes.
   const bootCreated = useRef(new Set<string>());
+  const isSpawningRef = useRef(false);
+
   useEffect(() => {
     if (!isTauri() || !sessionsLoaded) {
-      console.log('[App] Boot effect skipped: isTauri=', isTauri(), 'sessionsLoaded=', sessionsLoaded);
       return;
     }
+    const currentWs = workspaces.find((w) => w.id === activeWsId);
+    if (!currentWs) return;
+
     const missing: Array<{ ws: Workspace; pane: Pane; isIde?: boolean }> = [];
-    for (const ws of workspaces) {
-      for (const p of ws.panes) {
-        if (!p.tty && !bootCreated.current.has(p.id)) missing.push({ ws, pane: p, isIde: false });
+    for (const p of currentWs.panes) {
+      if (!p.tty && !bootCreated.current.has(p.id)) {
+        missing.push({ ws: currentWs, pane: p, isIde: false });
       }
-      if (ws.idePanes) {
-        for (const p of ws.idePanes) {
-          if (!p.tty && !bootCreated.current.has(p.id)) missing.push({ ws, pane: p, isIde: true });
+    }
+    if (currentWs.idePanes) {
+      for (const p of currentWs.idePanes) {
+        if (!p.tty && !bootCreated.current.has(p.id)) {
+          missing.push({ ws: currentWs, pane: p, isIde: true });
         }
       }
     }
-    console.log('[App] Boot effect: missing panes =', missing.length, 'of', workspaces.flatMap(w => [...w.panes, ...(w.idePanes || [])]).length);
-    if (missing.length === 0) return;
+
+    if (missing.length === 0 || isSpawningRef.current) return;
+    isSpawningRef.current = true;
+
     const run = async () => {
+      console.log(`[App] Spawning ${missing.length} missing panes for active workspace ${currentWs.id} (${currentWs.name})`);
+      const newSidMap = new Map<string, string>(); // paneId -> sid
+
       for (const { ws, pane, isIde } of missing) {
         if (bootCreated.current.has(pane.id)) continue;
         bootCreated.current.add(pane.id);
@@ -261,45 +276,58 @@ export default function App() {
           const result = created as { id?: string; tty?: string };
           const sid = result?.id || result?.tty;
           console.log(`[App] PTY created (isIde=${isIde}): id=${result?.id} tty=${result?.tty} → sid=${sid}`);
-          if (!sid) continue;
-          setWorkspaces((prev) =>
-            prev.map((w) => {
-              if (w.id !== ws.id) return w;
-              if (isIde) {
-                return {
-                  ...w,
-                  idePanes: (w.idePanes || []).map((pp) =>
-                    pp.id === pane.id ? { ...pp, tty: sid } : pp
-                  ),
-                };
-              }
-              return {
-                ...w,
-                panes: w.panes.map((pp) =>
-                  pp.id === pane.id ? { ...pp, tty: sid } : pp
-                ),
-              };
-            })
-          );
-          if (!isIde && (!focusedTerminal || ws.id === activeWsId)) setFocusedTerminal(sid);
+          if (sid) {
+            newSidMap.set(pane.id, sid);
+          }
+          // Micro-yield between process spawns so macOS libc allocator and fork lock cleanly settle
+          await new Promise((r) => setTimeout(r, 60));
         } catch (err) {
           console.error(`[App] PTY creation FAILED for pane ${pane.id}:`, err);
         }
       }
-      // Re-fetch sessions so boot-created ones appear in nativeSessions
-      try {
-        const refreshed = await tauri.list();
-        if (Array.isArray(refreshed)) {
-          console.log(`[App] Refreshed sessions: ${refreshed.length} sessions`);
-          setNativeSessions(refreshed as unknown as NativeSessionEntry[]);
+
+      if (newSidMap.size > 0) {
+        // Single atomic state update for all newly spawned panes
+        setWorkspaces((prev) =>
+          prev.map((w) => {
+            if (w.id !== currentWs.id) return w;
+            return {
+              ...w,
+              panes: w.panes.map((p) => {
+                const sid = newSidMap.get(p.id);
+                return sid ? { ...p, tty: sid } : p;
+              }),
+              idePanes: (w.idePanes || []).map((p) => {
+                const sid = newSidMap.get(p.id);
+                return sid ? { ...p, tty: sid } : p;
+              }),
+            };
+          })
+        );
+
+        // Auto-focus first terminal if not focused
+        const firstSid = Array.from(newSidMap.values())[0];
+        if (firstSid && (!focusedTerminal || !currentWs.panes.some((p) => p.tty === focusedTerminal))) {
+          setFocusedTerminal(firstSid);
         }
-      } catch (err) {
-        console.error('[App] Session list refresh FAILED:', err);
+
+        // Re-fetch sessions so newly created ones appear in nativeSessions
+        try {
+          const refreshed = await tauri.list();
+          if (Array.isArray(refreshed)) {
+            setNativeSessions(refreshed as unknown as NativeSessionEntry[]);
+          }
+        } catch (err) {
+          console.error('[App] Session list refresh FAILED:', err);
+        }
       }
+
+      isSpawningRef.current = false;
     };
+
     void run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionsLoaded, isTauri(), workspaces, focusedTerminal]);
+  }, [sessionsLoaded, isTauri(), activeWsId, workspaces]);
 
   // ── Keep focusedTerminal in sync with the active workspace ──────────
   // The Workspace view renders *only* `focusedTerminal`, which is global and
@@ -338,13 +366,24 @@ export default function App() {
       setSessionsLoaded(true);
 
       // Listen for session updates
-      const unlisten = await listenEvent('terminal:session-changed', (payload: any) => {
+      const unlistenUpdated = await listenEvent('terminal-updated', async () => {
+        try {
+          const refreshed = await tauri.list();
+          if (Array.isArray(refreshed)) {
+            setNativeSessions(refreshed as unknown as NativeSessionEntry[]);
+          }
+        } catch {}
+      });
+      const unlistenChanged = await listenEvent('terminal:session-changed', (payload: any) => {
         if (payload && Array.isArray(payload.sessions)) {
           console.log(`[App] Session changed event: ${payload.sessions.length} sessions`);
           setNativeSessions(payload.sessions);
         }
       });
-      return () => { unlisten(); };
+      return () => {
+        unlistenUpdated();
+        unlistenChanged();
+      };
     })();
   }, []);
 
@@ -693,21 +732,36 @@ export default function App() {
   const handleAddPane = useCallback(async (targetSlotIndex?: number) => {
     const ws = activeWorkspace;
     if (!ws || !isTauri()) return;
+
+    let slotIdx = targetSlotIndex;
+    if (typeof slotIdx !== 'number' && view === 'grid') {
+      const templateCount = ws.template || 4;
+      const rawPanes = ws.panes || [];
+      const totalSlots = Math.max(templateCount, rawPanes.length);
+      for (let i = 0; i < totalSlots; i++) {
+        const p = rawPanes[i];
+        if (!p || !p.tty) {
+          slotIdx = i;
+          break;
+        }
+      }
+    }
+
     let paneId: string;
-    if (typeof targetSlotIndex === 'number') {
-      if (ws.panes[targetSlotIndex] && !ws.panes[targetSlotIndex].tty) {
-        paneId = ws.panes[targetSlotIndex].id;
+    if (typeof slotIdx === 'number') {
+      if (ws.panes[slotIdx] && !ws.panes[slotIdx].tty) {
+        paneId = ws.panes[slotIdx].id;
       } else {
         paneId = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
         setWorkspaces((prev) => {
           const next = prev.map((w) => {
             if (w.id !== ws.id) return w;
             const newPanes = [...w.panes];
-            while (newPanes.length < targetSlotIndex) {
+            while (newPanes.length < slotIdx!) {
               newPanes.push({ id: `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, tty: null });
             }
-            if (targetSlotIndex < newPanes.length) {
-              newPanes[targetSlotIndex] = { id: paneId, tty: null };
+            if (slotIdx! < newPanes.length) {
+              newPanes[slotIdx!] = { id: paneId, tty: null };
             } else {
               newPanes.push({ id: paneId, tty: null });
             }
@@ -745,13 +799,19 @@ export default function App() {
         return next;
       });
       setFocusedTerminal(sid);
+      setSelectedPane(paneId);
+      setTimeout(() => {
+        try {
+          TerminalManager.get(sid)?.term.focus();
+        } catch {}
+      }, 60);
       // Re-fetch so the new session shows up in the pool.
       const refreshed = await tauri.list();
       if (Array.isArray(refreshed)) setNativeSessions(refreshed as unknown as NativeSessionEntry[]);
     } catch (err) {
       console.error('[App] handleAddPane: PTY create failed:', err);
     }
-  }, [activeWorkspace]);
+  }, [activeWorkspace, view]);
 
   // ── Dedicated IDE Terminal Handlers ─────────────────────────────────
   const handleAddIdeTerminal = useCallback(async (): Promise<string | undefined> => {
@@ -843,6 +903,21 @@ export default function App() {
     await putFile(path, content);
     setOpenFiles((prev) => prev.map((f) => f.path === path ? { ...f, dirty: false } : f));
   }, []);
+
+  // ── Universal Global Shortcuts (Cmd+T / Ctrl+T, Cmd+W, Cmd+1..9, Cmd+Shift+[, Cmd+Shift+G) ──
+  useGlobalShortcuts({
+    view,
+    onView: handleSetView,
+    activeWorkspace,
+    focusedTerminal,
+    selectedPane,
+    onSelectTerminal: setFocusedTerminal,
+    onSelectPane: setSelectedPane,
+    onAddPane: handleAddPane,
+    onRemovePane: handleRemovePane,
+    onAddIdeTerminal: handleAddIdeTerminal,
+    onToast: showToast,
+  });
 
   // ── Drag & Drop file handler for terminals ──
   const handleDropToTerminal = useCallback(async (sessionId: string, paths: string[]) => {

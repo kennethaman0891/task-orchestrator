@@ -103,7 +103,6 @@ export function TerminalPool({ sessionIds }: PoolProps) {
         const { Terminal } = await import('@xterm/xterm');
         const { Unicode11Addon } = await import('@xterm/addon-unicode11');
 
-        let createdCount = 0;
         for (const sessionId of currentIds) {
           if (TerminalManager.has(sessionId)) {
             continue;
@@ -117,94 +116,119 @@ export function TerminalPool({ sessionIds }: PoolProps) {
           }
 
           creatingRef.current.add(sessionId);
-          createdCount++;
-          // Yield to browser event loop every 4 terminals so UI remains 100% responsive during bulk creation
-          if (createdCount % 4 === 0) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-            if (!containerRef.current || !mountedRef.current) break;
-          }
+          // Yield to browser event loop so UI and WindowServer remain 100% responsive during creation
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          if (!containerRef.current || !mountedRef.current) break;
 
-          // Use latest theme from ref
-          const t = themeRef.current;
-          const term = new Terminal({
-            fontFamily: t.fontFamily.mono,
-            fontSize: 13,
-            lineHeight: 1.0,
-            cursorBlink: true,
-            cursorStyle: 'bar',
-            // Moderate scrollback (5,000 lines = ~150 screens) keeps RAM light with 100-200 terminals
-            scrollback: 5000,
-            allowProposedApi: true,
-            cols: 80,
-            rows: 25,
-            theme: buildXtermTheme(t),
-            // TUI/Full-screen app support (Claude Code, vim, htop, etc.)
-            convertEol: true,
-            macOptionIsMeta: true,
-            minimumContrastRatio: 1,
-            disableStdin: false,
-            allowTransparency: true,
-            drawBoldTextInBrightColors: true,
-          });
-
-          const fitAddon = new FitAddon();
-          term.loadAddon(fitAddon);
-          term.loadAddon(
-            new WebLinksAddon((event, uri) => {
-              event.preventDefault();
-              console.log('[TerminalPool] Opening link:', uri);
-              tauri.openUrl(uri).catch((err) => {
-                console.error('[TerminalPool] Failed to open link:', uri, err);
-              });
-            })
-          );
-
-          // Create host div, parked off-screen until an anchor claims it
-          const host = document.createElement('div');
-          host.style.cssText = POOL_HOST_STYLE;
-          containerRef.current.appendChild(host);
-
-          term.open(host);
-
-          // Use DOM renderer for all terminals to ensure proper ANSI color rendering.
-          // CanvasAddon has known issues with color rendering in some environments.
-
-          // Unicode 11 addon for accurate glyph widths
           try {
-            const unicode11Addon = new Unicode11Addon();
-            term.loadAddon(unicode11Addon);
-            term.unicode.activeVersion = '11';
-          } catch (e) {
-            console.warn(`[TerminalPool] Unicode11Addon failed for ${sessionId}:`, e);
+            // Use latest theme from ref
+            const t = themeRef.current;
+            const term = new Terminal({
+              fontFamily: t.fontFamily.mono,
+              fontSize: 13,
+              lineHeight: 1.0,
+              cursorBlink: true,
+              cursorStyle: 'bar',
+              // Moderate scrollback (5,000 lines = ~150 screens) keeps RAM light with 100-200 terminals
+              scrollback: 5000,
+              allowProposedApi: true,
+              cols: 80,
+              rows: 25,
+              theme: buildXtermTheme(t),
+              // TUI/Full-screen app support (Claude Code, vim, htop, etc.)
+              convertEol: true,
+              macOptionIsMeta: true,
+              minimumContrastRatio: 1,
+              disableStdin: false,
+              allowTransparency: true,
+              drawBoldTextInBrightColors: true,
+            });
+
+            const fitAddon = new FitAddon();
+            term.loadAddon(fitAddon);
+            term.loadAddon(
+              new WebLinksAddon((event, uri) => {
+                event.preventDefault();
+                console.log('[TerminalPool] Opening link:', uri);
+                tauri.openUrl(uri).catch((err) => {
+                  console.error('[TerminalPool] Failed to open link:', uri, err);
+                });
+              })
+            );
+
+            // Create host div, parked off-screen until an anchor claims it
+            const host = document.createElement('div');
+            host.style.cssText = POOL_HOST_STYLE;
+            containerRef.current.appendChild(host);
+
+            term.open(host);
+
+            // Allow universal browser/workspace shortcuts (Cmd+T, Cmd+W, Cmd+1..9, Cmd+Shift+[, Cmd+Shift+], Cmd+Shift+G)
+            // to bypass xterm PTY capture and bubble up to window listeners.
+            // On macOS, preserve ctrlKey for readline/TUI keystrokes (Ctrl+W word kill, Ctrl+G, Ctrl+T).
+            term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+              const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform);
+              const isAppShortcut = isMac ? event.metaKey : event.ctrlKey;
+              if (isAppShortcut) {
+                const key = event.key.toLowerCase();
+                if (
+                  key === 't' ||
+                  key === 'w' ||
+                  (key >= '1' && key <= '9') ||
+                  key === '[' ||
+                  key === ']' ||
+                  key === 'g' ||
+                  event.altKey // Allow spatial arrow navigation with Cmd+Alt+Arrows
+                ) {
+                  return false; // Tells xterm not to consume the event
+                }
+              }
+              return true;
+            });
+
+            // Use DOM renderer for all terminals to ensure proper ANSI color rendering.
+            // CanvasAddon has known issues with color rendering in some environments.
+
+            // Unicode 11 addon for accurate glyph widths
+            try {
+              const unicode11Addon = new Unicode11Addon();
+              term.loadAddon(unicode11Addon);
+              term.unicode.activeVersion = '11';
+            } catch (e) {
+              console.warn(`[TerminalPool] Unicode11Addon failed for ${sessionId}:`, e);
+            }
+
+            // Wire keyboard input → PTY
+            term.onData((data) => {
+              TerminalManager.write(sessionId, data);
+            });
+
+            // Register with TerminalManager
+            TerminalManager.register({ sessionId, term, host });
+            console.log(`[TerminalPool] Registered ${sessionId} with TerminalManager`);
+
+            // Attach to PTY output stream
+            TerminalManager.attachToPty(sessionId, () => {
+              // Shell exited — show exit indicator in xterm
+              term.write('\r\n\x1b[90m[Process exited]\x1b[0m\r\n');
+            }).then(() => {
+              console.log(`[TerminalPool] attachToPty resolved for ${sessionId}`);
+            }).catch((err) => {
+              console.error(`[TerminalPool] attachToPty FAILED for ${sessionId}:`, err);
+            });
+
+            // Wire resize: xterm geometry change → PTY SIGWINCH (fit-driven)
+            const resizeDisposable = term.onResize(({ cols, rows }) => {
+              TerminalManager.resize(sessionId, cols, rows);
+            });
+            (host as any).__ttoFitAddon = fitAddon;
+            (host as any).__ttoResizeDisposable = resizeDisposable;
+
+            console.log(`[TerminalPool] Terminal ${sessionId} fully created and registered`);
+          } catch (itemErr) {
+            console.error(`[TerminalPool] Failed to create terminal for ${sessionId}:`, itemErr);
+            creatingRef.current.delete(sessionId);
           }
-
-          // Wire keyboard input → PTY
-          term.onData((data) => {
-            TerminalManager.write(sessionId, data);
-          });
-
-          // Register with TerminalManager
-          TerminalManager.register({ sessionId, term, host });
-          console.log(`[TerminalPool] Registered ${sessionId} with TerminalManager`);
-
-          // Attach to PTY output stream
-          TerminalManager.attachToPty(sessionId, () => {
-            // Shell exited — show exit indicator in xterm
-            term.write('\r\n\x1b[90m[Process exited]\x1b[0m\r\n');
-          }).then(() => {
-            console.log(`[TerminalPool] attachToPty resolved for ${sessionId}`);
-          }).catch((err) => {
-            console.error(`[TerminalPool] attachToPty FAILED for ${sessionId}:`, err);
-          });
-
-          // Wire resize: xterm geometry change → PTY SIGWINCH (fit-driven)
-          const resizeDisposable = term.onResize(({ cols, rows }) => {
-            TerminalManager.resize(sessionId, cols, rows);
-          });
-          (host as any).__ttoFitAddon = fitAddon;
-          (host as any).__ttoResizeDisposable = resizeDisposable;
-
-          console.log(`[TerminalPool] Terminal ${sessionId} fully created and registered`);
         }
         console.log('[TerminalPool] IIFE loop complete');
       } catch (err) {
@@ -394,14 +418,26 @@ export function TerminalAnchor({ sessionId }: { sessionId: string }) {
           TerminalManager.fitNow(sessionId);
           try {
             handle.term.refresh(0, Math.max(0, handle.term.rows - 1));
-            handle.term.scrollToBottom();
           } catch {}
         }
       }, 80);
 
+      let lastW = 0;
+      let lastH = 0;
       let ro: ResizeObserver | null = null;
       try {
-        ro = new ResizeObserver(requestFit);
+        ro = new ResizeObserver((entries) => {
+          const entry = entries[0];
+          if (entry) {
+            const cr = entry.contentRect;
+            if (Math.abs(cr.width - lastW) < 2 && Math.abs(cr.height - lastH) < 2) {
+              return;
+            }
+            lastW = cr.width;
+            lastH = cr.height;
+          }
+          requestFit();
+        });
         ro.observe(container);
       } catch {
         // ResizeObserver unavailable (very old webview) — the window resize

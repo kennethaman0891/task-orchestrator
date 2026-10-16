@@ -164,6 +164,7 @@ pub fn run() {
         .setup(|app| {
             let manager = Arc::new(terminal::manager::TerminalManager::new(app.handle().clone()));
             terminal::scheduler::spawn_scheduler(manager.clone());
+            terminal::manager::spawn_detector(manager.clone());
             // Kill all PTY children on exit so shells/TUIs (opencode, etc.) are
             // never orphaned with a dead terminal — orphaned TUIs spin at 100%
             // CPU and can crash their runtime (Bun SIGTRAP in the renderer).

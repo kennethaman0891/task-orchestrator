@@ -977,7 +977,21 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
                   error: p.state?.error,
                 })),
             }));
-            setMessages(mapped);
+            setMessages((prev) => {
+              if (prev.length === mapped.length && prev.length > 0) {
+                const prevLast = prev[prev.length - 1];
+                const mappedLast = mapped[mapped.length - 1];
+                if (
+                  prevLast.id === mappedLast.id &&
+                  prevLast.textParts.length === mappedLast.textParts.length &&
+                  prevLast.toolParts.length === mappedLast.toolParts.length &&
+                  prevLast.reasoningParts.length === mappedLast.reasoningParts.length
+                ) {
+                  return prev; // No change in messages payload — skip state update and avoid DOM thrashing
+                }
+              }
+              return mapped;
+            });
             setLoadingMessages(false);
             setMessagesError(null);
             return;
@@ -1078,7 +1092,11 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
     setSentFlash(true);
 
     // Submit prompt with decoupled Enter so CLI TUIs execute immediately
-    await TerminalManager.sendPrompt(sessionId, msg);
+    try {
+      await TerminalManager.sendPrompt(sessionId, msg);
+    } catch (err) {
+      console.error('[AgentChatPanel] sendPrompt failed:', err);
+    }
 
     inputRef.current?.focus();
   };

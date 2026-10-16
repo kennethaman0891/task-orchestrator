@@ -85,7 +85,21 @@ export const TerminalManager = {
     }
   },
 
-  has(id: string): boolean { return TerminalManager.handles.has(id); },
+  /** Resolve canonical session ID from either canonical ID or slave tty */
+  resolveSessionId(id: string): string {
+    if (!id) return id;
+    if (TerminalManager.handles.has(id)) return id;
+    for (const [key, handle] of TerminalManager.handles.entries()) {
+      if (handle.sessionId === id || key.includes(id) || id.includes(key)) {
+        return key;
+      }
+    }
+    return id;
+  },
+
+  has(id: string): boolean {
+    return TerminalManager.handles.has(id) || TerminalManager.handles.has(TerminalManager.resolveSessionId(id));
+  },
 
   register(opts: {
     sessionId: string; term: Terminal; host: HTMLDivElement;
@@ -264,7 +278,7 @@ export const TerminalManager = {
   },
 
   get(id: string): Handle | undefined {
-    return TerminalManager.handles.get(id);
+    return TerminalManager.handles.get(id) || TerminalManager.handles.get(TerminalManager.resolveSessionId(id));
   },
 
   all(): Handle[] {
@@ -305,16 +319,18 @@ export const TerminalManager = {
   },
 
   async write(id: string, data: string): Promise<void> {
-    const h = TerminalManager.handles.get(id);
+    const resolvedId = TerminalManager.resolveSessionId(id);
+    const h = TerminalManager.handles.get(resolvedId);
     if (h) {
       h.lastOutputAt = Date.now();
     }
     await ensureTauri();
     const bytes = Array.from(new TextEncoder().encode(data));
     try {
-      await cachedInvoke('terminal_write', { id, data: bytes });
+      await cachedInvoke('terminal_write', { id: resolvedId, data: bytes });
     } catch (err) {
-      console.warn(`[TerminalManager] write failed for ${id}:`, err);
+      console.warn(`[TerminalManager] write failed for ${resolvedId} (orig=${id}):`, err);
+      throw err;
     }
   },
 
@@ -323,22 +339,29 @@ export const TerminalManager = {
    * Decouples the prompt text from the carriage return (\r) with a brief delay (60ms)
    * so that interactive TUIs (Claude Code, OpenCode, Codex, Gemini) process \r
    * as an explicit onSubmit submission rather than treating it as a pasted newline.
+   * Auto-heals detached PTY channels before sending to guarantee the wire never breaks.
    */
   async sendPrompt(id: string, prompt: string): Promise<void> {
-    const h = TerminalManager.handles.get(id);
+    const resolvedId = TerminalManager.resolveSessionId(id);
+    const h = TerminalManager.handles.get(resolvedId);
     if (h) {
       h.lastOutputAt = Date.now();
       if (!h.workStartedAt) h.workStartedAt = Date.now();
+      // Watchdog: If output channel got detached or failed previously, re-attach before sending!
+      if (!h.attached) {
+        console.warn(`[TerminalManager] Re-attaching unattached PTY before sendPrompt for ${resolvedId}`);
+        await this.attachToPty(resolvedId);
+      }
     }
     await ensureTauri();
     // 1. Write prompt text payload
     if (prompt) {
-      await this.write(id, prompt);
+      await this.write(resolvedId, prompt);
       // 2. Allow event loop / Ink TUI input buffer to ingest the text
       await new Promise((r) => setTimeout(r, 60));
     }
     // 3. Write carriage return as distinct event to trigger onSubmit
-    await this.write(id, '\r');
+    await this.write(resolvedId, '\r');
   },
 
   /**
@@ -347,34 +370,42 @@ export const TerminalManager = {
    * or sends Escape (\x1b) for cancellation.
    */
   async sendMenuSelection(id: string, keyOrEscape: string): Promise<void> {
-    const h = TerminalManager.handles.get(id);
+    const resolvedId = TerminalManager.resolveSessionId(id);
+    const h = TerminalManager.handles.get(resolvedId);
     if (h) {
       h.lastOutputAt = Date.now();
       if (!h.workStartedAt) h.workStartedAt = Date.now();
+      if (!h.attached) {
+        await this.attachToPty(resolvedId);
+      }
     }
     await ensureTauri();
     if (keyOrEscape.toLowerCase() === 'escape' || keyOrEscape === '\x1b') {
-      await this.write(id, '\x1b');
+      await this.write(resolvedId, '\x1b');
       return;
     }
-    await this.write(id, keyOrEscape);
+    await this.write(resolvedId, keyOrEscape);
     await new Promise((r) => setTimeout(r, 60));
-    await this.write(id, '\r');
+    await this.write(resolvedId, '\r');
   },
 
   /** Send a command followed by Enter (\r) to the terminal via Tauri IPC */
   async sendCommand(id: string, command: string): Promise<void> {
-    const h = TerminalManager.handles.get(id);
+    const resolvedId = TerminalManager.resolveSessionId(id);
+    const h = TerminalManager.handles.get(resolvedId);
     if (h) {
       h.lastOutputAt = Date.now();
       if (!h.workStartedAt) h.workStartedAt = Date.now();
+      if (!h.attached) {
+        await this.attachToPty(resolvedId);
+      }
     }
     await ensureTauri();
     try {
-      await cachedInvoke('terminal_send_command', { id, command });
+      await cachedInvoke('terminal_send_command', { id: resolvedId, command });
     } catch (err) {
-      console.warn(`[TerminalManager] sendCommand failed for ${id}, falling back to sendPrompt:`, err);
-      await this.sendPrompt(id, command);
+      console.warn(`[TerminalManager] sendCommand failed for ${resolvedId}, falling back to sendPrompt:`, err);
+      await this.sendPrompt(resolvedId, command);
     }
   },
 
@@ -431,13 +462,24 @@ export const TerminalManager = {
     return !h.host.isConnected || (!!TerminalManager._poolRoot && h.host.parentElement === TerminalManager._poolRoot);
   },
 
-  /** Forces xterm to repaint all rows from buffer and scroll to bottom. */
-  refresh(id: string): void {
-    const h = TerminalManager.handles.get(id);
+  /** Pure repaint of all rows without altering the viewport scroll position. */
+  repaint(id: string): void {
+    const h = TerminalManager.get(id);
     if (!h) return;
     try {
       h.term.refresh(0, Math.max(0, h.term.rows - 1));
-      h.term.scrollToBottom();
+    } catch {}
+  },
+
+  /** Forces xterm to repaint all rows from buffer; optionally scrolls to bottom. */
+  refresh(id: string, forceScroll = false): void {
+    const h = TerminalManager.get(id);
+    if (!h) return;
+    try {
+      h.term.refresh(0, Math.max(0, h.term.rows - 1));
+      if (forceScroll) {
+        h.term.scrollToBottom();
+      }
     } catch {}
   },
 
