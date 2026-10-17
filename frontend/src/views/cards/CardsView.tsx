@@ -1,29 +1,25 @@
-// tto — Cards view (stub implementation)
+// tto — Cards view (integrated WorkspaceTaskCenter)
 'use client';
 
-import { useTheme } from '@/contexts/ThemeContext';
 import type { UnifiedTerminal } from '@/types';
 import type { Workspace } from '@/lib/workspace';
+import { WorkspaceTaskCenter } from '@/components/WorkspaceTaskCenter';
 
 interface Props {
   workspaces: Workspace[];
   terminals: Record<string, UnifiedTerminal>;
   activeId: string;
   onToast: (msg: string, error?: boolean) => void;
+  attachableSessions?: { id: string; label: string }[];
+  onAttach?: (wsId: string, paneId: string, sessionId: string) => void;
+  onOpenNew?: (wsId: string, paneId: string) => void;
+  onCreate?: () => void;
 }
 
-export function CardsView(_p: Props) {
-  const { theme: t } = useTheme();
-  void _p;
+export function CardsView(props: Props) {
   return (
-    <div style={{
-      flex: 1, display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center',
-      gap: t.spacing.md, color: t.colors.text.muted,
-    }}>
-      <div style={{ fontSize: '48px' }}>🗂️</div>
-      <h2 style={{ margin: 0, fontSize: t.fontSize.xxl, color: t.colors.text.primary }}>Task Center</h2>
-      <p style={{ margin: 0, fontSize: t.fontSize.sm }}>Task management — coming soon</p>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+      <WorkspaceTaskCenter {...props} />
     </div>
   );
 }

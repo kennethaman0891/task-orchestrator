@@ -839,6 +839,9 @@ h1 {
   display: flex;
   flex-direction: column;
   position: relative;
+  /* Container for the @container (max-width: …) card-head rules above: without
+     this the card head never shrinks on narrow cards. */
+  container-type: inline-size;
   box-shadow:
     0 24px 48px rgba(0, 0, 0, 0.45),
     0 6px 16px rgba(0, 0, 0, 0.35);
@@ -891,6 +894,37 @@ h1 {
   .ws-cli-logo img {
     width: 10px;
     height: 10px;
+  }
+}
+/* ── Head density vs. the card's own chrome ───────────────────────────────
+   The reference card head is [logo][agent][model][session id][badge][⤢][⛶][✕],
+   and its badges hold short ids ("claude", "sonnet-4") with a short tty for the
+   id. Real data here is longer ("muse-spark-1.3-contributor-free") and this
+   branch adds a status pill, a size dropdown, add-terminal and chat controls,
+   so on a 2-column grid the session label — the one thing that must stay
+   readable — gets squeezed to a few characters. Yield the decorative wear first,
+   widest card first, exactly like the reference's own @container rules above. */
+@container (max-width: 720px) {
+  /* Ellipsize rather than hide: the badges stay identifiable, and the session
+     label keeps the space it needs. */
+  .ws-pane-agent,
+  .ws-pane-model {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ws-pane-agent {
+    max-width: 56px;
+  }
+  .ws-pane-model {
+    max-width: 88px;
+  }
+}
+/* Only on genuinely small cards (6+ columns) does the model badge go away. */
+@container (max-width: 420px) {
+  .ws-pane-model {
+    display: none;
   }
 }
 .ws-pane > .terminal-card {
@@ -1007,12 +1041,33 @@ h1 {
   min-height: 0;
 }
 
+/* Compact command line + voice button under every grid-view terminal. */
+.ws-pane-input-bar {
+  flex: none;
+  background: #0c0d0c;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
 .ws-pane-input-bar .ws-input {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 3px 8px;
   min-height: 26px;
+}
+.ws-input-voice {
+  flex: none;
+  background: transparent;
+  border: 1px solid #2c302c;
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  width: 24px;
+  height: 20px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ws-input-voice:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
 }
 .ws-input-voice.listening {
   background: rgba(244, 63, 94, 0.22);
@@ -1078,6 +1133,9 @@ h1 {
   animation-delay: -0.2s;
 }
 .ws-pane-term .term-pane {
+  flex: 1 1 0%;
+  min-height: 0;
+  height: 100%;
   border-radius: 0;
 }
 .ws-pane-head {
@@ -1217,6 +1275,13 @@ h1 {
 .ws-grid[data-grid-mode='auto']    .ws-pane { min-width: 320px; }
 .ws-grid[data-grid-mode='large']   .ws-pane { min-width: 480px; }
 .ws-grid[data-grid-mode='grid']    .ws-pane { min-width: 180px; }
+/* Grid-view tracks are computed in JS (computeGridDimensions) from the live
+   container size. The safety nets above assume a fixed column count for the
+   mode, so once the layout picks more columns than the mode assumes (e.g. 16
+   terminals in Compact) they force horizontal overflow — and the grid clips
+   horizontally. Keep each mode's head density and logo sizing above, but hand
+   track sizing back to the JS layout. */
+.ws-grid[data-grid-mode] .ws-pane { min-width: 0; }
 .ws-pane-expanded {
   grid-column: 1 / -1;
   grid-row: 1 / -1;
@@ -1327,7 +1392,7 @@ h1 {
   flex: 1 1 0%;
   min-height: 0;
   padding: 0;
-  background: #000;
+  background: var(--bg, #0a0a0a);
   overflow: hidden;
   position: relative;
   overscroll-behavior: contain;
@@ -1336,22 +1401,25 @@ h1 {
   position: absolute;
   inset: 0;
   padding: 0;
+  box-sizing: border-box;
 }
 .term-pane .xterm-viewport {
-  background: #000;
-  overflow-y: scroll !important;
+  background: transparent;
+  overflow: hidden !important;
   overscroll-behavior: contain !important;
   overscroll-behavior-y: contain !important;
 }
 
 /* When a TUI (alternate screen) is active, lock the viewport to prevent
    scrolling — the alternate buffer has no scrollback, and scrolling causes
-   the TUI rendering to misalign. Use overflow:hidden WITHOUT !important
-   so that when the TUI exits (class removed), the inline style can be
-   cleaned up by JavaScript. The old !important would persist the lock
-   even after the TUI exited, making all scrollback history invisible. */
+   the TUI rendering to misalign. */
 .term-pane.tui-active .xterm-viewport {
-  overflow: hidden;
+  overflow: hidden !important;
+  overflow-y: hidden !important;
+}
+.term-pane.tui-active .xterm-viewport::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
 }
 /* The xterm screen is sized by xterm's internal renderer to cols × cellW.
    TerminalPane.tsx rounds columns to the nearest cell so the inline grid
@@ -1362,7 +1430,7 @@ h1 {
   padding: 0;
 }
 .xterm-rows > div {
-  line-height: 1.0;
+  line-height: 1.15;
 }
 
 /* ── DOM renderer (WebGL disabled) ─────────────────────────────────────

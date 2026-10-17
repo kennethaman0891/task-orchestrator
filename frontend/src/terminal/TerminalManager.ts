@@ -9,6 +9,7 @@ import { SynchronizedOutputFilter } from './synchronizedOutputFilter';
 
 interface Handle {
   sessionId: string;
+  tty?: string;
   term: Terminal;
   host: HTMLDivElement;
   queue: WriteQueue;
@@ -52,6 +53,7 @@ function cachedInvoke(cmd: string, args?: Record<string, unknown>): Promise<any>
 
 export const TerminalManager = {
   handles: new Map<string, Handle>(),
+  handlesByTty: new Map<string, Handle>(),
   registered: [] as string[],
   // Pool container: TerminalPool publishes its hidden div here so park() can
   // re-parent hosts back into it (the previous park() only restyled the host
@@ -61,6 +63,17 @@ export const TerminalManager = {
   _resizeTimers: new Map<string, number>(),
   _lastSizes: new Map<string, { cols: number; rows: number }>(),
   _outputListeners: new Map<string, Set<() => void>>(),
+  _syncFilters: new Map<string, SynchronizedOutputFilter>(),
+  _writeQueues: new Map<string, Promise<void>>(),
+
+  setTty(sessionId: string, tty: string): void {
+    const handle = TerminalManager.handles.get(sessionId);
+    if (!handle) return;
+    const cleanTty = tty.startsWith('/dev/') ? tty.slice(5) : tty;
+    handle.tty = cleanTty;
+    TerminalManager.handlesByTty.set(cleanTty, handle);
+    TerminalManager.handlesByTty.set(tty, handle);
+  },
 
   onOutput(id: string, fn: () => void): () => void {
     let set = TerminalManager._outputListeners.get(id);
@@ -85,55 +98,78 @@ export const TerminalManager = {
     }
   },
 
-  /** Resolve canonical session ID from either canonical ID or slave tty */
+  /** Resolve canonical session ID from either canonical ID or slave tty without loose substring matching */
   resolveSessionId(id: string): string {
     if (!id) return id;
     if (TerminalManager.handles.has(id)) return id;
+    const cleanId = id.startsWith('/dev/') ? id.slice(5) : id;
+    const byTty = TerminalManager.handlesByTty.get(id) || TerminalManager.handlesByTty.get(cleanId);
+    if (byTty) return byTty.sessionId;
     for (const [key, handle] of TerminalManager.handles.entries()) {
-      if (handle.sessionId === id || key.includes(id) || id.includes(key)) {
-        return key;
-      }
+      if (key === id || key === cleanId) return key;
+      if (handle.sessionId === id || handle.sessionId === cleanId) return handle.sessionId;
+      if (handle.tty && (handle.tty === id || handle.tty === cleanId)) return handle.sessionId;
+      const cleanKey = key.startsWith('/dev/') ? key.slice(5) : key;
+      if (cleanKey === cleanId) return key;
     }
     return id;
   },
 
   has(id: string): boolean {
-    return TerminalManager.handles.has(id) || TerminalManager.handles.has(TerminalManager.resolveSessionId(id));
+    if (!id) return false;
+    const cleanId = id.startsWith('/dev/') ? id.slice(5) : id;
+    return (
+      TerminalManager.handles.has(id) ||
+      TerminalManager.handles.has(cleanId) ||
+      TerminalManager.handlesByTty.has(id) ||
+      TerminalManager.handlesByTty.has(cleanId) ||
+      TerminalManager.handles.has(TerminalManager.resolveSessionId(id))
+    );
   },
 
   register(opts: {
-    sessionId: string; term: Terminal; host: HTMLDivElement;
+    sessionId: string; tty?: string; term: Terminal; host: HTMLDivElement;
     deliver?: (data: Uint8Array) => void; fit?: () => void; onExit?: () => void;
   }): Handle {
     const existing = TerminalManager.handles.get(opts.sessionId);
     if (existing) {
       existing.host.remove();
       existing.term.dispose();
+      if (existing.tty) {
+        TerminalManager.handlesByTty.delete(existing.tty);
+        TerminalManager.handlesByTty.delete(`/dev/${existing.tty}`);
+      }
     }
 
-    const syncFilter = new SynchronizedOutputFilter();
     const deliverFn = opts.deliver || ((data: Uint8Array, cb?: () => void) => {
       opts.term.write(data, cb);
     });
 
+    const cleanTty = opts.tty ? (opts.tty.startsWith('/dev/') ? opts.tty.slice(5) : opts.tty) : undefined;
+
     const handle: Handle = {
       sessionId: opts.sessionId,
+      tty: cleanTty,
       term: opts.term,
       host: opts.host,
       queue: new WriteQueue({
         deliver: (data: Uint8Array, done: () => void) => {
-          const filtered = syncFilter.filter(data);
           let finished = false;
+          let timer: number | null = null;
           const safeDone = () => {
             if (!finished) {
               finished = true;
+              if (timer !== null) {
+                clearTimeout(timer);
+                timer = null;
+              }
               done();
             }
           };
           try {
-            deliverFn(filtered, safeDone);
+            deliverFn(data, safeDone);
             // Watchdog fallback ensures long streams never stall if xterm drops a write callback
-            window.setTimeout(safeDone, 60);
+            timer = window.setTimeout(safeDone, 60);
           } catch {
             safeDone();
           }
@@ -150,30 +186,46 @@ export const TerminalManager = {
       onTuiChange: undefined,
     };
     TerminalManager.handles.set(opts.sessionId, handle);
+    if (cleanTty) {
+      TerminalManager.handlesByTty.set(cleanTty, handle);
+      TerminalManager.handlesByTty.set(`/dev/${cleanTty}`, handle);
+    }
     if (!TerminalManager.registered.includes(opts.sessionId)) {
       TerminalManager.registered.push(opts.sessionId);
       TerminalManager._notify(opts.sessionId);
     }
-    console.log(`[TerminalManager] Registered session ${opts.sessionId}`);
+    console.log(`[TerminalManager] Registered session ${opts.sessionId}${cleanTty ? ` (tty=${cleanTty})` : ''}`);
     return handle;
   },
 
   unregister(id: string): void {
-    const h = TerminalManager.handles.get(id);
-    if (h) { h.host.remove(); h.term.dispose(); }
+    const resolvedId = TerminalManager.resolveSessionId(id);
+    const h = TerminalManager.handles.get(resolvedId) || TerminalManager.handles.get(id) || TerminalManager.handlesByTty.get(id);
+    if (h) {
+      h.host.remove();
+      h.term.dispose();
+      if (h.tty) {
+        TerminalManager.handlesByTty.delete(h.tty);
+        TerminalManager.handlesByTty.delete(`/dev/${h.tty}`);
+      }
+    }
+    TerminalManager.handles.delete(resolvedId);
     TerminalManager.handles.delete(id);
-    TerminalManager.registered = TerminalManager.registered.filter((r) => r !== id);
+    TerminalManager.registered = TerminalManager.registered.filter((r) => r !== id && r !== resolvedId);
     TerminalManager.invalidateMetaCache(id);
+    TerminalManager.invalidateMetaCache(resolvedId);
     TerminalManager._lastSizes.delete(id);
-    const resizeTimer = TerminalManager._resizeTimers.get(id);
+    TerminalManager._lastSizes.delete(resolvedId);
+    const resizeTimer = TerminalManager._resizeTimers.get(resolvedId) || TerminalManager._resizeTimers.get(id);
     if (resizeTimer) {
       window.clearTimeout(resizeTimer);
       TerminalManager._resizeTimers.delete(id);
+      TerminalManager._resizeTimers.delete(resolvedId);
     }
     // Detach from Rust PTY so the output channel is released and output
     // stops accumulating in the bounded queue.
     ensureTauri()
-      .then(() => cachedInvoke('terminal_detach', { id }))
+      .then(() => cachedInvoke('terminal_detach', { id: resolvedId }))
       .catch(() => {});
   },
 
@@ -182,15 +234,16 @@ export const TerminalManager = {
    * Rust PTY output → Tauri Channel → WriteQueue → xterm.write().
    */
   async attachToPty(id: string, onExit?: () => void): Promise<void> {
-    const h = TerminalManager.handles.get(id);
+    const resolvedId = TerminalManager.resolveSessionId(id);
+    const h = TerminalManager.handles.get(resolvedId);
     if (!h || h.attached) {
-      console.log(`[TerminalManager] attachToPty skip: id=${id} handle=${!!h} attached=${h?.attached}`);
+      console.log(`[TerminalManager] attachToPty skip: id=${id} (resolved=${resolvedId}) handle=${!!h} attached=${h?.attached}`);
       return;
     }
     h.attached = true;
     h.onExit = onExit;
 
-    console.log(`[TerminalManager] attachToPty start: id=${id}`);
+    console.log(`[TerminalManager] attachToPty start: id=${id} (resolved=${resolvedId})`);
 
     await ensureTauri();
     if (!_Channel) {
@@ -205,42 +258,34 @@ export const TerminalManager = {
     outputChannel.onmessage = (data: number[]) => {
       chunkCount++;
       if (chunkCount <= 3) {
-        console.log(`[TerminalManager] Channel output chunk #${chunkCount} for ${id}: ${data.length} bytes`);
+        console.log(`[TerminalManager] Channel output chunk #${chunkCount} for ${resolvedId}: ${data.length} bytes`);
       }
       const now = Date.now();
       if (!h.workStartedAt) {
         h.workStartedAt = now;
       }
       h.lastOutputAt = now;
-      h.queue.push(new Uint8Array(data));
-      TerminalManager._notifyOutput(id);
+      let filter = TerminalManager._syncFilters.get(resolvedId);
+      if (!filter) {
+        filter = new SynchronizedOutputFilter();
+        TerminalManager._syncFilters.set(resolvedId, filter);
+      }
+      const u8 = new Uint8Array(data);
+      h.queue.push(filter.filter(u8));
+      TerminalManager._notifyOutput(resolvedId);
     };
 
     // Exit channel: PTY exited → cleanup
     const exitChannel = new _Channel();
     exitChannel.onmessage = () => {
-      console.log(`[TerminalManager] Channel exit for ${id}`);
+      console.log(`[TerminalManager] Channel exit for ${resolvedId}`);
       h.attached = false;
       h.onExit?.();
     };
 
-    try {
-      await cachedInvoke('terminal_attach', {
-        id,
-        // Tauri v2 maps Rust `on_output` / `on_exit` to camelCase JS keys.
-        // Sending snake_case here silently drops the channels and every
-        // attach fails with "missing required key onOutput" => blank terminal.
-        onOutput: outputChannel,
-        onExit: exitChannel,
-      });
-      console.log(`[TerminalManager] terminal_attach SUCCESS for ${id}`);
-    } catch (err) {
-      console.error(`[TerminalManager] terminal_attach FAILED for ${id}:`, err);
-      h.attached = false;
-      return;
-    }
-
-    // Replay scrollback so the terminal shows full history.
+    // Replay scrollback FIRST before the live channel opens.
+    // This guarantees proper ordering: historical output is pushed to the queue
+    // first, and live chunks from the PTY follow via onOutput.
     // GUARD: if the session is in a TUI alternate screen (OpenCode/Claude/
     // vim), replaying stale MAIN-screen scrollback over the live TUI is the
     // classic cause of a "stuck"/corrupt-looking screen — the TUI only
@@ -249,24 +294,38 @@ export const TerminalManager = {
     // active (checked both from the renderer and from Rust-tracked meta).
     let tuiAlt = false;
     try { tuiAlt = h.term.buffer.active !== h.term.buffer.normal; } catch {}
-    if (tuiAlt || TerminalManager.isTui(id)) {
-      console.log(`[TerminalManager] skipping scrollback replay for ${id}: TUI alt-screen active`);
+    if (tuiAlt || TerminalManager.isTui(resolvedId)) {
+      console.log(`[TerminalManager] skipping scrollback replay for ${resolvedId}: TUI alt-screen active`);
     } else {
-    try {
-      const scrollback = await cachedInvoke('terminal_get_scrollback', { id }) as unknown as number[];
-      console.log(`[TerminalManager] Scrollback for ${id}: ${Array.isArray(scrollback) ? scrollback.length : 'N/A'} bytes`);
-      if (Array.isArray(scrollback) && scrollback.length > 0) {
-        const now = Date.now();
-        if (!h.workStartedAt) {
-          h.workStartedAt = now;
+      try {
+        const scrollback = await cachedInvoke('terminal_get_scrollback', { id: resolvedId }) as unknown as number[];
+        console.log(`[TerminalManager] Scrollback for ${resolvedId}: ${Array.isArray(scrollback) ? scrollback.length : 'N/A'} bytes`);
+        if (Array.isArray(scrollback) && scrollback.length > 0) {
+          const now = Date.now();
+          if (!h.workStartedAt) {
+            h.workStartedAt = now;
+          }
+          h.lastOutputAt = now;
+          h.queue.push(new Uint8Array(scrollback));
         }
-        h.lastOutputAt = now;
-        h.queue.push(new Uint8Array(scrollback));
+      } catch (err) {
+        console.warn(`[TerminalManager] Scrollback failed for ${resolvedId}:`, err);
       }
-    } catch (err) {
-      console.warn(`[TerminalManager] Scrollback failed for ${id}:`, err);
     }
-    } // end TUI alt-screen replay guard
+
+    try {
+      await cachedInvoke('terminal_attach', {
+        id: resolvedId,
+        // Tauri v2 #[tauri::command] uses camelCase parameter names for JSON deserialization
+        onOutput: outputChannel,
+        onExit: exitChannel,
+      });
+      console.log(`[TerminalManager] terminal_attach SUCCESS for ${resolvedId}`);
+    } catch (err) {
+      console.error(`[TerminalManager] terminal_attach FAILED for ${resolvedId}:`, err);
+      h.attached = false;
+      return;
+    }
   },
 
   /** Legacy attach (kept for API compat) */
@@ -278,7 +337,13 @@ export const TerminalManager = {
   },
 
   get(id: string): Handle | undefined {
-    return TerminalManager.handles.get(id) || TerminalManager.handles.get(TerminalManager.resolveSessionId(id));
+    if (!id) return undefined;
+    const direct = TerminalManager.handles.get(id);
+    if (direct) return direct;
+    const cleanId = id.startsWith('/dev/') ? id.slice(5) : id;
+    const byTty = TerminalManager.handlesByTty.get(id) || TerminalManager.handlesByTty.get(cleanId);
+    if (byTty) return byTty;
+    return TerminalManager.handles.get(TerminalManager.resolveSessionId(id));
   },
 
   all(): Handle[] {
@@ -326,12 +391,17 @@ export const TerminalManager = {
     }
     await ensureTauri();
     const bytes = Array.from(new TextEncoder().encode(data));
-    try {
-      await cachedInvoke('terminal_write', { id: resolvedId, data: bytes });
-    } catch (err) {
-      console.warn(`[TerminalManager] write failed for ${resolvedId} (orig=${id}):`, err);
-      throw err;
-    }
+    const prev = TerminalManager._writeQueues.get(resolvedId) || Promise.resolve();
+    const next = prev.catch(() => {}).then(async () => {
+      try {
+        await cachedInvoke('terminal_write', { id: resolvedId, data: bytes });
+      } catch (err) {
+        console.warn(`[TerminalManager] write failed for ${resolvedId} (orig=${id}):`, err);
+        throw err;
+      }
+    });
+    TerminalManager._writeQueues.set(resolvedId, next);
+    return next;
   },
 
   /**
@@ -416,48 +486,51 @@ export const TerminalManager = {
    * during initial grid mount, layout transitions, and window drags.
    */
   async resize(id: string, cols: number, rows: number, immediate = false): Promise<void> {
-    const last = TerminalManager._lastSizes.get(id);
+    const resolvedId = TerminalManager.resolveSessionId(id);
+    const last = TerminalManager._lastSizes.get(resolvedId);
     if (last && last.cols === cols && last.rows === rows) {
       return; // Dimensions unchanged — skip redundant resize and avoid SIGWINCH thrashing
     }
 
-    const existing = TerminalManager._resizeTimers.get(id);
+    const existing = TerminalManager._resizeTimers.get(resolvedId);
     if (existing) window.clearTimeout(existing);
 
     const doResize = async () => {
-      TerminalManager._resizeTimers.delete(id);
-      TerminalManager._lastSizes.set(id, { cols, rows });
+      TerminalManager._resizeTimers.delete(resolvedId);
+      TerminalManager._lastSizes.set(resolvedId, { cols, rows });
       await ensureTauri();
       try {
-        await cachedInvoke('terminal_resize', { id, cols, rows });
+        await cachedInvoke('terminal_resize', { id: resolvedId, cols, rows });
       } catch {}
     };
 
-    if (immediate) {
+    if (immediate || TerminalManager.isTui(resolvedId)) {
       await doResize();
     } else {
-      const timer = window.setTimeout(doResize, 100);
-      TerminalManager._resizeTimers.set(id, timer);
+      const timer = window.setTimeout(doResize, 35);
+      TerminalManager._resizeTimers.set(resolvedId, timer);
     }
   },
 
   async setVisible(id: string, visible: boolean): Promise<void> {
+    const resolvedId = TerminalManager.resolveSessionId(id);
     await ensureTauri();
     try {
-      await cachedInvoke('terminal_set_visible', { id, visible });
+      await cachedInvoke('terminal_set_visible', { id: resolvedId, visible });
     } catch {}
   },
 
   async setFocus(id: string, focused: boolean): Promise<void> {
+    const resolvedId = TerminalManager.resolveSessionId(id);
     await ensureTauri();
     try {
-      await cachedInvoke('terminal_set_focus', { id, focused });
+      await cachedInvoke('terminal_set_focus', { id: resolvedId, focused });
     } catch {}
   },
 
   /** True when the terminal's host is parked in the hidden pool or disconnected. */
   isParked(id: string): boolean {
-    const h = TerminalManager.handles.get(id);
+    const h = TerminalManager.get(id);
     if (!h) return true;
     return !h.host.isConnected || (!!TerminalManager._poolRoot && h.host.parentElement === TerminalManager._poolRoot);
   },
@@ -491,9 +564,9 @@ export const TerminalManager = {
    * sit on a stale frame while the buffer kept updating.
    */
   nudge(id: string): void {
-    const h = TerminalManager.handles.get(id);
+    const h = TerminalManager.get(id);
     if (!h) return;
-    if (!h.host.isConnected) return; // parked — nothing to repaint
+    if (TerminalManager.isParked(id)) return; // parked — nothing to repaint
     try {
       h.term.refresh(0, Math.max(0, h.term.rows - 1));
       h.term.scrollToBottom();
@@ -504,7 +577,7 @@ export const TerminalManager = {
   nudgeAll(): number {
     let n = 0;
     for (const h of TerminalManager.handles.values()) {
-      if (!h.host.isConnected) continue;
+      if (TerminalManager.isParked(h.sessionId)) continue;
       try {
         h.term.refresh(0, Math.max(0, h.term.rows - 1));
         h.term.scrollToBottom();
@@ -521,7 +594,7 @@ export const TerminalManager = {
    * and TUI transitions. When the host is parked or dimensions are bogus, this is a no-op.
    */
   fitNow(id: string): boolean {
-    const h = TerminalManager.handles.get(id);
+    const h = TerminalManager.get(id);
     if (!h) return false;
     // 1. Ownership guard: only fit when the host div is a live child of its
     // current container (i.e. visible).
@@ -561,7 +634,7 @@ export const TerminalManager = {
 
   /** True when the terminal's host is currently a child of the given anchor. */
   isOwnedBy(id: string, container: HTMLElement): boolean {
-    const h = TerminalManager.handles.get(id);
+    const h = TerminalManager.get(id);
     return !!h && h.host.parentElement === container;
   },
 
@@ -569,8 +642,9 @@ export const TerminalManager = {
    *  Previous park() only restyled the host, leaving it orphaned in a
    *  removed DOM subtree → isConnected=false → fitNow bails → blank. */
   park(id: string): void {
-    const h = TerminalManager.handles.get(id);
+    const h = TerminalManager.get(id);
     if (!h) return;
+    const resolvedId = h.sessionId;
     // Already in the pool — nothing to do.
     if (TerminalManager._poolRoot && h.host.parentElement === TerminalManager._poolRoot) return;
     const root = TerminalManager._poolRoot;
@@ -578,8 +652,8 @@ export const TerminalManager = {
       root.appendChild(h.host);
     }
     h.host.style.cssText = POOL_HOST_STYLE;
-    TerminalManager.setVisible(id, false).catch(() => {});
-    TerminalManager.setFocus(id, false).catch(() => {});
+    TerminalManager.setVisible(resolvedId, false).catch(() => {});
+    TerminalManager.setFocus(resolvedId, false).catch(() => {});
   },
 
   _listeners: new Set<(id: string) => void>(),
@@ -592,39 +666,65 @@ export const TerminalManager = {
 
   // ── Status tracking (ported from src-legacy) ────────────────────────
 
-  /** Mark a session as TUI active/inactive. Fires onTuiChange callback. */
+  /** Mark a session as TUI active/inactive. Fires onTuiChange callback and toggles DOM class. */
   setTui(id: string, active: boolean): void {
-    const h = TerminalManager.handles.get(id);
+    const h = TerminalManager.get(id);
+    const resolvedId = h ? h.sessionId : TerminalManager.resolveSessionId(id);
     if (h) {
       h.tuiActive = active;
       h.onTuiChange?.(active);
+      if (h.host) {
+        h.host.classList.toggle('tui-active', active);
+        if (h.host.parentElement) {
+          h.host.parentElement.classList.toggle('tui-active', active);
+        }
+      }
     }
     // Notify Rust so the scheduler knows the presentation context
     ensureTauri().then(() => {
-      try { cachedInvoke('terminal_set_tui', { id, active }); } catch {}
+      try { cachedInvoke('terminal_set_tui', { id: resolvedId, active }); } catch {}
     }).catch(() => {});
+  },
+
+  /** Clears the terminal scrollback buffer and resets active screen (Cmd+K). */
+  clear(id: string): void {
+    const h = TerminalManager.get(id);
+    if (!h) return;
+    try {
+      h.term.clear();
+      h.term.refresh(0, Math.max(0, h.term.rows - 1));
+    } catch {}
+  },
+
+  /** Focus the xterm instance so user input is accepted immediately. */
+  focus(id: string): void {
+    const h = TerminalManager.get(id);
+    if (!h) return;
+    try {
+      h.term.focus();
+    } catch {}
   },
 
   /** Whether a session is in an alternate-screen TUI (opencode/vim/htop). */
   isTui(id: string): boolean {
-    return TerminalManager.handles.get(id)?.tuiActive ?? false;
+    return TerminalManager.get(id)?.tuiActive ?? false;
   },
 
   /** Unix ms of the last terminal output delivered to xterm (0 = unknown). */
   outputAt(id: string): number {
-    return TerminalManager.handles.get(id)?.lastOutputAt ?? 0;
+    return TerminalManager.get(id)?.lastOutputAt ?? 0;
   },
 
   /** True if the session produced output within the given window. */
   recentlyActive(id: string, windowMs = 4000): boolean {
-    const h = TerminalManager.handles.get(id);
+    const h = TerminalManager.get(id);
     if (!h) return false;
     return Date.now() - h.lastOutputAt < windowMs;
   },
 
   /** Last N rendered lines of a session's active xterm buffer. */
   lastLines(id: string, n = 60): string[] {
-    const h = TerminalManager.handles.get(id);
+    const h = TerminalManager.get(id);
     if (!h) return [];
     try {
       const buf = h.term.buffer.active;
@@ -640,7 +740,7 @@ export const TerminalManager = {
 
   /** Full lines of a session's buffer (active or normal) up to maxLines, preserving blanks. */
   getBufferText(id: string, maxLines = 1500): string[] {
-    const h = TerminalManager.handles.get(id);
+    const h = TerminalManager.get(id);
     if (!h) return [];
     try {
       const activeBuf = h.term.buffer.active;
@@ -661,9 +761,10 @@ export const TerminalManager = {
 
   /** Full scrollback text directly from Tauri Rust PTY buffer */
   async getFullScrollbackText(id: string): Promise<string> {
+    const resolvedId = TerminalManager.resolveSessionId(id);
     try {
       await ensureTauri();
-      const scrollback = await cachedInvoke('terminal_get_scrollback', { id }) as unknown as number[];
+      const scrollback = await cachedInvoke('terminal_get_scrollback', { id: resolvedId }) as unknown as number[];
       if (Array.isArray(scrollback) && scrollback.length > 0) {
         return new TextDecoder().decode(new Uint8Array(scrollback));
       }
@@ -673,30 +774,30 @@ export const TerminalManager = {
 
   /** Unix ms when the session was created. */
   createdAt(id: string): number {
-    return TerminalManager.handles.get(id)?.createdAt ?? 0;
+    return TerminalManager.get(id)?.createdAt ?? 0;
   },
 
   /** Unix ms when active work/output started. */
   workStartedAt(id: string): number {
-    const h = TerminalManager.handles.get(id);
+    const h = TerminalManager.get(id);
     if (!h) return 0;
     return h.workStartedAt || h.createdAt || 0;
   },
 
   /** Unix ms when active work completed/ended (0 if in progress). */
   workEndedAt(id: string): number {
-    return TerminalManager.handles.get(id)?.workEndedAt ?? 0;
+    return TerminalManager.get(id)?.workEndedAt ?? 0;
   },
 
   /** Set work ended timestamp when task is over or stopped. */
   setWorkEnded(id: string, ts = Date.now()): void {
-    const h = TerminalManager.handles.get(id);
+    const h = TerminalManager.get(id);
     if (h) h.workEndedAt = ts;
   },
 
   /** Manually trigger work started timestamp. */
   setWorkStarted(id: string, ts = Date.now()): void {
-    const h = TerminalManager.handles.get(id);
+    const h = TerminalManager.get(id);
     if (h) {
       h.workStartedAt = ts;
       h.workEndedAt = 0;
@@ -717,7 +818,7 @@ export const TerminalManager = {
     durationFn: (tty: string, status: TStatus) => TDuration,
     defaultCli = 'shell'
   ): { cli: string; cliName: string; status: TStatus; duration: TDuration } {
-    const h = TerminalManager.handles.get(tty);
+    const h = TerminalManager.get(tty);
     const now = Date.now();
     const lastOut = h?.lastOutputAt ?? 0;
     const entryCli = entry?.cli || '';

@@ -39,20 +39,52 @@ fn detect_agent(command: &str) -> String {
     let lower = command.to_lowercase();
     let candidates: &[(&str, &[&str])] = &[
         ("antigravity", &["antigravity", "agy", "jetski"][..]),
-        ("codex", &["codex"][..]),
+        ("codex", &["codex", "codex-cli"][..]),
         ("prime", &["prime-agent", "primeagent", "prime"][..]),
         ("opencode", &["opencode"][..]),
-        ("claude", &["claude"][..]),
+        ("claude", &["claude", "claude-code"][..]),
         ("gemini", &["gemini", "gemini-cli"][..]),
         ("cursor", &["cursor", "cursor-agent"][..]),
         ("aider", &["aider"][..]),
     ];
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
     for (name, keys) in candidates {
-        if keys.iter().any(|k| lower.contains(k)) {
-            return name.to_string();
+        for key in *keys {
+            if tokens.iter().any(|tok| {
+                let base = tok.rsplit('/').next().unwrap_or(tok);
+                base == *key || base.starts_with(&format!("{key}-")) || base.starts_with(&format!("{key}_"))
+            }) {
+                return name.to_string();
+            }
         }
     }
     String::new()
+}
+
+/// Checks whether the primary executable token exists on disk or in PATH.
+fn is_executable_available(command: &str) -> bool {
+    let first = command
+        .split(|c| c == '|' || c == ';' || c == '&' || c == '\n')
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .next()
+        .unwrap_or("");
+    if first.is_empty() {
+        return false;
+    }
+    if first.contains('/') {
+        return std::path::Path::new(first).exists();
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let p = dir.join(first);
+            if p.is_file() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// True when `command` actually *invokes* the `claude` binary as the program
@@ -251,12 +283,12 @@ impl TerminalManager {
             if !trimmed.is_empty() && !is_bare_shell {
                 let cli = detect_cli(trimmed);
                 let cmd_to_send = trimmed.to_string();
-                if !cli.is_empty() {
+                if !cli.is_empty() && is_executable_available(&cmd_to_send) {
                     meta.cli = cli.clone();
                     meta.agent = cli.clone();
                     meta.title = format!("tto · {cli}");
+                    cmd_to_inject = Some(cmd_to_send);
                 }
-                cmd_to_inject = Some(cmd_to_send);
             }
         }
 
@@ -277,10 +309,17 @@ impl TerminalManager {
         if let Some(session) = sessions.get(id) {
             return Ok(session.clone());
         }
+        let clean_id = id.strip_prefix("/dev/").unwrap_or(id);
         for session in sessions.values() {
             let meta = session.meta.lock();
-            if meta.id == id || meta.tty == id || (!id.is_empty() && (meta.tty.contains(id) || id.contains(&meta.tty))) {
+            if meta.id == id {
                 return Ok(session.clone());
+            }
+            if !meta.tty.is_empty() && !id.is_empty() {
+                let clean_tty = meta.tty.strip_prefix("/dev/").unwrap_or(&meta.tty);
+                if meta.tty == id || clean_tty == clean_id || meta.tty == clean_id || clean_tty == id {
+                    return Ok(session.clone());
+                }
             }
         }
         Err(format!("no session {id}"))
@@ -311,7 +350,7 @@ impl TerminalManager {
                 // launching TUI apps like claude, codex, etc.
                 tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
                 // Use newline instead of carriage return for better compatibility
-                let cmd_with_nl = format!("\n{}\n", cmd);
+                let cmd_with_nl = format!("{}\n", cmd);
                 if let Err(e) = session_clone.write(cmd_with_nl.as_bytes()) {
                     eprintln!("[MANAGER] attach() failed to inject pending command for {}: {}", id_clone, e);
                 } else {
@@ -487,16 +526,22 @@ impl TerminalManager {
     /// Kill the process and drop the session. The frontend recreates on demand.
     pub fn close(&self, id: &str) -> Result<(), String> {
         let mut sessions = self.sessions.lock();
+        let clean_id = id.strip_prefix("/dev/").unwrap_or(id);
         let target_key = if sessions.contains_key(id) {
             Some(id.to_string())
         } else {
             sessions.iter().find_map(|(k, s)| {
                 let meta = s.meta.lock();
-                if meta.id == id || meta.tty == id || (!id.is_empty() && (meta.tty.contains(id) || id.contains(&meta.tty))) {
-                    Some(k.clone())
-                } else {
-                    None
+                if meta.id == id {
+                    return Some(k.clone());
                 }
+                if !meta.tty.is_empty() && !id.is_empty() {
+                    let clean_tty = meta.tty.strip_prefix("/dev/").unwrap_or(&meta.tty);
+                    if meta.tty == id || clean_tty == clean_id || meta.tty == clean_id || clean_tty == id {
+                        return Some(k.clone());
+                    }
+                }
+                None
             })
         };
         if let Some(k) = target_key {
@@ -690,6 +735,9 @@ impl TerminalManager {
     pub fn drain_session(&self, session: &Arc<TerminalSession>, budget: usize) -> (usize, bool) {
         let has_primary = session.channel.lock().is_some();
         let has_subscribers = !session.subscribers.lock().is_empty();
+        if !has_primary && !has_subscribers {
+            return (0, false);
+        }
         let has_listeners = has_primary || has_subscribers;
         let mut forwarded = 0usize;
         let mut exited = false;
@@ -783,7 +831,7 @@ fn base36(mut v: u64) -> String {
 /// eliminating any process-spawning lock contention or beachballs.
 pub fn spawn_detector(manager: Arc<TerminalManager>) {
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(2000));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(3500));
         loop {
             interval.tick().await;
 

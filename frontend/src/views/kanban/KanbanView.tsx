@@ -1,26 +1,21 @@
-// tto — Kanban view (stub implementation)
+// tto — Kanban view (integrated KanbanBoard)
 'use client';
 
-import { useTheme } from '@/contexts/ThemeContext';
 import type { UnifiedTerminal } from '@/types';
+import type { Workspace } from '@/lib/workspace';
+import { KanbanBoard } from '@/components/KanbanBoard';
 
 interface Props {
   terminals: Record<string, UnifiedTerminal>;
   onToast: (msg: string, error?: boolean) => void;
+  workspaces?: Workspace[];
+  activeId?: string;
 }
 
-export function KanbanView(_p: Props) {
-  const { theme: t } = useTheme();
-  void _p;
+export function KanbanView(props: Props) {
   return (
-    <div style={{
-      flex: 1, display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center',
-      gap: t.spacing.md, color: t.colors.text.muted,
-    }}>
-      <div style={{ fontSize: '48px' }}>📋</div>
-      <h2 style={{ margin: 0, fontSize: t.fontSize.xxl, color: t.colors.text.primary }}>Kanban Board</h2>
-      <p style={{ margin: 0, fontSize: t.fontSize.sm }}>Orchestrator view — coming soon</p>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+      <KanbanBoard {...props} />
     </div>
   );
 }

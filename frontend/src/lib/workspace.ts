@@ -2,7 +2,7 @@
 // tto Workspace State — ported from legacy, same localStorage persistence
 // ═══════════════════════════════════════════════════════════════════════════
 
-export type TemplateKey = 1 | 2 | 3 | 4 | 6 | 8 | 9 | 12 | 16;
+export type TemplateKey = 1 | 2 | 3 | 4 | 6 | 8 | 9 | 10 | 12 | 14 | 16;
 
 export interface Pane {
   id: string;
@@ -43,13 +43,15 @@ export interface TemplateInfo {
 
 export const TEMPLATES: Record<TemplateKey, TemplateInfo> = {
   1: { label: 'Single', cols: 1, rows: 1 },
-  2: { label: 'Dual', cols: 2, rows: 1 },
+  2: { label: 'Split', cols: 2, rows: 1 },
   3: { label: 'Triple', cols: 3, rows: 1 },
   4: { label: 'Quad', cols: 2, rows: 2 },
   6: { label: 'Six', cols: 3, rows: 2 },
   8: { label: 'Eight', cols: 4, rows: 2 },
   9: { label: 'Nine', cols: 3, rows: 3 },
+  10: { label: 'Ten', cols: 5, rows: 2 },
   12: { label: 'Twelve', cols: 4, rows: 3 },
+  14: { label: 'Fourteen', cols: 5, rows: 3 },
   16: { label: 'Sixteen', cols: 4, rows: 4 },
 };
 

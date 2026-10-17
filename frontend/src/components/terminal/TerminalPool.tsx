@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
 import { isTauri as checkTauri, tauri } from '@/lib/tauri';
 import { TerminalManager } from '@/terminal/TerminalManager';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { patchXtermDecrqm } from '@/terminal/xtermPatches';
 
 
 /** Style used when a host div is parked in the hidden pool (never measured). */
@@ -126,19 +127,14 @@ export function TerminalPool({ sessionIds }: PoolProps) {
             const term = new Terminal({
               fontFamily: t.fontFamily.mono,
               fontSize: 13,
-              lineHeight: 1.0,
+              lineHeight: 1.15,
               cursorBlink: true,
-              cursorStyle: 'bar',
-              // Moderate scrollback (5,000 lines = ~150 screens) keeps RAM light with 100-200 terminals
-              scrollback: 5000,
+              cursorStyle: 'block',
+              scrollback: 50000,
               allowProposedApi: true,
-              cols: 80,
-              rows: 25,
+              cols: 120,
+              rows: 40,
               theme: buildXtermTheme(t),
-              // TUI/Full-screen app support (Claude Code, vim, htop, etc.)
-              convertEol: true,
-              macOptionIsMeta: true,
-              minimumContrastRatio: 1,
               disableStdin: false,
               allowTransparency: true,
               drawBoldTextInBrightColors: true,
@@ -162,29 +158,7 @@ export function TerminalPool({ sessionIds }: PoolProps) {
             containerRef.current.appendChild(host);
 
             term.open(host);
-
-            // Allow universal browser/workspace shortcuts (Cmd+T, Cmd+W, Cmd+1..9, Cmd+Shift+[, Cmd+Shift+], Cmd+Shift+G)
-            // to bypass xterm PTY capture and bubble up to window listeners.
-            // On macOS, preserve ctrlKey for readline/TUI keystrokes (Ctrl+W word kill, Ctrl+G, Ctrl+T).
-            term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-              const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform);
-              const isAppShortcut = isMac ? event.metaKey : event.ctrlKey;
-              if (isAppShortcut) {
-                const key = event.key.toLowerCase();
-                if (
-                  key === 't' ||
-                  key === 'w' ||
-                  (key >= '1' && key <= '9') ||
-                  key === '[' ||
-                  key === ']' ||
-                  key === 'g' ||
-                  event.altKey // Allow spatial arrow navigation with Cmd+Alt+Arrows
-                ) {
-                  return false; // Tells xterm not to consume the event
-                }
-              }
-              return true;
-            });
+            patchXtermDecrqm(term);
 
             // Use DOM renderer for all terminals to ensure proper ANSI color rendering.
             // CanvasAddon has known issues with color rendering in some environments.
@@ -300,7 +274,9 @@ export function TerminalPool({ sessionIds }: PoolProps) {
       // Guarded fit first (no-op when geometry unchanged → no SIGWINCH),
       // then a pure-repaint nudge on every attached terminal.
       for (const h of TerminalManager.all()) {
-        if (h.host.isConnected) TerminalManager.fitNow(h.sessionId);
+        if (!TerminalManager.isParked(h.sessionId)) {
+          TerminalManager.fitNow(h.sessionId);
+        }
       }
       const count = TerminalManager.nudgeAll();
       if (count > 0) {
@@ -349,10 +325,30 @@ export function TerminalPool({ sessionIds }: PoolProps) {
  * so a stale observer can never resize a terminal that a different anchor
  * (or the hidden pool) currently owns.
  */
-export function TerminalAnchor({ sessionId }: { sessionId: string }) {
+export interface TerminalAnchorProps {
+  sessionId: string;
+  className?: string;
+  style?: React.CSSProperties;
+}
+
+export function TerminalAnchor({ sessionId, className, style }: TerminalAnchorProps) {
+  const { theme } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const attachedRef = useRef(false);
   const rafRef = useRef<number>(0);
+  const [tuiActive, setTuiActive] = useState(() => TerminalManager.isTui(sessionId));
+
+  useEffect(() => {
+    const handle = TerminalManager.get(sessionId);
+    if (handle) {
+      setTuiActive(handle.tuiActive);
+      const prevCb = handle.onTuiChange;
+      handle.onTuiChange = (active) => {
+        setTuiActive(active);
+        prevCb?.(active);
+      };
+    }
+  }, [sessionId]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -365,6 +361,12 @@ export function TerminalAnchor({ sessionId }: { sessionId: string }) {
     /** Park the host back in the hidden pool — only if WE still own it. */
     const park = () => {
       if (!TerminalManager.isOwnedBy(sessionId, container)) return;
+      const handle = TerminalManager.get(sessionId);
+      if (handle) {
+        try {
+          handle.term.options.cursorBlink = false;
+        } catch {}
+      }
       TerminalManager.park(sessionId);
     };
 
@@ -397,9 +399,14 @@ export function TerminalAnchor({ sessionId }: { sessionId: string }) {
       TerminalManager.setVisible(sessionId, true);
       TerminalManager.setFocus(sessionId, true);
 
-      // Focus the terminal instance so user input is accepted immediately
+      // Focus the terminal instance and enable cursor blink while visible
       try {
-        handle.term.focus();
+        handle.term.options.cursorBlink = true;
+        requestAnimationFrame(() => {
+          try {
+            handle.term.focus();
+          } catch {}
+        });
       } catch {}
 
       // Immediately repaint buffer onto canvas after DOM reparenting (WebKit canvas context restore)
@@ -485,14 +492,18 @@ export function TerminalAnchor({ sessionId }: { sessionId: string }) {
   return (
     <div
       ref={containerRef}
-      onWheel={(e) => {
-        // React synthetic wheel event barrier
-        e.stopPropagation();
-      }}
+      className={`term-pane${tuiActive ? ' tui-active' : ''} ${className || ''}`.trim()}
       onClick={() => {
         const handle = TerminalManager.get(sessionId);
         try {
-          handle?.term.focus();
+          if (handle) {
+            handle.term.options.cursorBlink = true;
+          }
+          requestAnimationFrame(() => {
+            try {
+              handle?.term.focus();
+            } catch {}
+          });
         } catch {}
       }}
       style={{
@@ -505,8 +516,8 @@ export function TerminalAnchor({ sessionId }: { sessionId: string }) {
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
-        overscrollBehavior: 'contain',
-        background: '#0a0a0a',
+        background: theme.colors.bg.primary,
+        ...style,
       }}
     />
   );

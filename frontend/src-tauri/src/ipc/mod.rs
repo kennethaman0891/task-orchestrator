@@ -22,15 +22,15 @@ pub async fn terminal_create(
     rows: Option<u16>,
     command: Option<String>,
 ) -> Result<SessionMeta, String> {
-    eprintln!("[IPC] terminal_create cwd={:?} ws_id={:?} cols={} rows={} cmd={:?}", cwd, workspace_id, cols.unwrap_or(80), rows.unwrap_or(25), command);
+    eprintln!("[IPC] terminal_create cwd={:?} ws_id={:?} cols={} rows={} cmd={:?}", cwd, workspace_id, cols.unwrap_or(120), rows.unwrap_or(40), command);
     // Async command: runs on the Tauri worker runtime, NOT the main (UI) thread.
     // This keeps PTY process spawn + the `ps` tty lookup (pty::tty_for_pid)
     // from blocking the webview and causing "Not Responding" freezes on create.
     let result = state.manager.create(
         cwd,
         workspace_id.unwrap_or_default(),
-        cols.unwrap_or(80),
-        rows.unwrap_or(25),
+        cols.unwrap_or(120),
+        rows.unwrap_or(40),
         command,
     );
     eprintln!("[IPC] terminal_create result: {:?}", result.as_ref().map(|m| &m.id).unwrap_or(&"ERROR".to_string()));

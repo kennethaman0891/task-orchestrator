@@ -2018,18 +2018,30 @@ def normalize_claude_fresh(command: str) -> str:
     return shlex.join(out)
 
 
+_cwd_cache: Dict[str, tuple[float, str]] = {}
+_CWD_CACHE_TTL = 15.0  # seconds
+
+
 def _lsof_cwd(pid: str) -> str:
     """Best-effort resolve the current working directory of a process via lsof,
-    run in a worker thread. Returns '' on any error."""
+    run in a worker thread. Cached for 15s to prevent process storms."""
+    now = time.time()
+    cached = _cwd_cache.get(pid)
+    if cached and (now - cached[0]) < _CWD_CACHE_TTL:
+        return cached[1]
+    cwd = ""
     try:
         r = subprocess.run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
                            capture_output=True, text=True, timeout=2)
         for line in r.stdout.splitlines():
             if line.startswith("n"):
-                return line[1:]
+                cwd = line[1:]
+                break
     except Exception:
         pass
-    return ""
+    if cwd or not cached:
+        _cwd_cache[pid] = (now, cwd)
+    return cwd or (cached[1] if cached else "")
 
 
 async def scan_terminals():

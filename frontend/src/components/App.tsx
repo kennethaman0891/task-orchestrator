@@ -53,6 +53,9 @@ import { getCollabSession, type CollabUser, type OwnerProfile } from '@/lib/coll
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { SettingsView } from '@/views/settings/SettingsView';
 
+const INITIAL_TERMINAL_COLS = 120;
+const INITIAL_TERMINAL_ROWS = 40;
+
 export default function App() {
   const { theme: t } = useTheme();
 
@@ -179,6 +182,22 @@ export default function App() {
     });
   }, []);
 
+  const handleSetWorkspaceTemplate = useCallback((wsId: string, template: TemplateKey) => {
+    setWorkspaces((prev) => {
+      const next = prev.map((w) => (w.id === wsId ? { ...w, template } : w));
+      saveWorkspaces(next);
+      return next;
+    });
+  }, []);
+
+  const handleSetWorkspaceLayoutMode = useCallback((wsId: string, layoutMode: GridMode) => {
+    setWorkspaces((prev) => {
+      const next = prev.map((w) => (w.id === wsId ? { ...w, layoutMode } : w));
+      saveWorkspaces(next);
+      return next;
+    });
+  }, []);
+
   const commitRenameTerminal = useCallback((tty: string) => {
     const label = terminalNameDraft.trim();
     if (label) {
@@ -272,7 +291,7 @@ export default function App() {
           const rawCmd = ws.command?.trim() || '';
           const cleanCmd = ['zsh', 'zshl', '/bin/zsh', 'bash', 'sh', 'exec zsh'].includes(rawCmd) ? undefined : (rawCmd || undefined);
           const cmdToRun = isIde ? undefined : cleanCmd;
-          const created = await tauri.create(ws.projectPath || undefined, ws.id, undefined, undefined, cmdToRun);
+          const created = await tauri.create(ws.projectPath || undefined, ws.id, INITIAL_TERMINAL_COLS, INITIAL_TERMINAL_ROWS, cmdToRun);
           const result = created as { id?: string; tty?: string };
           const sid = result?.id || result?.tty;
           console.log(`[App] PTY created (isIde=${isIde}): id=${result?.id} tty=${result?.tty} → sid=${sid}`);
@@ -439,6 +458,15 @@ export default function App() {
     };
   }, [isTauri(), workspaces]);
 
+  // Keep TerminalManager's TTY index in sync with all live sessions
+  useEffect(() => {
+    for (const s of nativeSessions) {
+      if (s.id && s.tty) {
+        TerminalManager.setTty(s.id, s.tty);
+      }
+    }
+  }, [nativeSessions]);
+
   // ── Unified terminals: merge Rust native sessions + sidecar data ──
   const unifiedTerminals: Record<string, UnifiedTerminal> = useMemo(() => {
     const map: Record<string, UnifiedTerminal> = {};
@@ -446,12 +474,16 @@ export default function App() {
     // Start with sidecar data (has tasks, tokens, opencode status)
     for (const [key, entry] of Object.entries(sidecarTerminals)) {
       map[key] = entry;
+      const cleanKey = key.startsWith('/dev/') ? key.slice(5) : key;
+      if (cleanKey !== key) map[cleanKey] = entry;
     }
 
     // Layer Rust session metadata on top (status, agent, cwd, title)
     for (const s of nativeSessions) {
       const key = s.id;
-      const existing = map[key];
+      const cleanTty = s.tty ? (s.tty.startsWith('/dev/') ? s.tty.slice(5) : s.tty) : undefined;
+      const existing = map[key] || (cleanTty ? map[cleanTty] : undefined) || (s.tty ? map[s.tty] : undefined);
+      let unified: UnifiedTerminal;
       if (existing) {
         // Merge: keep sidecar's tasks/tokens, update Rust metadata
         existing.agent = s.agent || existing.agent;
@@ -461,10 +493,13 @@ export default function App() {
         existing.rust_status = s.status;
         existing.session_name = s.title || existing.session_name;
         existing.pane_title = s.title || existing.pane_title;
+        existing.session_id = key;
+        if (cleanTty) existing.tty = cleanTty;
+        unified = existing;
       } else {
         // Rust-only session (no sidecar data yet)
-        map[key] = {
-          tty: s.tty || key,
+        unified = {
+          tty: cleanTty || s.tty || key,
           agent: s.agent || '',
           cli: s.cli || '',
           cwd: s.cwd || '',
@@ -485,6 +520,14 @@ export default function App() {
           session_id: key,
           rust_status: s.status,
         };
+      }
+      map[key] = unified;
+      if (cleanTty) {
+        map[cleanTty] = unified;
+        map[`/dev/${cleanTty}`] = unified;
+      }
+      if (s.tty) {
+        map[s.tty] = unified;
       }
     }
 
@@ -733,11 +776,19 @@ export default function App() {
     const ws = activeWorkspace;
     if (!ws || !isTauri()) return;
 
+    if (view === 'grid') {
+      const activeCount = ws.panes.filter((p) => p.tty).length;
+      if (activeCount >= 16) {
+        showToast('Maximum of 16 terminals reached in Grid view', true);
+        return;
+      }
+    }
+
     let slotIdx = targetSlotIndex;
     if (typeof slotIdx !== 'number' && view === 'grid') {
-      const templateCount = ws.template || 4;
+      const templateCount = Math.min(16, ws.template || 4);
       const rawPanes = ws.panes || [];
-      const totalSlots = Math.max(templateCount, rawPanes.length);
+      const totalSlots = Math.min(16, Math.max(templateCount, rawPanes.length));
       for (let i = 0; i < totalSlots; i++) {
         const p = rawPanes[i];
         if (!p || !p.tty) {
@@ -785,7 +836,7 @@ export default function App() {
       const rawCmd = ws.command?.trim() || '';
       const cleanCmd = ['zsh', 'zshl', '/bin/zsh', 'bash', 'sh', 'exec zsh'].includes(rawCmd) ? undefined : (rawCmd || undefined);
       const created = await tauri.create(
-        ws.projectPath || undefined, ws.id, undefined, undefined, cleanCmd);
+        ws.projectPath || undefined, ws.id, INITIAL_TERMINAL_COLS, INITIAL_TERMINAL_ROWS, cleanCmd);
       const sid = (created as { id?: string; tty?: string })?.id ||
                   (created as { tty?: string })?.tty;
       if (!sid) return;
@@ -831,7 +882,7 @@ export default function App() {
       )
     );
     try {
-      const created = await tauri.create(ws.projectPath || undefined, ws.id, undefined, undefined, undefined);
+      const created = await tauri.create(ws.projectPath || undefined, ws.id, INITIAL_TERMINAL_COLS, INITIAL_TERMINAL_ROWS, undefined);
       const sid = (created as { id?: string; tty?: string })?.id ||
                   (created as { tty?: string })?.tty;
       if (!sid) return;
@@ -1244,6 +1295,8 @@ export default function App() {
               terminals={unifiedTerminals}
               expandedPane={expandedPane}
               selectedPane={selectedPane}
+              focusedTerminal={focusedTerminal}
+              onSelectTerminal={setFocusedTerminal}
               onExpandPane={setExpandedPane}
               onSelectPane={setSelectedPane}
               onToast={showToast}
@@ -1254,6 +1307,8 @@ export default function App() {
               onRenameTerminal={handleRenameTerminalDirect}
               onAddPane={handleAddPane}
               onSetPaneSizeMode={handleSetPaneSizeMode}
+              onSetWorkspaceTemplate={(tpl) => activeWorkspace && handleSetWorkspaceTemplate(activeWorkspace.id, tpl)}
+              onSetWorkspaceLayoutMode={(mode) => activeWorkspace && handleSetWorkspaceLayoutMode(activeWorkspace.id, mode)}
             />
           )}
           {view === 'wizard' && (
@@ -1264,6 +1319,8 @@ export default function App() {
           )}
           {view === 'kanban' && (
             <KanbanView
+              workspaces={visibleWorkspaces}
+              activeId={activeWsId}
               terminals={unifiedTerminals}
               onToast={showToast}
             />

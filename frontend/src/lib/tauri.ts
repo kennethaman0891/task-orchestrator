@@ -28,11 +28,9 @@ export const tauri = {
   create: (cwd?: string, workspaceId?: string, cols?: number, rows?: number, command?: string) =>
     invoke<NativeSessionEntry>('terminal_create', {
       cwd: cwd || null,
-      // Tauri v2 expects camelCase JS keys for snake_case Rust params.
-      // `workspace_id` is silently dropped, so the PTY loses its workspace.
       workspaceId: workspaceId || null,
-      cols: cols || 80,
-      rows: rows || 25,
+      cols: cols || 120,
+      rows: rows || 40,
       command: command || null,
     }),
 

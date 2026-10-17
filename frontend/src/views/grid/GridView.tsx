@@ -4,30 +4,41 @@ import { useMemo, useState, useEffect, useCallback, useRef, memo } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
 import { scrollbarStyle } from '@/lib/theme';
 import type { UnifiedTerminal } from '@/types';
-import type { Workspace, Pane, GridMode } from '@/lib/workspace';
-import { GRID_GAP, GRID_MODES } from '@/lib/workspace';
+import type { Workspace, Pane, GridMode, TemplateKey } from '@/lib/workspace';
+import { GRID_GAP, GRID_MODES, TEMPLATES } from '@/lib/workspace';
 import { TerminalAnchor } from '@/components/terminal/TerminalPool';
-import { isClosed } from '@/lib/format';
+import { AgentChatPanel, isAgentCli } from '@/components/terminal/AgentChatPanel';
+import { CliLogo } from '@/lib/cliLogos';
+import { isClosed, cleanModel } from '@/lib/format';
 import { deriveTaskStatus, statusLabel, minTerminal, getTerminalWorkDuration, type TermStatus } from '@/lib/status';
 import { TerminalManager } from '@/terminal/TerminalManager';
 import { detectCLI } from '@/jarvis/adapters';
-import { CliLogo } from '@/lib/cliLogos';
-import { AgentChatPanel, isAgentCli } from '@/components/terminal/AgentChatPanel';
-import { CardComposer } from '@/components/terminal/CardComposer';
 import {
-  Maximize2,
-  Minimize2,
-  X,
-  GripVertical,
   Plus,
-  MessageSquare,
   ChevronDown,
   LayoutGrid,
   ScrollText,
   ArrowUp,
   ArrowDown,
+  Layers,
+  GripVertical,
+  MessageSquare,
 } from 'lucide-react';
 import { extractDropPaths } from '@/terminal/dropPaths';
+
+export const GRID_TEMPLATES: { key: TemplateKey; label: string; count: number }[] = [
+  { key: 1, label: 'Single (1)', count: 1 },
+  { key: 2, label: 'Split (2)', count: 2 },
+  { key: 4, label: 'Quad (4)', count: 4 },
+  { key: 6, label: 'Six (6)', count: 6 },
+  { key: 8, label: 'Eight (8)', count: 8 },
+  { key: 10, label: 'Ten (10)', count: 10 },
+  { key: 12, label: 'Twelve (12)', count: 12 },
+  { key: 14, label: 'Fourteen (14)', count: 14 },
+  { key: 16, label: 'Sixteen (16)', count: 16 },
+];
+
+export const MAX_GRID_TERMINALS = 16;
 
 interface Props {
   activeWorkspace?: Workspace;
@@ -35,6 +46,8 @@ interface Props {
   terminals: Record<string, UnifiedTerminal>;
   expandedPane: string | null;
   selectedPane: string | null;
+  focusedTerminal?: string | null;
+  onSelectTerminal?: (id: string | null) => void;
   onExpandPane: (id: string | null) => void;
   onSelectPane: (id: string | null) => void;
   onToast: (msg: string, error?: boolean) => void;
@@ -45,6 +58,8 @@ interface Props {
   onRenameTerminal?: (idOrTty: string, newLabel: string) => void;
   onAddPane?: (targetSlotIndex?: number) => void;
   onSetPaneSizeMode?: (paneId: string, mode: GridMode) => void;
+  onSetWorkspaceTemplate?: (template: TemplateKey) => void;
+  onSetWorkspaceLayoutMode?: (mode: GridMode) => void;
 }
 
 /**
@@ -82,7 +97,13 @@ function computeGridDimensions(
     return availableWidth >= 1200 ? { cols: 4, rows: 2 } : { cols: 3, rows: 3 };
   }
   if (paneCount === 9) return { cols: 3, rows: 3 };
+  if (paneCount === 10) {
+    return availableWidth >= 1200 ? { cols: 5, rows: 2 } : { cols: 4, rows: 3 };
+  }
   if (paneCount <= 12) return { cols: 4, rows: 3 };
+  if (paneCount <= 14) {
+    return availableWidth >= 1350 ? { cols: 5, rows: 3 } : { cols: 4, rows: 4 };
+  }
   if (paneCount <= 16) return { cols: 4, rows: 4 };
 
   // For high terminal counts (> 16, e.g. 20, 25, 36, 48):
@@ -117,6 +138,8 @@ interface GridCardProps {
   duration: ReturnType<typeof getTerminalWorkDuration> | null;
   isExpanded: boolean;
   isSelected: boolean;
+  focusedTerminal?: string | null;
+  onSelectTerminal?: (id: string | null) => void;
   isDraggingThis: boolean;
   isDraggingAny: boolean;
   isOverThis: boolean;
@@ -135,152 +158,30 @@ interface GridCardProps {
   cols: number;
   onSetPaneSizeMode?: (paneId: string, mode: GridMode) => void;
   density?: 'fit' | 'scrollable';
+  workspaceLayoutMode?: GridMode;
+  /** True while a full-screen TUI (opencode/vim/htop) owns the alternate screen. */
+  tuiActive?: boolean;
 }
+
+/**
+ * Which CLI mark to show in the card head.
+ *
+ * A real foreground CLI (vim, htop, opencode, git…) always wins. An idle
+ * shell or runtime (zsh/bash/sh/fish/node) yields to the agent brand, so an
+ * agent card shows *its* mark instead of the shell that happens to host it.
+ * Mirrors the resolution used by the reference grid card.
+ */
+const IDLE_CLI_IDS = ['', 'shell', 'zsh', 'bash', 'sh', 'fish', 'node', 'nodejs'];
+function resolveLogoCli(rawCli: string, agent: string): string {
+  const c = (rawCli || '').toLowerCase();
+  if (!IDLE_CLI_IDS.includes(c)) return c;
+  return agent || c;
+}
+
+/** Pane size classes a corner drag steps through. */
+const RESIZE_STEPS: GridMode[] = ['compact', 'auto', 'large', 'grid'];
 
 // ── Interactive Empty Grid Slot Component ─────────────────────────────
-interface EmptyGridSlotProps {
-  slotIndex: number;
-  isDraggingAny: boolean;
-  isOverThis: boolean;
-  onDragOver: (e: React.DragEvent, slotIndex: number) => void;
-  onDragLeave: (e: React.DragEvent, slotIndex: number) => void;
-  onDrop: (e: React.DragEvent, targetSlotIndex: number, tty: string | null) => void;
-  onAddPane?: (targetSlotIndex?: number) => void;
-  density?: 'fit' | 'scrollable';
-}
-
-function EmptyGridSlot({
-  slotIndex,
-  isDraggingAny,
-  isOverThis,
-  onDragOver,
-  onDragLeave,
-  onDrop,
-  onAddPane,
-  density = 'fit',
-}: EmptyGridSlotProps) {
-  const { theme: t } = useTheme();
-
-  return (
-    <div
-      data-slot-index={slotIndex}
-      data-empty-slot="true"
-      onDragOver={(e) => onDragOver(e, slotIndex)}
-      onDragLeave={(e) => onDragLeave(e, slotIndex)}
-      onDrop={(e) => onDrop(e, slotIndex, null)}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        border: isOverThis
-          ? `2px dashed ${t.colors.accent.primary}`
-          : `1px dashed ${t.colors.border.subtle}`,
-        borderRadius: '6px',
-        background: isOverThis
-          ? `${t.colors.accent.primary}12`
-          : 'rgba(255, 255, 255, 0.02)',
-        minHeight: density === 'fit' ? '0' : '200px',
-        height: '100%',
-        minWidth: 0,
-        boxShadow: isOverThis ? `0 0 14px ${t.colors.accent.primary}40` : 'none',
-        transition: 'all 0.15s ease',
-        cursor: isDraggingAny ? 'copy' : 'default',
-        padding: '12px',
-        textAlign: 'center',
-        userSelect: 'none',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: '6px',
-          opacity: isOverThis ? 1 : 0.65,
-          transition: 'opacity 0.15s ease',
-        }}
-      >
-        <span
-          style={{
-            fontSize: '10.5px',
-            fontWeight: 600,
-            color: isOverThis ? t.colors.accent.primary : t.colors.text.muted,
-            letterSpacing: '0.5px',
-            textTransform: 'uppercase',
-          }}
-        >
-          {isOverThis ? 'Drop to place terminal here' : `Slot ${slotIndex + 1} · Empty`}
-        </span>
-
-        {onAddPane && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onAddPane(slotIndex);
-            }}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '5px',
-              padding: '5px 12px',
-              borderRadius: '5px',
-              fontSize: '10.5px',
-              fontWeight: 600,
-              fontFamily: t.fontFamily.sans,
-              background: isOverThis ? t.colors.accent.primary : `${t.colors.accent.primary}20`,
-              border: `1px solid ${t.colors.accent.primary}`,
-              color: isOverThis ? '#ffffff' : t.colors.accent.primary,
-              cursor: 'pointer',
-              transition: 'all 0.15s ease',
-              marginTop: '2px',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = t.colors.accent.primary;
-              e.currentTarget.style.color = '#ffffff';
-            }}
-            onMouseLeave={(e) => {
-              if (!isOverThis) {
-                e.currentTarget.style.background = `${t.colors.accent.primary}20`;
-                e.currentTarget.style.color = t.colors.accent.primary;
-              }
-            }}
-            title={`Launch a new terminal in Slot ${slotIndex + 1} (⌘T)`}
-          >
-            <Plus size={12} />
-            <span>Add Terminal</span>
-            <span
-              style={{
-                fontSize: '9px',
-                padding: '1px 4px',
-                borderRadius: '3px',
-                background: isOverThis ? 'rgba(0,0,0,0.25)' : `${t.colors.accent.primary}30`,
-                color: isOverThis ? '#ffffff' : t.colors.accent.primary,
-                fontWeight: 600,
-                marginLeft: '2px',
-              }}
-            >
-              ⌘T
-            </span>
-          </button>
-        )}
-
-        <span
-          style={{
-            fontSize: '9.5px',
-            color: t.colors.text.muted,
-            opacity: 0.7,
-            marginTop: '2px',
-          }}
-        >
-          {isOverThis ? 'Release to place terminal into this slot' : 'Drag terminal here to place'}
-        </span>
-      </div>
-    </div>
-  );
-}
-
 const GridCard = memo(function GridCard({
   pane,
   index,
@@ -291,6 +192,8 @@ const GridCard = memo(function GridCard({
   duration,
   isExpanded,
   isSelected,
+  focusedTerminal,
+  onSelectTerminal,
   isDraggingThis,
   isDraggingAny,
   isOverThis,
@@ -309,33 +212,55 @@ const GridCard = memo(function GridCard({
   cols,
   onSetPaneSizeMode,
   density = 'fit',
+  workspaceLayoutMode,
+  tuiActive = false,
 }: GridCardProps) {
   const { theme: t } = useTheme();
   const cardRef = useRef<HTMLDivElement>(null);
+  const paneMode: GridMode = pane.sizeMode || workspaceLayoutMode || 'auto';
+
   const [isEditing, setIsEditing] = useState(false);
   const [renameDraft, setRenameDraft] = useState(displayName);
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const paneMode: GridMode = pane.sizeMode || 'auto';
+  const [modeDropdownOpen, setModeDropdownOpen] = useState(false);
 
-  const isUltraCompact = density === 'fit' && totalPanes > 16;
-  const isCompactCard = isUltraCompact || paneMode === 'compact';
+  // Responsive thresholds: drop optional chrome so the title and essential controls survive
+  const isCompact = cols >= 3 || totalPanes > 4;
+  const isUltraCompact = density === 'fit' && (cols >= 5 || totalPanes > 10);
+
+  const agentName = entry?.agent?.trim() || '';
+  // The sidecar reports the model at `tokens.model`; `model`/`applied_model` are
+  // populated by other sources (Rust session metadata, opencode scan). Take the
+  // first that is set so the model badge shows whatever the app actually knows.
+  const rawModel = entry?.model || entry?.tokens?.model || entry?.opencode_model || '';
+  const shortModel = rawModel ? cleanModel(rawModel) : '';
+  const logoCli = resolveLogoCli(entry?.cli || cli, agentName);
+  const agentDetected = agentName !== '' && isAgentCli(entry);
+
+  const focusTerminal = useCallback(() => {
+    onSelectPane(pane.id);
+    if (pane.tty && onSelectTerminal) {
+      onSelectTerminal(pane.tty);
+    }
+    if (pane.tty) {
+      TerminalManager.focus(pane.tty);
+      requestAnimationFrame(() => {
+        if (pane.tty) TerminalManager.focus(pane.tty);
+      });
+    }
+  }, [onSelectPane, onSelectTerminal, pane.id, pane.tty]);
 
   const handleModeSelect = (mode: GridMode) => {
-    setDropdownOpen(false);
+    setModeDropdownOpen(false);
     onSetPaneSizeMode?.(pane.id, mode);
-    requestAnimationFrame(() => {
+    setTimeout(() => {
       for (const [tty] of TerminalManager.handles) {
         TerminalManager.fitNow(tty);
-        TerminalManager.repaint(tty);
+        TerminalManager.refresh(tty);
       }
-    });
+    }, 80);
   };
 
-  useEffect(() => {
-    if (!isEditing) setRenameDraft(displayName);
-  }, [displayName, isEditing]);
-
-  // Agent chat panel — per-pane open state
+  // Per-pane agent chat panel — open state persisted like the rest of the grid UI.
   const [chatOpen, setChatOpen] = useState<boolean>(() => {
     if (!pane.tty) return false;
     try {
@@ -351,118 +276,139 @@ const GridCard = memo(function GridCard({
       if (pane.tty) {
         try {
           const cur = JSON.parse(localStorage.getItem('tto-grid-chat-open') || '[]') as string[];
-          const arr = next ? (cur.includes(pane.tty) ? cur : [...cur, pane.tty]) : cur.filter((x) => x !== pane.tty);
+          const arr = next
+            ? cur.includes(pane.tty) ? cur : [...cur, pane.tty]
+            : cur.filter((x) => x !== pane.tty);
           localStorage.setItem('tto-grid-chat-open', JSON.stringify(arr));
         } catch { /* noop */ }
       }
       return next;
     });
   };
-  const agentDetected = isAgentCli(
-    entry,
-    !entry?.cli && !entry?.agent && pane.tty ? TerminalManager.lastLines(pane.tty, 25) : undefined
+
+  /**
+   * Corner drag-resize. The reference card resizes panes *proportionally* with
+   * a free-form pane-size model; this grid is uniform-track (see
+   * computeGridDimensions), so the handle steps the pane's size class instead:
+   * drag out to grow the card, drag in to shrink it. Every step commits through
+   * onSetPaneSizeMode, so it is fully reversible and never desyncs the layout.
+   */
+  const startCornerResize = useCallback(
+    (e: React.MouseEvent) => {
+      if (!onSetPaneSizeMode || !pane.tty) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startIdx = Math.max(0, RESIZE_STEPS.indexOf(paneMode));
+      let appliedIdx = startIdx;
+
+      const onMove = (ev: MouseEvent) => {
+        const delta = ev.clientX - startX + (ev.clientY - startY);
+        let next = startIdx;
+        if (delta > 90) next = Math.min(RESIZE_STEPS.length - 1, startIdx + 1);
+        else if (delta < -90) next = Math.max(0, startIdx - 1);
+        if (next !== appliedIdx) {
+          appliedIdx = next;
+          onSetPaneSizeMode(pane.id, RESIZE_STEPS[next]);
+        }
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    },
+    [onSetPaneSizeMode, pane.id, pane.tty, paneMode]
   );
+
+  useEffect(() => {
+    if (!isEditing) setRenameDraft(displayName);
+  }, [displayName, isEditing]);
 
   const commitRename = () => {
     const trimmed = renameDraft.trim();
-    if (trimmed && onRenameTerminal) {
-      onRenameTerminal(pane.tty || pane.id, trimmed);
+    if (trimmed && trimmed !== displayName && onRenameTerminal && pane.tty) {
+      onRenameTerminal(pane.tty, trimmed);
     }
     setIsEditing(false);
   };
 
+  const isCardActive = isSelected || (!!pane.tty && focusedTerminal === pane.tty);
+
   return (
     <div
       ref={cardRef}
-      className="term-pane"
+      className={`ws-pane ws-pane-term${isExpanded ? ' ws-pane-expanded' : ''}${isCardActive ? ' ws-pane-selected' : ''}`}
       data-agent={cli}
       data-tto-session={pane.tty}
       data-drop-target="terminal"
       style={{
-        display: 'flex',
-        flexDirection: 'column',
-        border: isOverThis
-          ? `2px dashed ${t.colors.accent.primary}`
-          : `1px solid ${isSelected ? t.colors.accent.primary : t.colors.border.subtle}`,
-        borderRadius: '6px',
-        overflow: 'hidden',
-        background: isOverThis ? 'rgba(99, 102, 241, 0.05)' : t.colors.bg.secondary,
         minWidth: 0,
-        boxShadow: isExpanded
-          ? '0 8px 32px rgba(0,0,0,0.85)'
-          : isOverThis
-          ? `0 0 10px ${t.colors.accent.primary}40`
-          : isSelected
-          ? `0 0 0 1px ${t.colors.accent.primary}, 0 0 12px ${t.colors.accent.primary}25`
-          : 'none',
-        transition: isExpanded ? 'none' : 'border 0.15s ease, background 0.15s ease, opacity 0.15s ease',
-        position: isExpanded ? 'fixed' : 'relative',
+        // `.ws-pane` / `.ws-pane-term` own the border, radius, background and
+        // resting shadow; only live drag / selection feedback is inline.
         opacity: isExpanded ? 1 : isDraggingThis ? 0.4 : 1,
         transform: isExpanded ? 'none' : isDraggingThis ? 'scale(0.98)' : 'none',
-        zIndex: isExpanded ? 100 : 1,
-        overscrollBehavior: 'contain',
-        ...(isExpanded
+        transition: isExpanded ? 'none' : 'border 0.15s ease, background 0.15s ease, opacity 0.15s ease',
+        ...(isOverThis
           ? {
-              inset: '40px 10px 10px 10px',
+              border: `2px dashed ${t.colors.accent.primary}`,
+              boxShadow: `0 0 10px ${t.colors.accent.primary}40`,
             }
+          : isCardActive
+          ? { boxShadow: `0 0 0 1px ${t.colors.accent.primary}, 0 0 12px ${t.colors.accent.primary}25` }
+          : {}),
+        ...(isExpanded
+          ? {}
           : {
               gridColumn: paneMode === 'large' && cols >= 2 ? 'span 2' : 'span 1',
-              minHeight:
-                density === 'fit'
-                  ? '0'
-                  : paneMode === 'compact'
-                  ? '180px'
-                  : paneMode === 'large'
-                  ? '280px'
-                  : '220px',
               height: '100%',
             }),
       }}
-      onClick={() => onSelectPane(pane.id)}
+      onClick={focusTerminal}
       onDragOver={(e) => onDragOver(e, index)}
       onDragLeave={(e) => onDragLeave(e, index)}
       onDrop={(e) => onDrop(e, index, pane.tty)}
-      title={`${displayName} — ${label.text}`}
+      title={`${displayName || pane.tty} — ${label.text}`}
     >
-      {/* Card Header: Drag Handle, CLI Logo, Title, Live Status Badge, and Controls */}
+      {/* ── Card head: drag grip · CLI brand mark · agent/model/session · controls ── */}
       <div
-        className="grid-card-header"
+        className="ws-pane-head"
         draggable={!isExpanded}
         onDragStart={(e) => onDragStart(e, pane.id, index)}
         onDragEnd={onDragEnd}
-        style={{
-          height: isCompactCard ? '22px' : '28px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: isCompactCard ? '0 5px' : '0 8px',
-          background: t.colors.bg.secondary,
-          borderBottom: `1px solid ${t.colors.border.subtle}`,
-          cursor: isExpanded ? 'default' : 'grab',
-          userSelect: 'none',
-          flexShrink: 0,
-        }}
+        style={{ cursor: isExpanded ? 'default' : 'grab' }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: isUltraCompact ? '3px' : '6px', minWidth: 0, flex: 1 }}>
-          {!isExpanded && (
-            <span
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                color: t.colors.text.muted,
-                opacity: 0.6,
-                cursor: 'grab',
-                flexShrink: 0,
-              }}
-            >
-              <GripVertical size={isUltraCompact ? 11 : 13} />
-            </span>
-          )}
-          <CliLogo cli={cli} size={isUltraCompact ? 11 : 13} />
+        {/* Drag grip (project extra) */}
+        {!isExpanded && (
+          <span
+            title="Drag to reorder"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              color: t.colors.text.muted,
+              opacity: 0.6,
+              cursor: 'grab',
+              flexShrink: 0,
+            }}
+          >
+            <GripVertical size={isUltraCompact ? 11 : 13} />
+          </span>
+        )}
+
+        {/* CLI brand mark — replaces the old macOS traffic-light dots */}
+        <CliLogo cli={logoCli} size={isUltraCompact ? 11 : 13} />
+
+        {/* Centred title: agent + model badges, then the (renameable) session label */}
+        <span className="ws-pane-title">
+          {agentName && <span className="ws-pane-agent">{agentName}</span>}
+          {shortModel && <span className="ws-pane-model">{shortModel}</span>}
           {isEditing ? (
             <input
-              autoFocus
+              type="text"
               value={renameDraft}
+              autoFocus
               onChange={(e) => setRenameDraft(e.target.value)}
               onBlur={commitRename}
               onKeyDown={(e) => {
@@ -473,96 +419,96 @@ const GridCard = memo(function GridCard({
                 }
               }}
               onClick={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
               style={{
-                fontSize: isUltraCompact ? '10px' : '11px',
-                fontWeight: 600,
-                color: t.colors.text.primary,
-                background: t.colors.bg.primary,
-                border: `1px solid ${t.colors.accent.primary}`,
+                background: '#111',
+                border: '1px solid #38bdf8',
                 borderRadius: '3px',
-                padding: '1px 4px',
+                color: '#fff',
+                fontSize: '11px',
+                padding: '0 4px',
                 outline: 'none',
-                minWidth: '60px',
+                fontFamily: 'inherit',
+                minWidth: 0,
                 maxWidth: '160px',
-                fontFamily: t.fontFamily.sans,
               }}
             />
           ) : (
             <span
+              className="ws-pane-id"
               onDoubleClick={(e) => {
                 e.stopPropagation();
                 setIsEditing(true);
               }}
-              style={{
-                fontSize: isUltraCompact ? '10px' : '11px',
-                fontWeight: 600,
-                color: t.colors.text.primary,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                cursor: 'text',
-              }}
-              title={`${displayName} (double-click to rename)`}
+              title={`${displayName || pane.tty} (double-click to rename)`}
+              // Reference renders this at 9px/#666 because it holds a raw tty id.
+              // Here it carries the human label, so it is lifted to secondary.
+              style={{ fontSize: '10px', color: t.colors.text.secondary, cursor: 'text' }}
             >
-              {displayName}
+              {displayName || pane.tty}
             </span>
           )}
-        </div>
+        </span>
 
-        {/* Right side of header: Status badge + size dropdown + controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: isUltraCompact ? '3px' : '6px', flexShrink: 0 }}>
-          {status !== 'empty' && (
-            <div
+        {/* Live status pill (project extra) */}
+        {status !== 'empty' && !isUltraCompact && (
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+              padding: '1px 6px',
+              borderRadius: '10px',
+              background: `${label.color}18`,
+              border: `1px solid ${label.color}40`,
+              fontSize: '9.5px',
+              fontFamily: t.fontFamily.mono,
+              fontWeight: 600,
+              color: label.color,
+              letterSpacing: '0.3px',
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+            title={`Status: ${label.text}\nStarted: ${duration?.startTimeFormatted || 'N/A'}${duration?.durationStr ? `\nDuration: ${duration.durationStr}` : ''}`}
+          >
+            <span
               style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-                padding: isUltraCompact ? '1px 4px' : '1px 6px',
-                borderRadius: '10px',
-                background: `${label.color}18`,
-                border: `1px solid ${label.color}40`,
-                fontSize: isUltraCompact ? '8.5px' : '9.5px',
-                fontFamily: t.fontFamily.mono,
-                fontWeight: 600,
-                color: label.color,
-                letterSpacing: '0.3px',
-                cursor: 'default',
-                whiteSpace: 'nowrap',
+                width: '4px',
+                height: '4px',
+                borderRadius: '50%',
+                background: label.color,
+                boxShadow: status === 'running' || status === 'asking' ? `0 0 5px ${label.color}` : 'none',
                 flexShrink: 0,
               }}
-              title={`Status: ${label.text}\nStarted: ${duration?.startTimeFormatted || 'N/A'}${duration?.durationStr ? `\nDuration: ${duration.durationStr}` : ''}`}
-            >
-              <span
-                style={{
-                  width: '4px',
-                  height: '4px',
-                  borderRadius: '50%',
-                  background: label.color,
-                  boxShadow: status === 'running' || status === 'asking' ? `0 0 5px ${label.color}` : 'none',
-                  flexShrink: 0,
-                }}
-              />
-              <span>{label.text}</span>
-            </div>
-          )}
+            />
+            <span>{label.text}</span>
+          </span>
+        )}
 
-          {/* Sizing Mode Dropdown: Auto / Compact / Large / Grid */}
-          <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+        {/* Expanded badge — `CLI mode` while a full-screen TUI is up */}
+        {isExpanded && (
+          <span className={`ws-expand-badge${tuiActive ? ' cli' : ''}`}>
+            {tuiActive ? '⤢ CLI mode' : '⤢ expanded'}
+          </span>
+        )}
+
+        {/* Per-pane sizing dropdown (project extra) */}
+        {onSetPaneSizeMode && (!isCompact || isExpanded) && (
+          <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', flexShrink: 0 }}>
             <button
               type="button"
+              className="pane-size-btn"
               onClick={(e) => {
                 e.stopPropagation();
-                setDropdownOpen((prev) => !prev);
+                setModeDropdownOpen((prev) => !prev);
               }}
               title={`Card sizing: ${paneMode.toUpperCase()}`}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: '2px',
-                padding: isCompactCard ? '1px 3px' : '1px 5px',
+                padding: '1px 5px',
                 borderRadius: '3px',
-                fontSize: isCompactCard ? '8.5px' : '9.5px',
+                fontSize: '9.5px',
                 fontWeight: 600,
                 fontFamily: t.fontFamily.sans,
                 background: paneMode !== 'auto' ? `${t.colors.accent.primary}22` : 'rgba(255, 255, 255, 0.06)',
@@ -575,122 +521,78 @@ const GridCard = memo(function GridCard({
               }}
             >
               <span>{paneMode}</span>
-              <ChevronDown size={isCompactCard ? 7 : 9} style={{ opacity: 0.8 }} />
+              <ChevronDown size={9} style={{ opacity: 0.8 }} />
             </button>
 
-              {dropdownOpen && (
-                <>
-                  <div
-                    style={{ position: 'fixed', inset: 0, zIndex: 998, cursor: 'default' }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setDropdownOpen(false);
-                    }}
-                  />
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: '22px',
-                      right: 0,
-                      zIndex: 999,
-                      minWidth: '140px',
-                      padding: '4px',
-                      borderRadius: '5px',
-                      background: t.colors.bg.elevated || '#1c1d22',
-                      border: `1px solid ${t.colors.border.primary}`,
-                      boxShadow: '0 4px 14px rgba(0,0,0,0.5)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '2px',
-                    }}
-                  >
-                    {GRID_MODES.map((m) => {
-                      const isSel = paneMode === m.key;
-                      return (
-                        <button
-                          key={m.key}
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleModeSelect(m.key);
-                          }}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            width: '100%',
-                            padding: '4px 6px',
-                            borderRadius: '3px',
-                            border: 'none',
-                            background: isSel ? `${t.colors.accent.primary}25` : 'transparent',
-                            color: isSel ? t.colors.accent.primary : t.colors.text.primary,
-                            cursor: 'pointer',
-                            textAlign: 'left',
-                            fontSize: '10.5px',
-                          }}
-                        >
-                          <span>{m.label}</span>
-                          {isSel && <span style={{ fontWeight: 'bold' }}>✓</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </div>
+            {modeDropdownOpen && (
+              <>
+                <div
+                  style={{ position: 'fixed', inset: 0, zIndex: 998, cursor: 'default' }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setModeDropdownOpen(false);
+                  }}
+                />
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: '22px',
+                    right: 0,
+                    zIndex: 999,
+                    minWidth: '140px',
+                    padding: '4px',
+                    borderRadius: '5px',
+                    background: t.colors.bg.elevated || '#1c1d22',
+                    border: `1px solid ${t.colors.border.primary}`,
+                    boxShadow: '0 4px 14px rgba(0,0,0,0.5)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '2px',
+                  }}
+                >
+                  {GRID_MODES.map((m) => {
+                    const isSel = paneMode === m.key;
+                    return (
+                      <button
+                        key={m.key}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleModeSelect(m.key);
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          width: '100%',
+                          padding: '4px 6px',
+                          borderRadius: '3px',
+                          border: 'none',
+                          background: isSel ? `${t.colors.accent.primary}25` : 'transparent',
+                          color: isSel ? t.colors.accent.primary : t.colors.text.primary,
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          fontSize: '10.5px',
+                        }}
+                      >
+                        <span>{m.label}</span>
+                        {isSel && <span style={{ fontWeight: 'bold' }}>✓</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
-          {/* New terminal (+) */}
-          {onAddPane && !isUltraCompact && (
-            <span
-              role="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onAddPane(index + 1);
-              }}
-              style={{
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                padding: '2px',
-                borderRadius: '3px',
-                color: t.colors.text.muted,
-                transition: 'color 0.12s, background 0.12s',
-              }}
-              title="New terminal"
-            >
-              <Plus size={11} />
-            </span>
-          )}
-
-          {/* Agent chat toggle */}
-          {agentDetected && (
-            <span
-              role="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleChat();
-              }}
-              style={{
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                padding: '2px',
-                borderRadius: '3px',
-                color: chatOpen ? t.colors.accent.primary : t.colors.text.muted,
-                background: chatOpen ? t.colors.bg.hover : 'transparent',
-              }}
-              title={chatOpen ? 'Hide agent chat' : 'Open live agent chat'}
-            >
-              <MessageSquare size={11} />
-            </span>
-          )}
-
-          {/* Maximize / Collapse */}
+        {/* New terminal (project extra) */}
+        {onAddPane && (!isCompact || isExpanded) && (
           <span
             role="button"
             onClick={(e) => {
               e.stopPropagation();
-              onExpandPane(isExpanded ? null : pane.id);
+              onAddPane(index + 1);
             }}
             style={{
               cursor: 'pointer',
@@ -698,74 +600,156 @@ const GridCard = memo(function GridCard({
               alignItems: 'center',
               padding: '2px',
               borderRadius: '3px',
-              color: isExpanded ? t.colors.accent.primary : t.colors.text.muted,
+              color: t.colors.text.muted,
+              flexShrink: 0,
             }}
-            title={isExpanded ? 'Collapse' : 'Maximize'}
+            title="New terminal"
           >
-            {isExpanded ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
+            <Plus size={11} />
           </span>
+        )}
 
-          {/* Close */}
-          {totalPanes > 1 && (
-            <span
-              role="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRemovePane(pane.id);
-              }}
-              style={{
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                padding: '2px',
-                borderRadius: '3px',
-                color: t.colors.text.muted,
-              }}
-              title="Close pane"
-            >
-              <X size={11} />
-            </span>
-          )}
-        </div>
+        {/* Agent chat toggle (project extra) */}
+        {agentDetected && !isUltraCompact && (
+          <span
+            role="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleChat();
+            }}
+            style={{
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              padding: '2px',
+              borderRadius: '3px',
+              color: chatOpen ? t.colors.accent.primary : t.colors.text.muted,
+              background: chatOpen ? t.colors.bg.hover : 'transparent',
+              flexShrink: 0,
+            }}
+            title={chatOpen ? 'Hide agent chat' : 'Open live agent chat'}
+          >
+            <MessageSquare size={11} />
+          </span>
+        )}
+
+        {/* Expand / Restore — the reference's labelled, selection-revealed affordance */}
+        {isExpanded ? (
+          <button
+            className="pane-restore-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              onExpandPane(null);
+              if (pane.tty) {
+                setTimeout(() => {
+                  TerminalManager.fitNow(pane.tty!);
+                  TerminalManager.focus(pane.tty!);
+                }, 50);
+              }
+            }}
+            title="Exit focus — restore the grid"
+          >
+            ⤡ Exit focus
+          </button>
+        ) : isSelected ? (
+          <button
+            className="pane-expand-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              onExpandPane(pane.id);
+              if (pane.tty) {
+                setTimeout(() => {
+                  TerminalManager.fitNow(pane.tty!);
+                  TerminalManager.focus(pane.tty!);
+                }, 50);
+              }
+            }}
+            title="Expand — fill the workspace"
+          >
+            ⤢ Expand
+          </button>
+        ) : null}
+
+        {/* Focus — always visible, mirrors the reference's ⛶ control */}
+        <button
+          className={`pane-focus-btn${isExpanded ? ' active' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onExpandPane(isExpanded ? null : pane.id);
+            if (pane.tty) {
+              setTimeout(() => {
+                TerminalManager.fitNow(pane.tty!);
+                TerminalManager.focus(pane.tty!);
+              }, 50);
+            }
+          }}
+          title={isExpanded ? 'Exit focus' : 'Focus terminal (fill the workspace)'}
+        >
+          ⛶
+        </button>
+
+        {/* Close */}
+        {(totalPanes > 1 || isExpanded) && (
+          <button
+            className="ws-close"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemovePane(pane.id);
+            }}
+            title="Close terminal"
+          >
+            ✕
+          </button>
+        )}
       </div>
 
-      {/* Terminal content */}
+      {/* ── Terminal content (xterm host + optional agent chat) ── */}
       {pane.tty ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, height: '100%' }}>
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'row', minHeight: 0, minWidth: 0 }}>
-            <div
-              style={{
-                flex: 1,
-                position: 'relative',
-                background: t.colors.bg.primary,
-                minHeight: 0,
-                minWidth: 0,
-                height: '100%',
-                display: 'flex',
-                flexDirection: 'column',
-                pointerEvents: isDraggingAny ? 'none' : 'auto',
-              }}
-            >
-              <TerminalAnchor sessionId={pane.tty} />
-            </div>
-            {agentDetected && chatOpen && entry && (
-              <AgentChatPanel
-                sessionId={pane.tty}
-                entry={entry}
-                onClose={toggleChat}
-                width={260}
-              />
-            )}
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'row',
+            minHeight: 0,
+            minWidth: 0,
+            height: '100%',
+          }}
+        >
+          <div
+            className="term-pane"
+            style={{
+              flex: 1,
+              position: 'relative',
+              height: '100%',
+              minHeight: 0,
+              minWidth: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              background: t.colors.bg.primary,
+              pointerEvents: isDraggingAny ? 'none' : 'auto',
+            }}
+          >
+            <TerminalAnchor sessionId={pane.tty} />
           </div>
-          <CardComposer
-            sessionId={pane.tty}
-            displayName={displayName}
-            cli={cli}
-            isCompact={isCompactCard}
-            isUltraCompact={isUltraCompact}
-          />
+          {agentDetected && chatOpen && entry && (
+            <AgentChatPanel
+              sessionId={pane.tty}
+              entry={entry}
+              onClose={toggleChat}
+              width={260}
+            />
+          )}
         </div>
       ) : null}
+
+      {/* Corner resize handle — visible on the selected card only */}
+      {isCardActive && !isExpanded && onSetPaneSizeMode && (
+        <div
+          className="ws-resize-handle"
+          onMouseDown={startCornerResize}
+          title="Drag to resize this card — drag out to grow, in to shrink"
+        />
+      )}
     </div>
   );
 });
@@ -775,6 +759,8 @@ export function GridView({
   terminals,
   expandedPane,
   selectedPane,
+  focusedTerminal,
+  onSelectTerminal,
   onExpandPane,
   onSelectPane,
   onRemovePane,
@@ -783,6 +769,9 @@ export function GridView({
   onRenameTerminal,
   onAddPane,
   onSetPaneSizeMode,
+  onSetWorkspaceTemplate,
+  onSetWorkspaceLayoutMode,
+  onToast,
 }: Props) {
   const { theme: t } = useTheme();
   const [tick, setTick] = useState(0);
@@ -790,6 +779,9 @@ export function GridView({
     const id = window.setInterval(() => setTick((v) => v + 1), 500);
     return () => window.clearInterval(id);
   }, []);
+
+  const [sizingDropdownOpen, setSizingDropdownOpen] = useState(false);
+  const [templateDropdownOpen, setTemplateDropdownOpen] = useState(false);
 
   const draggedSlotRef = useRef<{ paneId: string; slotIndex: number } | null>(null);
   const [draggedPaneId, setDraggedPaneId] = useState<string | null>(null);
@@ -848,6 +840,28 @@ export function GridView({
     });
   };
 
+  const handleSelectTemplate = (tpl: TemplateKey) => {
+    setTemplateDropdownOpen(false);
+    onSetWorkspaceTemplate?.(tpl);
+    requestAnimationFrame(() => {
+      for (const [tty] of TerminalManager.handles) {
+        TerminalManager.fitNow(tty);
+        TerminalManager.repaint(tty);
+      }
+    });
+  };
+
+  const handleSelectLayoutMode = (mode: GridMode) => {
+    setSizingDropdownOpen(false);
+    onSetWorkspaceLayoutMode?.(mode);
+    requestAnimationFrame(() => {
+      for (const [tty] of TerminalManager.handles) {
+        TerminalManager.fitNow(tty);
+        TerminalManager.repaint(tty);
+      }
+    });
+  };
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
@@ -864,48 +878,36 @@ export function GridView({
     return () => ro.disconnect();
   }, []);
 
-  // Compute total template slots: at least the workspace template count, and at least existing panes length
-  const templateCount = activeWorkspace?.template ?? 4;
   const rawPanes = useMemo(() => activeWorkspace?.panes ?? [], [activeWorkspace?.panes]);
-  const totalSlots = Math.max(templateCount, rawPanes.length);
 
-  // Derive slot items
+  const currentLayoutMode: GridMode = activeWorkspace?.layoutMode || 'auto';
+  const currentModeObj = GRID_MODES.find((m) => m.key === currentLayoutMode) || GRID_MODES[0];
+  const currentTemplateKey: TemplateKey = (activeWorkspace?.template && activeWorkspace.template in TEMPLATES) ? activeWorkspace.template : 4;
+  const currentTemplateObj = GRID_TEMPLATES.find((t) => t.key === currentTemplateKey) || {
+    key: currentTemplateKey,
+    label: `${TEMPLATES[currentTemplateKey]?.label || 'Template'} (${currentTemplateKey})`,
+    count: currentTemplateKey,
+  };
+
+  // Derive slot items — only render active terminals in the workspace (no empty grey boxes)
   const slotItems = useMemo(() => {
-    const items: Array<{
-      slotIndex: number;
-      pane: Pane;
-      isFilled: boolean;
-    }> = [];
+    return rawPanes
+      .filter((p) => p.tty)
+      .slice(0, MAX_GRID_TERMINALS)
+      .map((pane, i) => ({
+        slotIndex: i,
+        pane,
+        isFilled: true,
+      }));
+  }, [rawPanes]);
 
-    for (let i = 0; i < totalSlots; i++) {
-      const p = rawPanes[i];
-      if (p && p.tty) {
-        items.push({ slotIndex: i, pane: p, isFilled: true });
-      } else {
-        items.push({
-          slotIndex: i,
-          pane: p || {
-            id: `empty-slot-${activeWorkspace?.id ?? 'ws'}-${i}`,
-            tty: null,
-            label: `Slot ${i + 1}`,
-            sizeMode: 'auto',
-          },
-          isFilled: false,
-        });
-      }
-    }
-    return items;
-  }, [totalSlots, rawPanes, activeWorkspace?.id]);
-
-  const filledCount = useMemo(() => {
-    return slotItems.filter((s) => s.isFilled).length;
-  }, [slotItems]);
+  const filledCount = slotItems.length;
 
   const largeCount = useMemo(() => {
-    return slotItems.filter((s) => s.isFilled && s.pane.sizeMode === 'large').length;
+    return slotItems.filter((s) => s.pane.sizeMode === 'large').length;
   }, [slotItems]);
 
-  const effectiveSlots = totalSlots + largeCount;
+  const effectiveSlots = Math.max(1, Math.min(MAX_GRID_TERMINALS, Math.max(filledCount, currentTemplateKey === 1 ? 1 : Math.min(filledCount, currentTemplateKey)) + largeCount));
   const { cols, rows: rawRows } = computeGridDimensions(
     effectiveSlots,
     containerWidth,
@@ -948,7 +950,7 @@ export function GridView({
   const gridStyle = useMemo(() => {
     if (!activeWorkspace) return {};
     const isFit = density === 'fit';
-    const isUltraCompact = isFit && totalSlots > 16;
+    const isUltraCompact = isFit && filledCount > 12;
     const minCardHeight = isUltraCompact ? 60 : 80;
     const needsScroll = isFit && rows * minCardHeight > containerHeight;
     return {
@@ -972,7 +974,7 @@ export function GridView({
       overscrollBehavior: 'contain' as const,
       ...((!isFit || needsScroll) ? scrollbarStyle(t) : {}),
     };
-  }, [activeWorkspace, t, cols, rows, density, totalSlots, containerHeight]);
+  }, [activeWorkspace, t, cols, rows, density, filledCount, containerHeight]);
 
   const slotRows = useMemo(
     () =>
@@ -1138,7 +1140,7 @@ export function GridView({
           userSelect: 'none',
         }}
       >
-        {/* Left: Total Terminals badge & Layout pill */}
+        {/* Left: Total Terminals badge, Dropdowns, and Add Terminal */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <div
             style={{
@@ -1159,13 +1161,231 @@ export function GridView({
                 width: 6,
                 height: 6,
                 borderRadius: '50%',
-                background: '#22c55e',
-                boxShadow: '0 0 6px #22c55e',
+                background: filledCount >= MAX_GRID_TERMINALS ? '#f59e0b' : '#22c55e',
+                boxShadow: filledCount >= MAX_GRID_TERMINALS ? '0 0 6px #f59e0b' : '0 0 6px #22c55e',
               }}
             />
             <span>
-              {filledCount} {filledCount === 1 ? 'Terminal' : 'Terminals'} in Grid
+              {filledCount}/16 {filledCount === 1 ? 'Terminal' : 'Terminals'}
             </span>
+          </div>
+
+          {/* Sizing Mode Dropdown: Auto / Grid / Compact / Large */}
+          <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setTemplateDropdownOpen(false);
+                setSizingDropdownOpen((prev) => !prev);
+              }}
+              title="Grid Sizing Mode"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                padding: '2px 8px',
+                borderRadius: '5px',
+                fontSize: '10.5px',
+                fontWeight: 600,
+                fontFamily: t.fontFamily.sans,
+                background: sizingDropdownOpen ? `${t.colors.accent.primary}25` : t.colors.bg.elevated,
+                border: `1px solid ${sizingDropdownOpen ? t.colors.accent.primary : t.colors.border.subtle}`,
+                color: t.colors.text.primary,
+                cursor: 'pointer',
+                transition: 'all 0.12s ease',
+                userSelect: 'none',
+              }}
+            >
+              <LayoutGrid size={11} style={{ opacity: 0.8 }} />
+              <span style={{ textTransform: 'capitalize' }}>{currentModeObj.label}</span>
+              <ChevronDown size={10} style={{ opacity: 0.7 }} />
+            </button>
+
+            {sizingDropdownOpen && (
+              <>
+                <div
+                  style={{ position: 'fixed', inset: 0, zIndex: 998, cursor: 'default' }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSizingDropdownOpen(false);
+                  }}
+                />
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: '26px',
+                    left: 0,
+                    zIndex: 999,
+                    minWidth: '140px',
+                    padding: '4px',
+                    borderRadius: '8px',
+                    background: '#18181b',
+                    border: '1px solid rgba(255, 255, 255, 0.12)',
+                    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.65)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '2px',
+                  }}
+                >
+                  {GRID_MODES.map((m) => {
+                    const isSel = currentLayoutMode === m.key;
+                    return (
+                      <button
+                        key={m.key}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSelectLayoutMode(m.key);
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          width: '100%',
+                          padding: '5px 8px',
+                          borderRadius: '5px',
+                          border: 'none',
+                          background: isSel ? 'rgba(59, 130, 246, 0.18)' : 'transparent',
+                          color: isSel ? '#ffffff' : '#a1a1aa',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          fontSize: '11px',
+                          fontWeight: isSel ? 600 : 400,
+                          transition: 'all 0.1s ease',
+                        }}
+                        onMouseEnter={(e) => {
+                          if (!isSel) {
+                            e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
+                            e.currentTarget.style.color = '#ffffff';
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!isSel) {
+                            e.currentTarget.style.background = 'transparent';
+                            e.currentTarget.style.color = '#a1a1aa';
+                          }
+                        }}
+                      >
+                        <span style={{ width: '14px', display: 'inline-flex', justifyContent: 'center', fontWeight: 'bold', color: '#38bdf8' }}>
+                          {isSel ? '✓' : ''}
+                        </span>
+                        <span>{m.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Terminal Layout / Count Dropdown: Single (1) ... Sixteen (16) */}
+          <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSizingDropdownOpen(false);
+                setTemplateDropdownOpen((prev) => !prev);
+              }}
+              title="Terminal Layout Template (Max 16)"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                padding: '2px 8px',
+                borderRadius: '5px',
+                fontSize: '10.5px',
+                fontWeight: 600,
+                fontFamily: t.fontFamily.sans,
+                background: templateDropdownOpen ? `${t.colors.accent.primary}25` : t.colors.bg.elevated,
+                border: `1px solid ${templateDropdownOpen ? t.colors.accent.primary : t.colors.border.subtle}`,
+                color: t.colors.text.primary,
+                cursor: 'pointer',
+                transition: 'all 0.12s ease',
+                userSelect: 'none',
+              }}
+            >
+              <Layers size={11} style={{ opacity: 0.8 }} />
+              <span>{currentTemplateObj.label}</span>
+              <ChevronDown size={10} style={{ opacity: 0.7 }} />
+            </button>
+
+            {templateDropdownOpen && (
+              <>
+                <div
+                  style={{ position: 'fixed', inset: 0, zIndex: 998, cursor: 'default' }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTemplateDropdownOpen(false);
+                  }}
+                />
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: '26px',
+                    left: 0,
+                    zIndex: 999,
+                    minWidth: '150px',
+                    padding: '4px',
+                    borderRadius: '8px',
+                    background: '#18181b',
+                    border: '1px solid rgba(255, 255, 255, 0.12)',
+                    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.65)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '2px',
+                  }}
+                >
+                  {GRID_TEMPLATES.map((tmpl) => {
+                    const isSel = currentTemplateKey === tmpl.key;
+                    return (
+                      <button
+                        key={tmpl.key}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSelectTemplate(tmpl.key);
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          width: '100%',
+                          padding: '5px 8px',
+                          borderRadius: '5px',
+                          border: 'none',
+                          background: isSel ? 'rgba(59, 130, 246, 0.18)' : 'transparent',
+                          color: isSel ? '#ffffff' : '#a1a1aa',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          fontSize: '11px',
+                          fontWeight: isSel ? 600 : 400,
+                          transition: 'all 0.1s ease',
+                        }}
+                        onMouseEnter={(e) => {
+                          if (!isSel) {
+                            e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
+                            e.currentTarget.style.color = '#ffffff';
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!isSel) {
+                            e.currentTarget.style.background = 'transparent';
+                            e.currentTarget.style.color = '#a1a1aa';
+                          }
+                        }}
+                      >
+                        <span style={{ width: '14px', display: 'inline-flex', justifyContent: 'center', fontWeight: 'bold', color: '#38bdf8' }}>
+                          {isSel ? '✓' : ''}
+                        </span>
+                        <span>{tmpl.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
 
           <span
@@ -1183,34 +1403,48 @@ export function GridView({
 
           {onAddPane && (
             <button
-              onClick={() => onAddPane()}
-              title="Add a new terminal to the grid (⌘T)"
+              onClick={() => {
+                if (filledCount >= MAX_GRID_TERMINALS) {
+                  onToast?.('Maximum of 16 terminals in Grid view reached', true);
+                  return;
+                }
+                onAddPane();
+              }}
+              disabled={filledCount >= MAX_GRID_TERMINALS}
+              title={filledCount >= MAX_GRID_TERMINALS ? 'Maximum of 16 terminals in Grid reached' : 'Add a new terminal to the grid (⌘T)'}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: '4px',
                 padding: '2px 8px',
                 borderRadius: '4px',
-                background: `${t.colors.accent.primary}20`,
-                border: `1px solid ${t.colors.accent.primary}50`,
-                color: t.colors.accent.primary,
+                background: filledCount >= MAX_GRID_TERMINALS ? 'rgba(255, 255, 255, 0.05)' : `${t.colors.accent.primary}20`,
+                border: `1px solid ${filledCount >= MAX_GRID_TERMINALS ? 'rgba(255, 255, 255, 0.1)' : `${t.colors.accent.primary}50`}`,
+                color: filledCount >= MAX_GRID_TERMINALS ? t.colors.text.muted : t.colors.accent.primary,
                 fontSize: '10px',
                 fontWeight: 600,
-                cursor: 'pointer',
+                cursor: filledCount >= MAX_GRID_TERMINALS ? 'not-allowed' : 'pointer',
+                opacity: filledCount >= MAX_GRID_TERMINALS ? 0.6 : 1,
                 transition: 'all 0.12s ease',
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.background = t.colors.accent.primary;
-                e.currentTarget.style.color = '#ffffff';
+                if (filledCount < MAX_GRID_TERMINALS) {
+                  e.currentTarget.style.background = t.colors.accent.primary;
+                  e.currentTarget.style.color = '#ffffff';
+                }
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = `${t.colors.accent.primary}20`;
-                e.currentTarget.style.color = t.colors.accent.primary;
+                if (filledCount < MAX_GRID_TERMINALS) {
+                  e.currentTarget.style.background = `${t.colors.accent.primary}20`;
+                  e.currentTarget.style.color = t.colors.accent.primary;
+                }
               }}
             >
               <Plus size={11} />
-              <span>Add Terminal</span>
-              <span style={{ fontSize: '8.5px', opacity: 0.85, padding: '0 3px', borderRadius: '3px', background: 'rgba(0,0,0,0.2)' }}>⌘T</span>
+              <span>{filledCount >= MAX_GRID_TERMINALS ? 'Max 16 Reached' : 'Add Terminal'}</span>
+              {filledCount < MAX_GRID_TERMINALS && (
+                <span style={{ fontSize: '8.5px', opacity: 0.85, padding: '0 3px', borderRadius: '3px', background: 'rgba(0,0,0,0.2)' }}>⌘T</span>
+              )}
             </button>
           )}
         </div>
@@ -1362,66 +1596,98 @@ export function GridView({
       {/* ── Main Grid Container ── */}
       <div
         ref={gridContainerRef}
-        className={density === 'scrollable' ? 'grid-scroll-container' : undefined}
+        className={`ws-grid${expandedPane ? ' has-expanded' : ''}${activeWorkspace?.gridFocusMode ? ' focus-mode' : ''}${density === 'scrollable' ? ' grid-scroll-container' : ''}`}
+        data-grid-mode={currentLayoutMode}
         style={gridStyle}
       >
-        {slotRows.map(
-          ({ slotIndex, pane, isFilled, status, label, cli, displayName, duration, entry }) => {
-            if (!isFilled || !pane.tty) {
-              const isOverThis = dragOverSlotIndex === slotIndex;
+        {slotRows.length === 0 ? (
+          <div
+            style={{
+              gridColumn: '1 / -1',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minHeight: '260px',
+              height: '100%',
+              color: t.colors.text.muted,
+              gap: '12px',
+            }}
+          >
+            <span style={{ fontSize: '12px' }}>No active terminals in this workspace</span>
+            {onAddPane && (
+              <button
+                type="button"
+                onClick={() => onAddPane()}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '6px 14px',
+                  borderRadius: '6px',
+                  background: t.colors.accent.primary,
+                  color: '#ffffff',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  fontSize: '12px',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+                }}
+              >
+                <Plus size={14} />
+                <span>Create Terminal</span>
+              </button>
+            )}
+          </div>
+        ) : (
+          slotRows.map(
+            ({ slotIndex, pane, status, label, cli, displayName, duration, entry }) => {
+              const isExpanded = expandedPane === pane.id;
+              const isSelected = selectedPane === pane.id;
+              const isDraggingThis = draggedPaneId === pane.id;
+              const isOverThis = dragOverSlotIndex === slotIndex && !isDraggingThis;
+              // Drives the `⤢ CLI mode` badge and hides the command bar so a
+              // full-screen TUI keeps every row it needs.
+              const tuiActive = pane.tty ? TerminalManager.isTui(pane.tty) : false;
+
               return (
-                <EmptyGridSlot
+                <GridCard
                   key={pane.id}
-                  slotIndex={slotIndex}
+                  pane={pane}
+                  index={slotIndex}
+                  status={status}
+                  label={label}
+                  cli={cli}
+                  displayName={displayName}
+                  duration={duration}
+                  isExpanded={isExpanded}
+                  isSelected={isSelected}
+                  focusedTerminal={focusedTerminal}
+                  onSelectTerminal={onSelectTerminal}
+                  isDraggingThis={isDraggingThis}
                   isDraggingAny={Boolean(draggedPaneId)}
                   isOverThis={isOverThis}
+                  totalPanes={filledCount}
+                  onSelectPane={onSelectPane}
+                  onExpandPane={onExpandPane}
+                  onRemovePane={onRemovePane}
+                  onDragStart={handleDragStart}
+                  onDragEnd={handleDragEnd}
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
                   onDrop={handleDrop}
+                  onRenameTerminal={onRenameTerminal}
+                  entry={entry}
                   onAddPane={onAddPane}
+                  cols={cols}
+                  onSetPaneSizeMode={onSetPaneSizeMode}
                   density={density}
+                  workspaceLayoutMode={currentLayoutMode}
+                  tuiActive={tuiActive}
                 />
               );
             }
-
-            const isExpanded = expandedPane === pane.id;
-            const isSelected = selectedPane === pane.id;
-            const isDraggingThis = draggedPaneId === pane.id;
-            const isOverThis = dragOverSlotIndex === slotIndex && !isDraggingThis;
-
-            return (
-              <GridCard
-                key={pane.id}
-                pane={pane}
-                index={slotIndex}
-                status={status}
-                label={label}
-                cli={cli}
-                displayName={displayName}
-                duration={duration}
-                isExpanded={isExpanded}
-                isSelected={isSelected}
-                isDraggingThis={isDraggingThis}
-                isDraggingAny={Boolean(draggedPaneId)}
-                isOverThis={isOverThis}
-                totalPanes={filledCount}
-                onSelectPane={onSelectPane}
-                onExpandPane={onExpandPane}
-                onRemovePane={onRemovePane}
-                onDragStart={handleDragStart}
-                onDragEnd={handleDragEnd}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                onRenameTerminal={onRenameTerminal}
-                entry={entry}
-                onAddPane={onAddPane}
-                cols={cols}
-                onSetPaneSizeMode={onSetPaneSizeMode}
-                density={density}
-              />
-            );
-          }
+          )
         )}
       </div>
     </div>

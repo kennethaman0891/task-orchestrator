@@ -24,6 +24,8 @@ import { CodeEditor } from '@/components/editor/CodeEditor';
 import { ImageViewer } from '@/components/editor/ImageViewer';
 import { BinaryViewer } from '@/components/editor/BinaryViewer';
 import { TerminalAnchor } from '@/components/terminal/TerminalPool';
+import { CliLogo } from '@/lib/cliLogos';
+import { TerminalManager } from '@/terminal/TerminalManager';
 import {
   ChevronRight,
   ChevronDown,
@@ -75,6 +77,8 @@ interface TreeNode {
 
 export function IDEView({
   activeWorkspace,
+  workspaces: _workspaces,
+  terminals = {},
   openFiles,
   activeFile,
   onOpenFile,
@@ -1496,49 +1500,87 @@ export function IDEView({
                   fontSize: t.fontSize.xs,
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <TerminalIcon size={13} style={{ color: t.colors.accent.primary }} />
-                  <span style={{ fontWeight: 600 }}>IDE Terminal</span>
-                  <span
-                    style={{
-                      fontSize: '10px',
-                      padding: '1px 6px',
-                      borderRadius: '10px',
-                      backgroundColor: 'rgba(56, 189, 248, 0.15)',
-                      color: '#38bdf8',
-                      fontWeight: 600,
-                      letterSpacing: '0.3px',
-                    }}
-                  >
-                    Dedicated
-                  </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, overflowX: 'auto', ...scrollbarStyle(t, false) }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '0 4px', flexShrink: 0 }}>
+                    <TerminalIcon size={12} style={{ color: t.colors.accent.primary }} />
+                    <span style={{ fontWeight: 600, fontSize: '11px', color: t.colors.text.secondary }}>TERMINAL</span>
+                  </div>
 
-                  {/* Dedicated IDE Terminal Selector Dropdown */}
-                  {availableSessionIds.length > 0 && (
-                    <select
-                      value={activeTerminalId || ''}
-                      onChange={(e) => setSelectedIdeTerminalId(e.target.value)}
-                      style={{
-                        ...inputBase(t),
-                        padding: '2px 8px',
-                        fontSize: t.fontSize.xs,
-                        cursor: 'pointer',
-                        height: '24px',
-                        width: 'auto',
-                        fontWeight: 500,
-                      }}
-                    >
-                      {idePanes.map((p, idx) => {
-                        if (!p.tty) return null;
-                        const label = p.label || `IDE Terminal ${idx + 1}`;
-                        return (
-                          <option key={p.tty} value={p.tty}>
-                            {label} ({p.tty})
-                          </option>
-                        );
-                      })}
-                    </select>
-                  )}
+                  {/* VS Code fidelity horizontal tabs */}
+                  {idePanes.map((p, idx) => {
+                    if (!p.tty) return null;
+                    const isActive = p.tty === activeTerminalId;
+                    const termEntry = terminals[p.tty];
+                    const cliName = (termEntry?.cli || '').toLowerCase().trim();
+                    const label = p.label || (cliName && cliName !== 'shell' ? cliName : `Terminal ${idx + 1}`);
+
+                    return (
+                      <div
+                        key={p.tty}
+                        onClick={() => {
+                          setSelectedIdeTerminalId(p.tty!);
+                          TerminalManager.focus(p.tty!);
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 5,
+                          padding: '3px 8px',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          backgroundColor: isActive ? t.colors.bg.elevated : 'transparent',
+                          border: `1px solid ${isActive ? t.colors.border.primary : 'transparent'}`,
+                          color: isActive ? t.colors.text.primary : t.colors.text.muted,
+                          fontSize: '11px',
+                          fontWeight: isActive ? 600 : 400,
+                          flexShrink: 0,
+                          transition: 'all 0.12s ease',
+                        }}
+                        onMouseEnter={(e) => {
+                          if (!isActive) e.currentTarget.style.backgroundColor = t.colors.bg.hover;
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!isActive) e.currentTarget.style.backgroundColor = 'transparent';
+                        }}
+                      >
+                        {cliName ? <CliLogo cli={cliName} size={11} /> : <TerminalIcon size={11} />}
+                        <span>{label}</span>
+                        {availableSessionIds.length > 1 && onRemoveIdeTerminal && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRemoveIdeTerminal(p.tty!);
+                            }}
+                            title="Close Terminal"
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              color: 'inherit',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              padding: '1px',
+                              borderRadius: '3px',
+                              opacity: 0.7,
+                              marginLeft: 2,
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.2)';
+                              e.currentTarget.style.color = '#f87171';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = 'transparent';
+                              e.currentTarget.style.color = 'inherit';
+                            }}
+                          >
+                            <X size={10} />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
 
                   {onAddIdeTerminal && (
                     <button
@@ -1547,33 +1589,24 @@ export function IDEView({
                         ...buttonBase(t),
                         ...buttonSize(t, 'sm'),
                         ...buttonVariant(t, 'ghost'),
-                        padding: '2px 5px',
-                        height: '24px',
+                        padding: '2px 6px',
+                        height: '22px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        borderRadius: '4px',
+                        flexShrink: 0,
                       }}
                       title="New Dedicated IDE Terminal"
                       onClick={async () => {
                         const sid = await onAddIdeTerminal();
-                        if (sid) setSelectedIdeTerminalId(sid);
+                        if (sid) {
+                          setSelectedIdeTerminalId(sid);
+                          setTimeout(() => TerminalManager.focus(sid), 50);
+                        }
                       }}
                     >
                       <Plus size={12} />
-                    </button>
-                  )}
-
-                  {availableSessionIds.length > 1 && activeTerminalId && onRemoveIdeTerminal && (
-                    <button
-                      type="button"
-                      style={{
-                        ...buttonBase(t),
-                        ...buttonSize(t, 'sm'),
-                        ...buttonVariant(t, 'ghost'),
-                        padding: '2px 5px',
-                        height: '24px',
-                      }}
-                      title="Close Current IDE Terminal"
-                      onClick={() => onRemoveIdeTerminal(activeTerminalId)}
-                    >
-                      <Trash2 size={12} />
                     </button>
                   )}
                 </div>
@@ -1612,6 +1645,7 @@ export function IDEView({
 
               {/* Real PTY Terminal Anchor */}
               <div
+                className="term-pane"
                 style={{
                   flex: 1,
                   position: 'relative',
@@ -1622,7 +1656,7 @@ export function IDEView({
                   minWidth: 0,
                   display: 'flex',
                   flexDirection: 'column',
-                  backgroundColor: '#0a0a0a',
+                  backgroundColor: t.colors.bg.primary,
                 }}
               >
                 {activeTerminalId ? (
