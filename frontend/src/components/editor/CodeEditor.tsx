@@ -35,6 +35,7 @@ import { tags } from '@lezer/highlight';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { getLanguage } from '@/lib/format';
 import { useTheme } from '@/contexts/ThemeContext';
+import { isLightTheme } from '@/lib/theme';
 import { Save, Check, AlertCircle, WrapText, AlignLeft, ChevronRight, Folder } from 'lucide-react';
 import { FileIcon } from '@/lib/treeIcons';
 
@@ -210,7 +211,7 @@ export function CodeEditor({
   error,
 }: Props) {
   const { theme: t } = useTheme();
-  const isLightEditor = t.name === 'Paper';
+  const isLightEditor = isLightTheme(t);
   const pal = isLightEditor ? VSCODE_LIGHT : VSCODE_DARK;
   const highlightStyle = isLightEditor ? vsCodeLightStyle : vsCodeDarkStyle;
   const containerRef = useRef<HTMLDivElement>(null);

@@ -5,7 +5,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { scrollbarStyle } from '@/lib/theme';
 import type { UnifiedTerminal } from '@/types';
 import type { Workspace, Pane, GridMode, TemplateKey } from '@/lib/workspace';
-import { GRID_GAP, GRID_MODES, TEMPLATES } from '@/lib/workspace';
+import { GRID_GAP, TEMPLATES } from '@/lib/workspace';
 import { TerminalAnchor } from '@/components/terminal/TerminalPool';
 import { AgentChatPanel, isAgentCli } from '@/components/terminal/AgentChatPanel';
 import { CliLogo } from '@/lib/cliLogos';
@@ -15,16 +15,11 @@ import { TerminalManager } from '@/terminal/TerminalManager';
 import { detectCLI } from '@/jarvis/adapters';
 import {
   Plus,
-  ChevronDown,
-  LayoutGrid,
-  ScrollText,
-  ArrowUp,
-  ArrowDown,
-  Layers,
   GripVertical,
   MessageSquare,
 } from 'lucide-react';
 import { extractDropPaths } from '@/terminal/dropPaths';
+import { GridNotch } from './GridNotch';
 
 export const GRID_TEMPLATES: { key: TemplateKey; label: string; count: number }[] = [
   { key: 1, label: 'Single (1)', count: 1 },
@@ -53,7 +48,12 @@ interface Props {
   onToast: (msg: string, error?: boolean) => void;
   onOpenFile: (path: string, name: string) => void;
   onRemovePane: (paneId: string) => void;
-  onReorderPanes?: (workspaceId: string, fromIndex: number, toIndex: number) => void;
+  onReorderPanes?: (
+    workspaceId: string,
+    fromPaneOrIndex: string | number,
+    toPaneOrIndex: string | number,
+    position?: 'before' | 'after'
+  ) => void;
   onDropToTerminal?: (sessionId: string, paths: string[]) => void;
   onRenameTerminal?: (idOrTty: string, newLabel: string) => void;
   onAddPane?: (targetSlotIndex?: number) => void;
@@ -130,7 +130,6 @@ function computeGridDimensions(
 // ── Virtualized GridCard Component ─────────────────────────────────────
 interface GridCardProps {
   pane: Pane;
-  index: number;
   status: TermStatus;
   label: { text: string; color: string };
   cli: string;
@@ -143,34 +142,25 @@ interface GridCardProps {
   isDraggingThis: boolean;
   isDraggingAny: boolean;
   isOverThis: boolean;
+  dropPosition: 'before' | 'after' | null;
   totalPanes: number;
   onSelectPane: (id: string) => void;
   onExpandPane: (id: string | null) => void;
   onRemovePane: (paneId: string) => void;
-  onDragStart: (e: React.DragEvent, paneId: string, index: number) => void;
+  onDragStart: (e: React.DragEvent, paneId: string) => void;
   onDragEnd: () => void;
-  onDragOver: (e: React.DragEvent, slotIndex: number) => void;
-  onDragLeave: (e: React.DragEvent, slotIndex: number) => void;
-  onDrop: (e: React.DragEvent, targetSlotIndex: number, tty: string | null) => void;
+  onDragOver: (e: React.DragEvent, paneId: string, position: 'before' | 'after') => void;
+  onDragLeave: (e: React.DragEvent, paneId: string) => void;
+  onDrop: (e: React.DragEvent, targetPaneId: string, position: 'before' | 'after', tty: string | null) => void;
   onRenameTerminal?: (idOrTty: string, newLabel: string) => void;
   entry?: UnifiedTerminal;
-  onAddPane?: (targetSlotIndex?: number) => void;
   cols: number;
-  onSetPaneSizeMode?: (paneId: string, mode: GridMode) => void;
   density?: 'fit' | 'scrollable';
   workspaceLayoutMode?: GridMode;
   /** True while a full-screen TUI (opencode/vim/htop) owns the alternate screen. */
   tuiActive?: boolean;
 }
 
-/**
- * Which CLI mark to show in the card head.
- *
- * A real foreground CLI (vim, htop, opencode, git…) always wins. An idle
- * shell or runtime (zsh/bash/sh/fish/node) yields to the agent brand, so an
- * agent card shows *its* mark instead of the shell that happens to host it.
- * Mirrors the resolution used by the reference grid card.
- */
 const IDLE_CLI_IDS = ['', 'shell', 'zsh', 'bash', 'sh', 'fish', 'node', 'nodejs'];
 function resolveLogoCli(rawCli: string, agent: string): string {
   const c = (rawCli || '').toLowerCase();
@@ -178,13 +168,8 @@ function resolveLogoCli(rawCli: string, agent: string): string {
   return agent || c;
 }
 
-/** Pane size classes a corner drag steps through. */
-const RESIZE_STEPS: GridMode[] = ['compact', 'auto', 'large', 'grid'];
-
-// ── Interactive Empty Grid Slot Component ─────────────────────────────
 const GridCard = memo(function GridCard({
   pane,
-  index,
   status,
   label,
   cli,
@@ -197,6 +182,7 @@ const GridCard = memo(function GridCard({
   isDraggingThis,
   isDraggingAny,
   isOverThis,
+  dropPosition,
   totalPanes,
   onSelectPane,
   onExpandPane,
@@ -208,9 +194,7 @@ const GridCard = memo(function GridCard({
   onDrop,
   onRenameTerminal,
   entry,
-  onAddPane,
   cols,
-  onSetPaneSizeMode,
   density = 'fit',
   workspaceLayoutMode,
   tuiActive = false,
@@ -221,16 +205,11 @@ const GridCard = memo(function GridCard({
 
   const [isEditing, setIsEditing] = useState(false);
   const [renameDraft, setRenameDraft] = useState(displayName);
-  const [modeDropdownOpen, setModeDropdownOpen] = useState(false);
 
   // Responsive thresholds: drop optional chrome so the title and essential controls survive
-  const isCompact = cols >= 3 || totalPanes > 4;
   const isUltraCompact = density === 'fit' && (cols >= 5 || totalPanes > 10);
 
   const agentName = entry?.agent?.trim() || '';
-  // The sidecar reports the model at `tokens.model`; `model`/`applied_model` are
-  // populated by other sources (Rust session metadata, opencode scan). Take the
-  // first that is set so the model badge shows whatever the app actually knows.
   const rawModel = entry?.model || entry?.tokens?.model || entry?.opencode_model || '';
   const shortModel = rawModel ? cleanModel(rawModel) : '';
   const logoCli = resolveLogoCli(entry?.cli || cli, agentName);
@@ -249,18 +228,7 @@ const GridCard = memo(function GridCard({
     }
   }, [onSelectPane, onSelectTerminal, pane.id, pane.tty]);
 
-  const handleModeSelect = (mode: GridMode) => {
-    setModeDropdownOpen(false);
-    onSetPaneSizeMode?.(pane.id, mode);
-    setTimeout(() => {
-      for (const [tty] of TerminalManager.handles) {
-        TerminalManager.fitNow(tty);
-        TerminalManager.refresh(tty);
-      }
-    }, 80);
-  };
-
-  // Per-pane agent chat panel — open state persisted like the rest of the grid UI.
+  // Per-pane agent chat panel — open state persisted
   const [chatOpen, setChatOpen] = useState<boolean>(() => {
     if (!pane.tty) return false;
     try {
@@ -286,43 +254,6 @@ const GridCard = memo(function GridCard({
     });
   };
 
-  /**
-   * Corner drag-resize. The reference card resizes panes *proportionally* with
-   * a free-form pane-size model; this grid is uniform-track (see
-   * computeGridDimensions), so the handle steps the pane's size class instead:
-   * drag out to grow the card, drag in to shrink it. Every step commits through
-   * onSetPaneSizeMode, so it is fully reversible and never desyncs the layout.
-   */
-  const startCornerResize = useCallback(
-    (e: React.MouseEvent) => {
-      if (!onSetPaneSizeMode || !pane.tty) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const startX = e.clientX;
-      const startY = e.clientY;
-      const startIdx = Math.max(0, RESIZE_STEPS.indexOf(paneMode));
-      let appliedIdx = startIdx;
-
-      const onMove = (ev: MouseEvent) => {
-        const delta = ev.clientX - startX + (ev.clientY - startY);
-        let next = startIdx;
-        if (delta > 90) next = Math.min(RESIZE_STEPS.length - 1, startIdx + 1);
-        else if (delta < -90) next = Math.max(0, startIdx - 1);
-        if (next !== appliedIdx) {
-          appliedIdx = next;
-          onSetPaneSizeMode(pane.id, RESIZE_STEPS[next]);
-        }
-      };
-      const onUp = () => {
-        window.removeEventListener('mousemove', onMove);
-        window.removeEventListener('mouseup', onUp);
-      };
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
-    },
-    [onSetPaneSizeMode, pane.id, pane.tty, paneMode]
-  );
-
   useEffect(() => {
     if (!isEditing) setRenameDraft(displayName);
   }, [displayName, isEditing]);
@@ -345,16 +276,17 @@ const GridCard = memo(function GridCard({
       data-tto-session={pane.tty}
       data-drop-target="terminal"
       style={{
+        position: 'relative',
         minWidth: 0,
-        // `.ws-pane` / `.ws-pane-term` own the border, radius, background and
-        // resting shadow; only live drag / selection feedback is inline.
-        opacity: isExpanded ? 1 : isDraggingThis ? 0.4 : 1,
+        opacity: isExpanded ? 1 : isDraggingThis ? 0.35 : 1,
         transform: isExpanded ? 'none' : isDraggingThis ? 'scale(0.98)' : 'none',
-        transition: isExpanded ? 'none' : 'border 0.15s ease, background 0.15s ease, opacity 0.15s ease',
+        transition: isExpanded ? 'none' : 'border 0.15s ease, background 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease',
         ...(isOverThis
           ? {
-              border: `2px dashed ${t.colors.accent.primary}`,
-              boxShadow: `0 0 10px ${t.colors.accent.primary}40`,
+              border: `1.5px solid ${t.colors.accent.primary}`,
+              boxShadow: dropPosition === 'before'
+                ? `inset 4px 0 0 0 ${t.colors.accent.primary}, 0 0 16px ${t.colors.accent.primary}35`
+                : `inset -4px 0 0 0 ${t.colors.accent.primary}, 0 0 16px ${t.colors.accent.primary}35`,
             }
           : isCardActive
           ? { boxShadow: `0 0 0 1px ${t.colors.accent.primary}, 0 0 12px ${t.colors.accent.primary}25` }
@@ -367,23 +299,34 @@ const GridCard = memo(function GridCard({
             }),
       }}
       onClick={focusTerminal}
-      onDragOver={(e) => onDragOver(e, index)}
-      onDragLeave={(e) => onDragLeave(e, index)}
-      onDrop={(e) => onDrop(e, index, pane.tty)}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = cardRef.current?.getBoundingClientRect();
+        if (rect) {
+          const isHorizontal = rect.width >= rect.height;
+          const ratio = isHorizontal
+            ? (e.clientX - rect.left) / rect.width
+            : (e.clientY - rect.top) / rect.height;
+          onDragOver(e, pane.id, ratio < 0.5 ? 'before' : 'after');
+        }
+      }}
+      onDragLeave={(e) => onDragLeave(e, pane.id)}
+      onDrop={(e) => onDrop(e, pane.id, dropPosition || 'after', pane.tty)}
       title={`${displayName || pane.tty} — ${label.text}`}
     >
       {/* ── Card head: drag grip · CLI brand mark · agent/model/session · controls ── */}
       <div
         className="ws-pane-head"
-        draggable={!isExpanded}
-        onDragStart={(e) => onDragStart(e, pane.id, index)}
+        draggable={!isExpanded && !isEditing}
+        onDragStart={(e) => onDragStart(e, pane.id)}
         onDragEnd={onDragEnd}
         style={{ cursor: isExpanded ? 'default' : 'grab' }}
       >
-        {/* Drag grip (project extra) */}
+        {/* Drag grip */}
         {!isExpanded && (
           <span
-            title="Drag to reorder"
+            title="Drag to reorder terminal"
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -397,7 +340,7 @@ const GridCard = memo(function GridCard({
           </span>
         )}
 
-        {/* CLI brand mark — replaces the old macOS traffic-light dots */}
+        {/* CLI brand mark */}
         <CliLogo cli={logoCli} size={isUltraCompact ? 11 : 13} />
 
         {/* Centred title: agent + model badges, then the (renameable) session label */}
@@ -440,8 +383,6 @@ const GridCard = memo(function GridCard({
                 setIsEditing(true);
               }}
               title={`${displayName || pane.tty} (double-click to rename)`}
-              // Reference renders this at 9px/#666 because it holds a raw tty id.
-              // Here it carries the human label, so it is lifted to secondary.
               style={{ fontSize: '10px', color: t.colors.text.secondary, cursor: 'text' }}
             >
               {displayName || pane.tty}
@@ -449,7 +390,7 @@ const GridCard = memo(function GridCard({
           )}
         </span>
 
-        {/* Live status pill (project extra) */}
+        {/* Live status pill */}
         {status !== 'empty' && !isUltraCompact && (
           <span
             style={{
@@ -468,7 +409,15 @@ const GridCard = memo(function GridCard({
               whiteSpace: 'nowrap',
               flexShrink: 0,
             }}
-            title={`Status: ${label.text}\nStarted: ${duration?.startTimeFormatted || 'N/A'}${duration?.durationStr ? `\nDuration: ${duration.durationStr}` : ''}`}
+            title={`Status: ${label.text}${
+              status === 'running'
+                ? `\nStarted: ${duration?.startTimeFormatted || 'N/A'}\nDuration: ${duration?.durationStr || 'N/A'}`
+                : status === 'asking'
+                ? `\nWaiting: ${duration?.durationStr || 'N/A'}`
+                : (duration as any)?.lastTaskDurationStr
+                ? `\nLast Task: ${(duration as any).lastTaskDurationStr}${duration?.endTimeFormatted ? ` (ended ${duration.endTimeFormatted})` : ''}`
+                : '\n(Idle)'
+            }`}
           >
             <span
               style={{
@@ -484,132 +433,14 @@ const GridCard = memo(function GridCard({
           </span>
         )}
 
-        {/* Expanded badge — `CLI mode` while a full-screen TUI is up */}
+        {/* Expanded badge */}
         {isExpanded && (
           <span className={`ws-expand-badge${tuiActive ? ' cli' : ''}`}>
             {tuiActive ? '⤢ CLI mode' : '⤢ expanded'}
           </span>
         )}
 
-        {/* Per-pane sizing dropdown (project extra) */}
-        {onSetPaneSizeMode && (!isCompact || isExpanded) && (
-          <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', flexShrink: 0 }}>
-            <button
-              type="button"
-              className="pane-size-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setModeDropdownOpen((prev) => !prev);
-              }}
-              title={`Card sizing: ${paneMode.toUpperCase()}`}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '2px',
-                padding: '1px 5px',
-                borderRadius: '3px',
-                fontSize: '9.5px',
-                fontWeight: 600,
-                fontFamily: t.fontFamily.sans,
-                background: paneMode !== 'auto' ? `${t.colors.accent.primary}22` : 'rgba(255, 255, 255, 0.06)',
-                border: `1px solid ${paneMode !== 'auto' ? t.colors.accent.primary : t.colors.border.subtle}`,
-                color: paneMode !== 'auto' ? t.colors.accent.primary : t.colors.text.secondary,
-                cursor: 'pointer',
-                transition: 'all 0.15s ease',
-                textTransform: 'capitalize',
-                userSelect: 'none',
-              }}
-            >
-              <span>{paneMode}</span>
-              <ChevronDown size={9} style={{ opacity: 0.8 }} />
-            </button>
-
-            {modeDropdownOpen && (
-              <>
-                <div
-                  style={{ position: 'fixed', inset: 0, zIndex: 998, cursor: 'default' }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setModeDropdownOpen(false);
-                  }}
-                />
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: '22px',
-                    right: 0,
-                    zIndex: 999,
-                    minWidth: '140px',
-                    padding: '4px',
-                    borderRadius: '5px',
-                    background: t.colors.bg.elevated || '#1c1d22',
-                    border: `1px solid ${t.colors.border.primary}`,
-                    boxShadow: '0 4px 14px rgba(0,0,0,0.5)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '2px',
-                  }}
-                >
-                  {GRID_MODES.map((m) => {
-                    const isSel = paneMode === m.key;
-                    return (
-                      <button
-                        key={m.key}
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleModeSelect(m.key);
-                        }}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          width: '100%',
-                          padding: '4px 6px',
-                          borderRadius: '3px',
-                          border: 'none',
-                          background: isSel ? `${t.colors.accent.primary}25` : 'transparent',
-                          color: isSel ? t.colors.accent.primary : t.colors.text.primary,
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                          fontSize: '10.5px',
-                        }}
-                      >
-                        <span>{m.label}</span>
-                        {isSel && <span style={{ fontWeight: 'bold' }}>✓</span>}
-                      </button>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* New terminal (project extra) */}
-        {onAddPane && (!isCompact || isExpanded) && (
-          <span
-            role="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onAddPane(index + 1);
-            }}
-            style={{
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              padding: '2px',
-              borderRadius: '3px',
-              color: t.colors.text.muted,
-              flexShrink: 0,
-            }}
-            title="New terminal"
-          >
-            <Plus size={11} />
-          </span>
-        )}
-
-        {/* Agent chat toggle (project extra) */}
+        {/* Agent chat toggle */}
         {agentDetected && !isUltraCompact && (
           <span
             role="button"
@@ -633,44 +464,7 @@ const GridCard = memo(function GridCard({
           </span>
         )}
 
-        {/* Expand / Restore — the reference's labelled, selection-revealed affordance */}
-        {isExpanded ? (
-          <button
-            className="pane-restore-btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              onExpandPane(null);
-              if (pane.tty) {
-                setTimeout(() => {
-                  TerminalManager.fitNow(pane.tty!);
-                  TerminalManager.focus(pane.tty!);
-                }, 50);
-              }
-            }}
-            title="Exit focus — restore the grid"
-          >
-            ⤡ Exit focus
-          </button>
-        ) : isSelected ? (
-          <button
-            className="pane-expand-btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              onExpandPane(pane.id);
-              if (pane.tty) {
-                setTimeout(() => {
-                  TerminalManager.fitNow(pane.tty!);
-                  TerminalManager.focus(pane.tty!);
-                }, 50);
-              }
-            }}
-            title="Expand — fill the workspace"
-          >
-            ⤢ Expand
-          </button>
-        ) : null}
-
-        {/* Focus — always visible, mirrors the reference's ⛶ control */}
+        {/* Single clean Maximize / Restore button */}
         <button
           className={`pane-focus-btn${isExpanded ? ' active' : ''}`}
           onClick={(e) => {
@@ -683,9 +477,9 @@ const GridCard = memo(function GridCard({
               }, 50);
             }
           }}
-          title={isExpanded ? 'Exit focus' : 'Focus terminal (fill the workspace)'}
+          title={isExpanded ? 'Restore grid view' : 'Maximize terminal'}
         >
-          ⛶
+          {isExpanded ? '⤡' : '⛶'}
         </button>
 
         {/* Close */}
@@ -741,15 +535,6 @@ const GridCard = memo(function GridCard({
           )}
         </div>
       ) : null}
-
-      {/* Corner resize handle — visible on the selected card only */}
-      {isCardActive && !isExpanded && onSetPaneSizeMode && (
-        <div
-          className="ws-resize-handle"
-          onMouseDown={startCornerResize}
-          title="Drag to resize this card — drag out to grow, in to shrink"
-        />
-      )}
     </div>
   );
 });
@@ -768,10 +553,6 @@ export function GridView({
   onDropToTerminal,
   onRenameTerminal,
   onAddPane,
-  onSetPaneSizeMode,
-  onSetWorkspaceTemplate,
-  onSetWorkspaceLayoutMode,
-  onToast,
 }: Props) {
   const { theme: t } = useTheme();
   const [tick, setTick] = useState(0);
@@ -780,12 +561,9 @@ export function GridView({
     return () => window.clearInterval(id);
   }, []);
 
-  const [sizingDropdownOpen, setSizingDropdownOpen] = useState(false);
-  const [templateDropdownOpen, setTemplateDropdownOpen] = useState(false);
-
-  const draggedSlotRef = useRef<{ paneId: string; slotIndex: number } | null>(null);
   const [draggedPaneId, setDraggedPaneId] = useState<string | null>(null);
-  const [dragOverSlotIndex, setDragOverSlotIndex] = useState<number | null>(null);
+  const [dragOverInfo, setDragOverInfo] = useState<{ paneId: string; position: 'before' | 'after' } | null>(null);
+  const currentDraggedPaneIdRef = useRef<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const gridContainerRef = useRef<HTMLDivElement>(null);
@@ -793,7 +571,7 @@ export function GridView({
     typeof window !== 'undefined' ? window.innerWidth - 60 : 1200
   );
   const [containerHeight, setContainerHeight] = useState(() =>
-    typeof window !== 'undefined' ? window.innerHeight - 100 : 800
+    typeof window !== 'undefined' ? window.innerHeight - 60 : 800
   );
 
   // Density mode: 'fit' (zero scroll, all fit) vs 'scrollable' (comfortable with scrollbar)
@@ -805,7 +583,7 @@ export function GridView({
     return 'fit';
   });
 
-  // Column override: 'auto' | '3' | '4' | '5' | '6' | '7' | '8' | '10'
+  // Column override: 'auto' | '1' | '2' | '3' | '4' | '5' | '6' | '8' | '10'
   const [colOverride, setColOverride] = useState<string>(() => {
     try {
       return localStorage.getItem('tto-grid-cols') || 'auto';
@@ -840,28 +618,6 @@ export function GridView({
     });
   };
 
-  const handleSelectTemplate = (tpl: TemplateKey) => {
-    setTemplateDropdownOpen(false);
-    onSetWorkspaceTemplate?.(tpl);
-    requestAnimationFrame(() => {
-      for (const [tty] of TerminalManager.handles) {
-        TerminalManager.fitNow(tty);
-        TerminalManager.repaint(tty);
-      }
-    });
-  };
-
-  const handleSelectLayoutMode = (mode: GridMode) => {
-    setSizingDropdownOpen(false);
-    onSetWorkspaceLayoutMode?.(mode);
-    requestAnimationFrame(() => {
-      for (const [tty] of TerminalManager.handles) {
-        TerminalManager.fitNow(tty);
-        TerminalManager.repaint(tty);
-      }
-    });
-  };
-
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
@@ -881,13 +637,7 @@ export function GridView({
   const rawPanes = useMemo(() => activeWorkspace?.panes ?? [], [activeWorkspace?.panes]);
 
   const currentLayoutMode: GridMode = activeWorkspace?.layoutMode || 'auto';
-  const currentModeObj = GRID_MODES.find((m) => m.key === currentLayoutMode) || GRID_MODES[0];
   const currentTemplateKey: TemplateKey = (activeWorkspace?.template && activeWorkspace.template in TEMPLATES) ? activeWorkspace.template : 4;
-  const currentTemplateObj = GRID_TEMPLATES.find((t) => t.key === currentTemplateKey) || {
-    key: currentTemplateKey,
-    label: `${TEMPLATES[currentTemplateKey]?.label || 'Template'} (${currentTemplateKey})`,
-    count: currentTemplateKey,
-  };
 
   // Derive slot items — only render active terminals in the workspace (no empty grey boxes)
   const slotItems = useMemo(() => {
@@ -1030,41 +780,45 @@ export function GridView({
     [slotItems, terminals, activeWorkspace?.command, tick]
   );
 
-  const handleDragStart = useCallback((e: React.DragEvent, paneId: string, slotIndex: number) => {
-    draggedSlotRef.current = { paneId, slotIndex };
+  const handleDragStart = useCallback((e: React.DragEvent, paneId: string) => {
+    currentDraggedPaneIdRef.current = paneId;
     setDraggedPaneId(paneId);
     try {
-      e.dataTransfer.setData('text/plain', paneId);
-      e.dataTransfer.setData('application/x-tto-grid-pane', JSON.stringify({ paneId, slotIndex }));
+      e.dataTransfer.setData('application/x-tto-grid-pane', paneId);
     } catch {}
     e.dataTransfer.effectAllowed = 'move';
   }, []);
 
-  const handleDragOver = useCallback((e: React.DragEvent, slotIndex: number) => {
+  const handleDragOver = useCallback((e: React.DragEvent, paneId: string, position: 'before' | 'after') => {
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
-    setDragOverSlotIndex((prev) => (prev !== slotIndex ? slotIndex : prev));
+    setDragOverInfo((prev) => {
+      if (prev?.paneId === paneId && prev.position === position) return prev;
+      return { paneId, position };
+    });
   }, []);
 
-  const handleDragLeave = useCallback((e: React.DragEvent, slotIndex: number) => {
+  const handleDragLeave = useCallback((e: React.DragEvent, paneId: string) => {
     e.preventDefault();
     e.stopPropagation();
     if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    setDragOverSlotIndex((prev) => (prev === slotIndex ? null : prev));
+    setDragOverInfo((prev) => (prev?.paneId === paneId ? null : prev));
   }, []);
 
   const handleDrop = useCallback(
-    (e: React.DragEvent, targetSlotIndex: number, tty: string | null) => {
+    (e: React.DragEvent, targetPaneId: string, position: 'before' | 'after', tty: string | null) => {
       e.preventDefault();
       e.stopPropagation();
 
-      const currentDragged = draggedSlotRef.current;
-      if (currentDragged) {
-        const fromIdx = currentDragged.slotIndex;
-        const toIdx = targetSlotIndex;
-        if (fromIdx !== toIdx && activeWorkspace && onReorderPanes) {
-          onReorderPanes(activeWorkspace.id, fromIdx, toIdx);
+      const fromPaneId = e.dataTransfer.getData('application/x-tto-grid-pane') || currentDraggedPaneIdRef.current;
+      currentDraggedPaneIdRef.current = null;
+      setDraggedPaneId(null);
+      setDragOverInfo(null);
+
+      if (fromPaneId && fromPaneId !== targetPaneId) {
+        if (activeWorkspace && onReorderPanes) {
+          onReorderPanes(activeWorkspace.id, fromPaneId, targetPaneId, position);
           setTimeout(() => {
             for (const [t] of TerminalManager.handles) {
               TerminalManager.fitNow(t);
@@ -1072,16 +826,10 @@ export function GridView({
             }
           }, 80);
         }
-        draggedSlotRef.current = null;
-        setDraggedPaneId(null);
-        setDragOverSlotIndex(null);
         return;
       }
 
       // External file drop
-      draggedSlotRef.current = null;
-      setDraggedPaneId(null);
-      setDragOverSlotIndex(null);
       const paths = extractDropPaths(e.dataTransfer);
       if (paths.length > 0 && onDropToTerminal && tty) {
         onDropToTerminal(tty, paths);
@@ -1091,9 +839,9 @@ export function GridView({
   );
 
   const handleDragEnd = useCallback(() => {
-    draggedSlotRef.current = null;
+    currentDraggedPaneIdRef.current = null;
     setDraggedPaneId(null);
-    setDragOverSlotIndex(null);
+    setDragOverInfo(null);
   }, []);
 
   if (!activeWorkspace) {
@@ -1122,478 +870,24 @@ export function GridView({
         overflow: 'hidden',
         minHeight: 0,
         minWidth: 0,
+        position: 'relative',
+        height: '100%',
       }}
     >
-      {/* ── Grid Control Toolbar ── */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          height: '32px',
-          padding: '0 12px',
-          flexShrink: 0,
-          background: t.colors.bg.secondary,
-          borderBottom: `1px solid ${t.colors.border.subtle}`,
-          fontSize: '11px',
-          gap: '8px',
-          userSelect: 'none',
-        }}
-      >
-        {/* Left: Total Terminals badge, Dropdowns, and Add Terminal */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <div
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '2px 8px',
-              borderRadius: '12px',
-              background: t.colors.bg.elevated,
-              border: `1px solid ${t.colors.border.subtle}`,
-              fontSize: '10.5px',
-              fontWeight: 600,
-              color: t.colors.text.primary,
-            }}
-          >
-            <span
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: '50%',
-                background: filledCount >= MAX_GRID_TERMINALS ? '#f59e0b' : '#22c55e',
-                boxShadow: filledCount >= MAX_GRID_TERMINALS ? '0 0 6px #f59e0b' : '0 0 6px #22c55e',
-              }}
-            />
-            <span>
-              {filledCount}/16 {filledCount === 1 ? 'Terminal' : 'Terminals'}
-            </span>
-          </div>
+      {/* ── Floating Zen Notch (Full-Window Draggable Island) ── */}
+      <GridNotch
+        filledCount={filledCount}
+        maxCount={MAX_GRID_TERMINALS}
+        density={density}
+        onSetDensity={handleSetDensity}
+        colOverride={colOverride}
+        onSetColOverride={handleSetColOverride}
+        onAddPane={onAddPane ? () => onAddPane() : undefined}
+        cols={cols}
+        rows={rows}
+      />
 
-          {/* Sizing Mode Dropdown: Auto / Grid / Compact / Large */}
-          <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setTemplateDropdownOpen(false);
-                setSizingDropdownOpen((prev) => !prev);
-              }}
-              title="Grid Sizing Mode"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '5px',
-                padding: '2px 8px',
-                borderRadius: '5px',
-                fontSize: '10.5px',
-                fontWeight: 600,
-                fontFamily: t.fontFamily.sans,
-                background: sizingDropdownOpen ? `${t.colors.accent.primary}25` : t.colors.bg.elevated,
-                border: `1px solid ${sizingDropdownOpen ? t.colors.accent.primary : t.colors.border.subtle}`,
-                color: t.colors.text.primary,
-                cursor: 'pointer',
-                transition: 'all 0.12s ease',
-                userSelect: 'none',
-              }}
-            >
-              <LayoutGrid size={11} style={{ opacity: 0.8 }} />
-              <span style={{ textTransform: 'capitalize' }}>{currentModeObj.label}</span>
-              <ChevronDown size={10} style={{ opacity: 0.7 }} />
-            </button>
-
-            {sizingDropdownOpen && (
-              <>
-                <div
-                  style={{ position: 'fixed', inset: 0, zIndex: 998, cursor: 'default' }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSizingDropdownOpen(false);
-                  }}
-                />
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: '26px',
-                    left: 0,
-                    zIndex: 999,
-                    minWidth: '140px',
-                    padding: '4px',
-                    borderRadius: '8px',
-                    background: '#18181b',
-                    border: '1px solid rgba(255, 255, 255, 0.12)',
-                    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.65)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '2px',
-                  }}
-                >
-                  {GRID_MODES.map((m) => {
-                    const isSel = currentLayoutMode === m.key;
-                    return (
-                      <button
-                        key={m.key}
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleSelectLayoutMode(m.key);
-                        }}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '8px',
-                          width: '100%',
-                          padding: '5px 8px',
-                          borderRadius: '5px',
-                          border: 'none',
-                          background: isSel ? 'rgba(59, 130, 246, 0.18)' : 'transparent',
-                          color: isSel ? '#ffffff' : '#a1a1aa',
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                          fontSize: '11px',
-                          fontWeight: isSel ? 600 : 400,
-                          transition: 'all 0.1s ease',
-                        }}
-                        onMouseEnter={(e) => {
-                          if (!isSel) {
-                            e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
-                            e.currentTarget.style.color = '#ffffff';
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (!isSel) {
-                            e.currentTarget.style.background = 'transparent';
-                            e.currentTarget.style.color = '#a1a1aa';
-                          }
-                        }}
-                      >
-                        <span style={{ width: '14px', display: 'inline-flex', justifyContent: 'center', fontWeight: 'bold', color: '#38bdf8' }}>
-                          {isSel ? '✓' : ''}
-                        </span>
-                        <span>{m.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Terminal Layout / Count Dropdown: Single (1) ... Sixteen (16) */}
-          <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setSizingDropdownOpen(false);
-                setTemplateDropdownOpen((prev) => !prev);
-              }}
-              title="Terminal Layout Template (Max 16)"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '5px',
-                padding: '2px 8px',
-                borderRadius: '5px',
-                fontSize: '10.5px',
-                fontWeight: 600,
-                fontFamily: t.fontFamily.sans,
-                background: templateDropdownOpen ? `${t.colors.accent.primary}25` : t.colors.bg.elevated,
-                border: `1px solid ${templateDropdownOpen ? t.colors.accent.primary : t.colors.border.subtle}`,
-                color: t.colors.text.primary,
-                cursor: 'pointer',
-                transition: 'all 0.12s ease',
-                userSelect: 'none',
-              }}
-            >
-              <Layers size={11} style={{ opacity: 0.8 }} />
-              <span>{currentTemplateObj.label}</span>
-              <ChevronDown size={10} style={{ opacity: 0.7 }} />
-            </button>
-
-            {templateDropdownOpen && (
-              <>
-                <div
-                  style={{ position: 'fixed', inset: 0, zIndex: 998, cursor: 'default' }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setTemplateDropdownOpen(false);
-                  }}
-                />
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: '26px',
-                    left: 0,
-                    zIndex: 999,
-                    minWidth: '150px',
-                    padding: '4px',
-                    borderRadius: '8px',
-                    background: '#18181b',
-                    border: '1px solid rgba(255, 255, 255, 0.12)',
-                    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.65)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '2px',
-                  }}
-                >
-                  {GRID_TEMPLATES.map((tmpl) => {
-                    const isSel = currentTemplateKey === tmpl.key;
-                    return (
-                      <button
-                        key={tmpl.key}
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleSelectTemplate(tmpl.key);
-                        }}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '8px',
-                          width: '100%',
-                          padding: '5px 8px',
-                          borderRadius: '5px',
-                          border: 'none',
-                          background: isSel ? 'rgba(59, 130, 246, 0.18)' : 'transparent',
-                          color: isSel ? '#ffffff' : '#a1a1aa',
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                          fontSize: '11px',
-                          fontWeight: isSel ? 600 : 400,
-                          transition: 'all 0.1s ease',
-                        }}
-                        onMouseEnter={(e) => {
-                          if (!isSel) {
-                            e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
-                            e.currentTarget.style.color = '#ffffff';
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (!isSel) {
-                            e.currentTarget.style.background = 'transparent';
-                            e.currentTarget.style.color = '#a1a1aa';
-                          }
-                        }}
-                      >
-                        <span style={{ width: '14px', display: 'inline-flex', justifyContent: 'center', fontWeight: 'bold', color: '#38bdf8' }}>
-                          {isSel ? '✓' : ''}
-                        </span>
-                        <span>{tmpl.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-          </div>
-
-          <span
-            style={{
-              fontSize: '10px',
-              color: t.colors.text.muted,
-              fontFamily: t.fontFamily.mono,
-              background: 'rgba(255, 255, 255, 0.04)',
-              padding: '1px 6px',
-              borderRadius: '4px',
-            }}
-          >
-            {cols} cols × {rows} rows {density === 'fit' ? '(Fit)' : '(Scroll)'}
-          </span>
-
-          {onAddPane && (
-            <button
-              onClick={() => {
-                if (filledCount >= MAX_GRID_TERMINALS) {
-                  onToast?.('Maximum of 16 terminals in Grid view reached', true);
-                  return;
-                }
-                onAddPane();
-              }}
-              disabled={filledCount >= MAX_GRID_TERMINALS}
-              title={filledCount >= MAX_GRID_TERMINALS ? 'Maximum of 16 terminals in Grid reached' : 'Add a new terminal to the grid (⌘T)'}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-                padding: '2px 8px',
-                borderRadius: '4px',
-                background: filledCount >= MAX_GRID_TERMINALS ? 'rgba(255, 255, 255, 0.05)' : `${t.colors.accent.primary}20`,
-                border: `1px solid ${filledCount >= MAX_GRID_TERMINALS ? 'rgba(255, 255, 255, 0.1)' : `${t.colors.accent.primary}50`}`,
-                color: filledCount >= MAX_GRID_TERMINALS ? t.colors.text.muted : t.colors.accent.primary,
-                fontSize: '10px',
-                fontWeight: 600,
-                cursor: filledCount >= MAX_GRID_TERMINALS ? 'not-allowed' : 'pointer',
-                opacity: filledCount >= MAX_GRID_TERMINALS ? 0.6 : 1,
-                transition: 'all 0.12s ease',
-              }}
-              onMouseEnter={(e) => {
-                if (filledCount < MAX_GRID_TERMINALS) {
-                  e.currentTarget.style.background = t.colors.accent.primary;
-                  e.currentTarget.style.color = '#ffffff';
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (filledCount < MAX_GRID_TERMINALS) {
-                  e.currentTarget.style.background = `${t.colors.accent.primary}20`;
-                  e.currentTarget.style.color = t.colors.accent.primary;
-                }
-              }}
-            >
-              <Plus size={11} />
-              <span>{filledCount >= MAX_GRID_TERMINALS ? 'Max 16 Reached' : 'Add Terminal'}</span>
-              {filledCount < MAX_GRID_TERMINALS && (
-                <span style={{ fontSize: '8.5px', opacity: 0.85, padding: '0 3px', borderRadius: '3px', background: 'rgba(0,0,0,0.2)' }}>⌘T</span>
-              )}
-            </button>
-          )}
-        </div>
-
-        {/* Right: Density toggle + Column selector + Quick scroll */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {/* Fit vs Scrollable Toggle */}
-          <div
-            style={{
-              display: 'inline-flex',
-              background: t.colors.bg.elevated,
-              borderRadius: '5px',
-              padding: '2px',
-              border: `1px solid ${t.colors.border.subtle}`,
-            }}
-          >
-            <button
-              onClick={() => handleSetDensity('fit')}
-              title="Fit all terminals on a single screen with zero scrolling"
-              style={{
-                padding: '2px 8px',
-                borderRadius: '3px',
-                border: 'none',
-                fontSize: '10px',
-                fontWeight: 600,
-                cursor: 'pointer',
-                background: density === 'fit' ? t.colors.accent.primary : 'transparent',
-                color: density === 'fit' ? '#fff' : t.colors.text.muted,
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
-                transition: 'all 0.12s ease',
-              }}
-            >
-              <LayoutGrid size={11} />
-              <span>Fit Screen</span>
-            </button>
-            <button
-              onClick={() => handleSetDensity('scrollable')}
-              title="Scrollable cards with comfortable terminal height"
-              style={{
-                padding: '2px 8px',
-                borderRadius: '3px',
-                border: 'none',
-                fontSize: '10px',
-                fontWeight: 600,
-                cursor: 'pointer',
-                background: density === 'scrollable' ? t.colors.accent.primary : 'transparent',
-                color: density === 'scrollable' ? '#fff' : t.colors.text.muted,
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
-                transition: 'all 0.12s ease',
-              }}
-            >
-              <ScrollText size={11} />
-              <span>Scrollable</span>
-            </button>
-          </div>
-
-          {/* Columns Selector */}
-          <div
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '4px',
-              fontSize: '10px',
-              color: t.colors.text.muted,
-            }}
-          >
-            <span>Cols:</span>
-            <select
-              value={colOverride}
-              onChange={(e) => handleSetColOverride(e.target.value)}
-              style={{
-                padding: '2px 6px',
-                borderRadius: '4px',
-                background: t.colors.bg.elevated,
-                border: `1px solid ${t.colors.border.subtle}`,
-                color: t.colors.text.primary,
-                fontSize: '10px',
-                fontWeight: 600,
-                cursor: 'pointer',
-                outline: 'none',
-              }}
-            >
-              <option value="auto">Auto</option>
-              <option value="3">3</option>
-              <option value="4">4</option>
-              <option value="5">5</option>
-              <option value="6">6</option>
-              <option value="7">7</option>
-              <option value="8">8</option>
-              <option value="10">10</option>
-            </select>
-          </div>
-
-          {/* Quick Scroll buttons (when in scrollable mode) */}
-          {density === 'scrollable' && (
-            <div style={{ display: 'flex', gap: '3px' }}>
-              <button
-                onClick={() => gridContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
-                title="Scroll to Top"
-                style={{
-                  width: '20px',
-                  height: '20px',
-                  borderRadius: '3px',
-                  background: t.colors.bg.elevated,
-                  border: `1px solid ${t.colors.border.subtle}`,
-                  color: t.colors.text.muted,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                  padding: 0,
-                }}
-              >
-                <ArrowUp size={11} />
-              </button>
-              <button
-                onClick={() =>
-                  gridContainerRef.current?.scrollTo({
-                    top: gridContainerRef.current.scrollHeight,
-                    behavior: 'smooth',
-                  })
-                }
-                title="Scroll to Bottom"
-                style={{
-                  width: '20px',
-                  height: '20px',
-                  borderRadius: '3px',
-                  background: t.colors.bg.elevated,
-                  border: `1px solid ${t.colors.border.subtle}`,
-                  color: t.colors.text.muted,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                  padding: 0,
-                }}
-              >
-                <ArrowDown size={11} />
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ── Main Grid Container ── */}
+      {/* ── Main Grid Container (100% Full Height Canvas) ── */}
       <div
         ref={gridContainerRef}
         className={`ws-grid${expandedPane ? ' has-expanded' : ''}${activeWorkspace?.gridFocusMode ? ' focus-mode' : ''}${density === 'scrollable' ? ' grid-scroll-container' : ''}`}
@@ -1641,11 +935,12 @@ export function GridView({
           </div>
         ) : (
           slotRows.map(
-            ({ slotIndex, pane, status, label, cli, displayName, duration, entry }) => {
+            ({ pane, status, label, cli, displayName, duration, entry }) => {
               const isExpanded = expandedPane === pane.id;
               const isSelected = selectedPane === pane.id;
               const isDraggingThis = draggedPaneId === pane.id;
-              const isOverThis = dragOverSlotIndex === slotIndex && !isDraggingThis;
+              const isOverThis = dragOverInfo?.paneId === pane.id && !isDraggingThis;
+              const dropPosition = isOverThis ? (dragOverInfo?.position || null) : null;
               // Drives the `⤢ CLI mode` badge and hides the command bar so a
               // full-screen TUI keeps every row it needs.
               const tuiActive = pane.tty ? TerminalManager.isTui(pane.tty) : false;
@@ -1654,7 +949,6 @@ export function GridView({
                 <GridCard
                   key={pane.id}
                   pane={pane}
-                  index={slotIndex}
                   status={status}
                   label={label}
                   cli={cli}
@@ -1667,6 +961,7 @@ export function GridView({
                   isDraggingThis={isDraggingThis}
                   isDraggingAny={Boolean(draggedPaneId)}
                   isOverThis={isOverThis}
+                  dropPosition={dropPosition}
                   totalPanes={filledCount}
                   onSelectPane={onSelectPane}
                   onExpandPane={onExpandPane}
@@ -1678,9 +973,7 @@ export function GridView({
                   onDrop={handleDrop}
                   onRenameTerminal={onRenameTerminal}
                   entry={entry}
-                  onAddPane={onAddPane}
                   cols={cols}
-                  onSetPaneSizeMode={onSetPaneSizeMode}
                   density={density}
                   workspaceLayoutMode={currentLayoutMode}
                   tuiActive={tuiActive}

@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import shutil
+import platform
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse, urljoin, quote
@@ -364,9 +365,80 @@ async def _ws_collab_auth(websocket: WebSocket) -> Optional[Dict]:
         "allowed_workspaces": user.allowed_workspaces,
     }
 
+_SERVER_BOOT_TIME = time.time()
+
 @app.get("/api/health")
 async def health():
     return JSONResponse({"status": "ok", "time": datetime.now(timezone.utc).isoformat() + "Z"})
+
+@app.get("/api/system/info")
+@app.get("/api/system/diagnostics")
+async def system_diagnostics():
+    """Return comprehensive system diagnostics, host specifications, and runtime info."""
+    cpu_brand = platform.processor() or platform.machine()
+    if platform.system() == "Darwin":
+        try:
+            out = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], timeout=1).decode().strip()
+            if out:
+                cpu_brand = out
+        except Exception:
+            pass
+
+    total_ram_gb = None
+    if platform.system() == "Darwin":
+        try:
+            out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], timeout=1).decode().strip()
+            total_ram_gb = round(int(out) / (1024**3), 1)
+        except Exception:
+            pass
+    elif hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names and "SC_PHYS_PAGES" in os.sysconf_names:
+        try:
+            total_ram_gb = round((os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")) / (1024**3), 1)
+        except Exception:
+            pass
+
+    disk = shutil.disk_usage("/")
+    uptime_sec = int(time.time() - _SERVER_BOOT_TIME)
+    hours, remainder = divmod(uptime_sec, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    uptime_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
+
+    version_data = {}
+    try:
+        version_data = json.loads(_VERSION_PATH.read_text())
+    except Exception:
+        pass
+
+    return JSONResponse({
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+        "host": {
+            "os": platform.system(),
+            "os_release": platform.release(),
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "hostname": platform.node(),
+            "cpu_brand": cpu_brand,
+            "cpu_cores": os.cpu_count() or 1,
+            "total_ram_gb": total_ram_gb,
+            "disk_total_gb": round(disk.total / (1024**3), 1),
+            "disk_free_gb": round(disk.free / (1024**3), 1),
+            "disk_used_gb": round((disk.total - disk.free) / (1024**3), 1),
+            "disk_used_percent": round(((disk.total - disk.free) / disk.total) * 100, 1),
+        },
+        "runtime": {
+            "version": version_data.get("version", "2.3.1"),
+            "python_version": platform.python_version(),
+            "python_executable": sys.executable,
+            "pid": os.getpid(),
+            "uptime_seconds": uptime_sec,
+            "uptime_formatted": uptime_str,
+            "cwd": os.getcwd(),
+            "home": str(Path.home()),
+            "collab_store": str(Path.home() / ".local" / "share" / "tto" / "collab"),
+            "sidecar_port": int(os.environ.get("TTO_PORT", "8765")),
+        }
+    })
 
 # --- Version / Downloads -----------------------------------------------------
 

@@ -63,10 +63,20 @@ export const GRID_MODES: { key: GridMode; label: string; hint: string }[] = [
 ];
 
 export const THEMES = [
-  { name: 'dark', label: 'Dark' },
+  { name: 'dark', label: 'Dark (Default)' },
+  { name: 'GitHub Dark', label: 'GitHub Dark' },
+  { name: 'Dracula', label: 'Dracula' },
+  { name: 'Nord', label: 'Nord' },
+  { name: 'One Dark Pro', label: 'One Dark Pro' },
+  { name: 'Monokai Pro', label: 'Monokai Pro' },
+  { name: 'Solarized Dark', label: 'Solarized Dark' },
+  { name: 'Slate', label: 'Slate Executive' },
+  { name: 'Emerald Studio', label: 'Emerald Studio' },
   { name: 'Neon Tokyo', label: 'Neon Tokyo' },
   { name: 'Synthwave', label: 'Synthwave' },
+  { name: 'Solarized Light', label: 'Solarized Light' },
   { name: 'Paper', label: 'Paper (Light)' },
+  { name: 'Custom', label: 'Custom Theme' },
 ];
 
 export const GRID_GAP = 6;

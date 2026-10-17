@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
+import { isLightTheme } from '@/lib/theme';
 import { imageBlobUrl } from '@/lib/api';
 import { Image as ImageIcon, AlertCircle, Download, Check } from 'lucide-react';
 
@@ -20,7 +21,7 @@ interface Props {
  */
 export function ImageViewer({ path, loading, error }: Props) {
   const { theme: t } = useTheme();
-  const isLight = t.name === 'Paper';
+  const isLight = isLightTheme(t);
   const bg = isLight ? '#ffffff' : '#1e1e1e';
   const subBg = isLight ? '#f3f3f3' : '#181818';
   const border = isLight ? '#e5e5e5' : '#2d2d2d';

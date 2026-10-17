@@ -37,6 +37,111 @@ export function minTerminal(tty: string): UnifiedTerminal {
 /**
  * Derive the RIGHT-SIDE status for a terminal by inspecting live CLI state,
  * sidecar status, and terminal buffer ground truth.
+/**
+ * Universal Prompt Entry Pattern:
+ * Matches any prompt character or prompt prefix across:
+ * - Shells: `$ `, `% `, `# `, `> `, `❯ `, `➜ `, `→ `, `» `, `user@host:path$ `
+ * - REPLs: `>>> `, `... `, `In [1]: `, `(Pdb) `, `php > `, `irb...>`, `julia>`, `ghci>`, `Prelude>`
+ * - Database CLIs: `sqlite> `, `mysql> `, `mariadb> `, `postgres=# `, `mydb=> `, `127.0.0.1:6379> `, `mongosh>`
+ * - Agent CLIs: `> [ ]`, `> Try "..."`, `codex>`, `opencode>`, `aider>`, `ollama>`, `claude>`, `antigravity>`, `agy>`
+ */
+const UNIVERSAL_PROMPT_ENTRY_RE =
+  /^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.-]+@[^:]+:.*[$#%➜❯→»]\s*|[$#%➜❯→»]\s*|>>>\s*|\.\.\.\s*|In\s*\[\d+\]:\s*|\(Pdb\)\s*|[>❯]\s*(?:\[\s*\]|Try\s+["'].*|type\s+a\s+message.*|ask\s+anything.*|what\s+would\s+you\s+like.*)|(?:sqlite|mysql|mariadb|postgres|psql|redis|mongosh|php|irb|julia|ghci|aider|ollama|claude|codex|opencode|antigravity|agy|gemini)\s*>\s*|[a-zA-Z0-9_.-]+(?:=[#>]|[-#>]|\(#\))\s*|[a-zA-Z0-9_.:-]+>\s*)$/i;
+
+/**
+ * Universal Accessory / Footer Pattern:
+ * Lines that may sit immediately underneath an idle prompt:
+ * - Mode indicators: `>> auto mode on (shift+tab)`, `bypass permissions`, `compact mode`
+ * - Shortcuts: `? for shortcuts`, `Press ? to see keyboard shortcuts`, `ctrl+c to exit`, `esc to interrupt`
+ * - Cost / Info: `Cost: $...`, `API Usage Billing`, `Context: ...`, `Tokens: ...`
+ * - Box borders: `╰───╯`, `─────`, etc.
+ */
+const UNIVERSAL_FOOTER_RE =
+  /^(?:>>\s*auto\s+mode\b|shift\+tab\b|\?\s*for\s*shortcuts\b|press\s*\?\s*to\s*see\b|esc\s*to\s*(?:interrupt|cancel)\b|ctrl\+[a-z]\s*(?:commands|to)\b|tab\s*agents\b|\/help\b|bypass\s*permissions\b|compact\s*mode\b|api\s*usage\s*billing\b|cost:\s*\$\d+|context:\s*\d+|tokens?:\s*\d+|[─━═\-_+]{3,}|[╭╮╰╯│┌┐└┘├┤┬┴┼]+.*)$/i;
+
+/**
+ * Universal Question / Permission Pattern:
+ * Matches interactive yes/no questions, permissions, numbered menus, password prompts.
+ */
+function isUniversalQuestion(tailLines: string[], lastLine: string): boolean {
+  const tailText = tailLines.join('\n');
+
+  // 1. Interactive choice / numbered menu (e.g. 1. Yes \n 2. No)
+  if (/([>❯*]\s*)?\d+[.)]\s+.+\n.*([>❯*]\s*)?\d+[.)]\s+/i.test(tailText)) {
+    return true;
+  }
+
+  // 2. Binary confirmations: [y/N], (y/n), (yes/no)
+  if (
+    /(?:\([yY]\/[nN]\)|\[[yY]\/[nN]\]|\[[yY]\s*\/\s*[nN]\]|\(yes\/no\))\s*$/i.test(lastLine) ||
+    /(?:\([yY]\/[nN]\)|\[[yY]\/[nN]\]|\[[yY]\s*\/\s*[nN]\]|\(yes\/no\))\s*$/i.test(tailText)
+  ) {
+    return true;
+  }
+
+  // 3. Permission phrases
+  if (
+    /\b(?:allow tool execution|permission request|permission required|do you want to proceed|authorize tool|allow this action|allow bash command|do you want to continue|apply this change\?)\b/i.test(
+      tailText
+    )
+  ) {
+    return true;
+  }
+
+  // 4. Password / Input prompts
+  if (/(?:password|passphrase|enter\s+value|input|choice):\s*$/i.test(lastLine)) {
+    return true;
+  }
+
+  // 5. Explicit question endings (excluding static tips like '? for shortcuts')
+  if (/\?\s*$/.test(lastLine) && !/shortcuts|hints|\? for|tips|help|keyboard/i.test(lastLine)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Check if the terminal buffer is sitting at an idle prompt zone.
+ * Scans the last 6 non-blank lines: if a prompt entry line is found and all
+ * lines beneath it are recognized accessory footers, the CLI is idle/stopped.
+ */
+function isAtUniversalPrompt(rawLines: string[]): boolean {
+  const nonBlankLines = rawLines.map((l) => l.trim()).filter(Boolean);
+  if (nonBlankLines.length === 0) return true;
+  const zone = nonBlankLines.slice(-6);
+
+  // Scan backwards from bottom of zone
+  for (let i = zone.length - 1; i >= 0; i--) {
+    const line = zone[i];
+    if (UNIVERSAL_PROMPT_ENTRY_RE.test(line)) {
+      // Check that all lines following this prompt line are valid footers
+      const followingAreFooters = zone
+        .slice(i + 1)
+        .every((f) => UNIVERSAL_FOOTER_RE.test(f) || f.startsWith('>') || f.startsWith('>>'));
+      if (followingAreFooters) {
+        return true;
+      }
+    }
+  }
+
+  // Fallback for single line prompt or prompt with trailing auto mode
+  const lastLine = zone[zone.length - 1] || '';
+  const secondLastLine = zone[zone.length - 2] || '';
+  if (/^[>❯$]\s*$/.test(lastLine)) return true;
+  if (
+    /^[>❯]\s*(?:Try\s+["']|\[\s*\])/i.test(secondLastLine) &&
+    UNIVERSAL_FOOTER_RE.test(lastLine)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Derive the RIGHT-SIDE status for ANY terminal CLI by inspecting live buffer
+ * boundaries, active process state, and ground-truth signals.
  */
 export function deriveTaskStatus(
   tty: string | null,
@@ -64,132 +169,52 @@ export function deriveTaskStatus(
 
   // 2. Fetch live terminal buffer
   const linesList = TerminalManager.lastLines(tty, 80);
-  const recentLines = linesList.join('\n');
   const nonBlankLines = linesList.map((l) => l.trim()).filter(Boolean);
   const lastLine = nonBlankLines[nonBlankLines.length - 1] || '';
-  const secondLastLine = nonBlankLines[nonBlankLines.length - 2] || '';
-  const tail = `${secondLastLine}\n${lastLine}`;
+  const recentTailLines = nonBlankLines.slice(-15);
+  const recentTail = recentTailLines.join('\n');
 
-  // 3. Identify active CLI type
-  const cliLower = (entry.cli || '').toLowerCase().trim();
-  const claude =
-    cliLower.includes('claude') ||
-    /claude\s+code|anthropics?\/claude|auto\s+mode|api usage billing/i.test(recentLines);
-  const codex =
-    cliLower.includes('codex') ||
-    /\bcodex\b|openai-codex|codex-cli|\bopenai\s+codex\b/i.test(recentLines);
-  const opencode =
-    cliLower.includes('opencode') ||
-    /\bopencode\b/i.test(recentLines);
-  const antigravity =
-    cliLower.includes('antigravity') ||
-    cliLower === 'agy' ||
-    cliLower === 'jetski' ||
-    /\bantigravity\b|\bagy\b|google\s+antigravity|google\s+deepmind/i.test(recentLines);
-  const cursor =
-    cliLower.includes('cursor') ||
-    /\bcursor\b/i.test(recentLines);
-  const gemini =
-    cliLower.includes('gemini') ||
-    /\bgemini\b/i.test(recentLines);
+  // 3. Check for genuine question or permission request FIRST
+  const isQuestion = isUniversalQuestion(recentTailLines, lastLine);
+  if (isQuestion) {
+    return 'asking';
+  }
 
-  // 4. Genuine question or permission check
-  // NOTE: Static tips, welcome banners, shortcuts, and root prompts are NOT questions!
-  const hasInteractiveMenu =
-    /([>❯*]\s*)?\d+[.)]\s+.+\n.*([>❯*]\s*)?\d+[.)]\s+/i.test(recentLines) || // 1. ... \n 2. ...
-    /(\([yY]\/[nN]\)|\[[yY]\/[nN]\])/i.test(tail);
-
-  const hasPermissionPhrase =
-    /\b(allow tool execution|permission request|permission required|do you want to proceed|authorize tool|allow this action)\b/i.test(
-      recentLines
-    ) ||
-    (/\b(proceed\?|continue\?|confirm\?|allow\s+.*\?)\b/i.test(tail) &&
-      !/shortcuts|tips|hints/i.test(tail));
-
-  const isGenuineQuestion =
-    hasInteractiveMenu ||
-    hasPermissionPhrase ||
-    (/\?\s*$/.test(lastLine) && !/shortcuts|hints|\? for|tips|help/i.test(lastLine));
-
-  // 5. OpenCode: ground truth from sidecar / OpenCode SQLite database
+  // 4. OpenCode SQLite sidecar check (if active)
   const ocState: string = (entry as any)?.opencode_status?.state ?? 'off';
-  const ocLastText: string = (entry as any)?.opencode_status?.last_text ?? '';
-  const ocQuestion: boolean = Boolean(
-    ocLastText.trim().endsWith('?') && !ocLastText.includes('? for shortcuts')
-  );
-
-  if (opencode || ocState !== 'off') {
-    if (ocState === 'working') return 'running';
-    if (ocState === 'waiting') {
-      if (ocQuestion || isGenuineQuestion) return 'asking';
-      return 'stopped';
-    }
+  if (ocState === 'working') {
+    return 'running';
   }
-
-  // 6. Claude Code (stabilized against status badge flickering during tool runs)
-  if (claude) {
-    const isAtPrompt = /[>❯]\s*$/.test(lastLine) || /^[>❯]\s*Try\s+["']/i.test(lastLine);
-    const claudeWorking =
-      /(thought for\s+\d+|thinking\.\.\.|\*\s+(update|explore|read|edit|bash|let me|write)|added \d+ line|removed \d+ line|running tool|executing bash|●\s+\w+\(|Investigating|Searching)/i.test(
-        recentLines
-      ) ||
-      Boolean((entry as any)?.claude_running && !isAtPrompt) ||
-      (now - lastOut < 3000 && !isAtPrompt);
-    if (claudeWorking && !isAtPrompt) return 'running';
-    if (isGenuineQuestion) return 'asking';
-    // Sitting at idle prompt (e.g. > Try "..." or >> auto mode on or root prompt) -> STOPPED
+  if (ocState === 'waiting') {
     return 'stopped';
   }
 
-  // 7. OpenAI Codex
-  if (codex) {
-    const codexIdle =
-      /ask codex to do anything|for agents\s*·\s*\?\s*for shortcuts/i.test(recentLines) ||
-      /[❯>$]\s*$/.test(lastLine);
-    const codexWorking =
-      /(?:editing|reading|running|building|testing)\s+\S+/i.test(recentLines) && !codexIdle;
-    if (codexWorking) return 'running';
-    if (isGenuineQuestion) return 'asking';
+  // 5. Universal Prompt Zone Check: Sitting at an idle prompt -> STOPPED
+  const atPrompt = isAtUniversalPrompt(nonBlankLines);
+  if (atPrompt) {
     return 'stopped';
   }
 
-  // 8. Antigravity CLI
-  if (antigravity) {
-    const isAtPrompt = /[❯>$?]\s*$/.test(lastLine);
-    const agyWorking =
-      /(thinking|editing|running|analyzing|generating|searching|tool call|executing)/i.test(recentLines) ||
-      (now - lastOut < 3000 && !isAtPrompt);
-    if (agyWorking && !isAtPrompt) return 'running';
-    if (isGenuineQuestion) return 'asking';
-    return 'stopped';
-  }
-
-  // 9. Cursor and Gemini
-  if (cursor || gemini) {
-    const isAtPrompt = /[❯>$]\s*$/.test(lastLine);
-    const working = now - lastOut < 3000 && !isAtPrompt;
-    if (working) return 'running';
-    if (isGenuineQuestion) return 'asking';
-    return 'stopped';
-  }
-
-  // 9. App-tracked task in flight
+  // 6. App-tracked task in flight
   if (st.length > 0) {
-    if (isGenuineQuestion) return 'asking';
     return 'running';
   }
 
-  // 10. Generic shell process: streaming output without an idle shell prompt
-  const idleShellPrompt =
-    /^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+.*[$#%➜❯]|\$|%|>|❯)\s*$/.test(
-      lastLine
+  // 7. Active Work Markers in recent turn (last 15 lines only, NOT 80-line history)
+  const hasActiveWorkMarkers =
+    /(?:thought for\s+\d+|thinking\.\.\.|\*\s+(?:update|explore|read|edit|bash|write)\b|running tool\b|executing bash\b|generating\b|analyzing\b|searching\b|compiling\b|building\b|testing\b|fetching\b|downloading\b|installing\b|press esc to interrupt)/i.test(
+      recentTail
     );
-  if (hasRenderer && now - lastOut < 2000 && !idleShellPrompt) {
+  if (hasActiveWorkMarkers) {
     return 'running';
   }
 
-  if (isGenuineQuestion) return 'asking';
+  // 8. Live output streaming without an idle prompt (active command in progress)
+  if (hasRenderer && now - lastOut < 2500) {
+    return 'running';
+  }
 
+  // Default to STOPPED when idle
   return 'stopped';
 }
 
@@ -221,21 +246,22 @@ export function getTerminalWorkDuration(
   endTs: number;
   startTimeFormatted: string;
   endTimeFormatted: string;
+  lastTaskDurationStr?: string;
   isLive: boolean;
 } {
-  const start =
-    TerminalManager.workStartedAt(tty) || TerminalManager.createdAt(tty) || Date.now();
+  const start = TerminalManager.workStartedAt(tty);
   const ended = TerminalManager.workEndedAt(tty);
   const now = Date.now();
-  const startTimeFormatted = formatTimeOfDay(start);
+  const startTimeFormatted = start > 0 ? formatTimeOfDay(start) : '';
 
   if (status === 'running') {
-    const elapsed = Math.max(0, now - start);
+    const startTs = start > 0 ? start : now;
+    const elapsed = Math.max(0, now - startTs);
     return {
       durationStr: formatLiveDuration(elapsed),
-      startTs: start,
+      startTs,
       endTs: 0,
-      startTimeFormatted,
+      startTimeFormatted: formatTimeOfDay(startTs),
       endTimeFormatted: '',
       isLive: true,
     };
@@ -246,19 +272,19 @@ export function getTerminalWorkDuration(
     const waitingMs = lastOut > 0 ? Math.max(0, now - lastOut) : 0;
     return {
       durationStr: formatLiveDuration(waitingMs),
-      startTs: start,
+      startTs: start > 0 ? start : now,
       endTs: 0,
-      startTimeFormatted,
+      startTimeFormatted: startTimeFormatted || formatTimeOfDay(now),
       endTimeFormatted: '',
       isLive: true,
     };
   }
 
-  if (status === 'over' || status === 'stopped') {
+  if (status === 'over') {
     const endTs = ended > start ? ended : TerminalManager.outputAt(tty) || now;
-    const elapsed = Math.max(0, endTs - start);
+    const elapsed = start > 0 ? Math.max(0, endTs - start) : 0;
     return {
-      durationStr: formatLiveDuration(elapsed),
+      durationStr: elapsed > 0 ? formatLiveDuration(elapsed) : '',
       startTs: start,
       endTs,
       startTimeFormatted,
@@ -267,11 +293,31 @@ export function getTerminalWorkDuration(
     };
   }
 
+  if (status === 'stopped') {
+    // When idle / stopped, durationStr MUST be empty string so the UI badge renders "STOPPED".
+    // If a previous task completed, calculate lastTaskDurationStr for tooltips only.
+    let lastTaskDurationStr = '';
+    let endTs = 0;
+    if (start > 0 && ended > start) {
+      endTs = ended;
+      lastTaskDurationStr = formatLiveDuration(ended - start);
+    }
+    return {
+      durationStr: '',
+      startTs: start,
+      endTs,
+      startTimeFormatted,
+      endTimeFormatted: endTs > 0 ? formatTimeOfDay(endTs) : '',
+      lastTaskDurationStr,
+      isLive: false,
+    };
+  }
+
   return {
     durationStr: '',
-    startTs: start,
+    startTs: 0,
     endTs: 0,
-    startTimeFormatted,
+    startTimeFormatted: '',
     endTimeFormatted: '',
     isLive: false,
   };

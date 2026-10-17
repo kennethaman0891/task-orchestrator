@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
+import { isLightTheme } from '@/lib/theme';
 import { tauri } from '@/lib/tauri';
 import { baseName, getExtension, isSqliteDatabase, formatBytes } from '@/lib/format';
 import { buttonBase, buttonSize, buttonVariant } from '@/lib/theme';
@@ -25,7 +26,7 @@ interface Props {
 
 export function BinaryViewer({ path, onOpenRaw }: Props) {
   const { theme: t } = useTheme();
-  const isLight = t.name === 'Paper';
+  const isLight = isLightTheme(t);
   const bg = isLight ? '#ffffff' : '#1e1e1e';
   const subBg = isLight ? '#f3f3f3' : '#181818';
   const cardBg = isLight ? '#f9f9f9' : '#252526';

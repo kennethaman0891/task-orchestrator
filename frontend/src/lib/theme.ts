@@ -36,6 +36,9 @@ export interface ThemeColors {
 
 export interface Theme {
   name: string;
+  label?: string;
+  mode?: 'dark' | 'light';
+  category?: 'professional' | 'creative' | 'light' | 'custom';
   colors: ThemeColors;
   spacing: { xs: string; sm: string; md: string; lg: string; xl: string; xxl: string; xxxl: string };
   fontSize: { xxxs: string; xxs: string; xs: string; sm: string; md: string; lg: string; xl: string; xxl: string; xxxl: string };
@@ -54,9 +57,17 @@ export interface Theme {
   };
 }
 
+export function isLightTheme(t: Theme): boolean {
+  if (t.mode) return t.mode === 'light';
+  return t.name === 'Paper' || t.name === 'Solarized Light';
+}
+
 // ── Dark theme (default) ──────────────────────────────────────────────
 export const darkTheme: Theme = {
   name: 'dark',
+  label: 'Dark (Default)',
+  mode: 'dark',
+  category: 'professional',
   colors: {
     bg: {
       primary: '#0a0a0a',
@@ -103,33 +114,360 @@ export const darkTheme: Theme = {
   layout: { sidebarWidth: '300px', topbarHeight: '44px', statusbarHeight: '28px', splitMinLeft: '320px', splitMinRight: '280px' },
 };
 
-// ── Additional themes ─────────────────────────────────────────────────
+// ── Professional themes ───────────────────────────────────────────────
+
+export const githubDarkTheme: Theme = {
+  ...darkTheme,
+  name: 'GitHub Dark',
+  label: 'GitHub Dark',
+  mode: 'dark',
+  category: 'professional',
+  colors: {
+    ...darkTheme.colors,
+    bg: {
+      primary: '#0d1117',
+      secondary: '#161b22',
+      tertiary: '#21262d',
+      elevated: '#30363d',
+      hover: '#292e36',
+      active: '#30363d',
+      overlay: 'rgba(1,4,9,0.8)',
+      input: '#0d1117',
+    },
+    text: {
+      primary: '#c9d1d9',
+      secondary: '#8b949e',
+      muted: '#6e7681',
+      inverse: '#0d1117',
+      accent: '#58a6ff',
+      link: '#58a6ff',
+    },
+    accent: { primary: '#58a6ff', hover: '#4094f7', light: 'rgba(88,166,255,0.15)', dark: '#1f6feb' },
+    success: { primary: '#3fb950', light: 'rgba(63,185,80,0.15)', dark: '#238636' },
+    warning: { primary: '#d29922', light: 'rgba(210,153,34,0.15)', dark: '#9e6a03' },
+    danger: { primary: '#f85149', light: 'rgba(248,81,73,0.15)', dark: '#da3633' },
+    info: { primary: '#58a6ff', light: 'rgba(88,166,255,0.15)' },
+    border: { primary: '#30363d', secondary: '#21262d', focus: '#58a6ff', subtle: '#21262d' },
+  },
+};
+
+export const draculaTheme: Theme = {
+  ...darkTheme,
+  name: 'Dracula',
+  label: 'Dracula',
+  mode: 'dark',
+  category: 'professional',
+  colors: {
+    ...darkTheme.colors,
+    bg: {
+      primary: '#21222c',
+      secondary: '#282a36',
+      tertiary: '#343746',
+      elevated: '#44475a',
+      hover: '#3b3e4f',
+      active: '#44475a',
+      overlay: 'rgba(0,0,0,0.75)',
+      input: '#1d1e26',
+    },
+    text: {
+      primary: '#f8f8f2',
+      secondary: '#a0a6cc',
+      muted: '#6272a4',
+      inverse: '#282a36',
+      accent: '#bd93f9',
+      link: '#8be9fd',
+    },
+    accent: { primary: '#bd93f9', hover: '#ab79f7', light: 'rgba(189,147,249,0.15)', dark: '#9d65f5' },
+    success: { primary: '#50fa7b', light: 'rgba(80,250,123,0.15)', dark: '#2ecc71' },
+    warning: { primary: '#f1fa8c', light: 'rgba(241,250,140,0.15)', dark: '#ffb86c' },
+    danger: { primary: '#ff5555', light: 'rgba(255,85,85,0.15)', dark: '#e04040' },
+    info: { primary: '#8be9fd', light: 'rgba(139,233,253,0.15)' },
+    border: { primary: '#44475a', secondary: '#343746', focus: '#bd93f9', subtle: '#2d303e' },
+  },
+};
+
+export const nordTheme: Theme = {
+  ...darkTheme,
+  name: 'Nord',
+  label: 'Nord',
+  mode: 'dark',
+  category: 'professional',
+  colors: {
+    ...darkTheme.colors,
+    bg: {
+      primary: '#242933',
+      secondary: '#2e3440',
+      tertiary: '#3b4252',
+      elevated: '#434c5e',
+      hover: '#3d4556',
+      active: '#434c5e',
+      overlay: 'rgba(0,0,0,0.7)',
+      input: '#1e222a',
+    },
+    text: {
+      primary: '#eceff4',
+      secondary: '#d8dee9',
+      muted: '#7b88a1',
+      inverse: '#2e3440',
+      accent: '#88c0d0',
+      link: '#81a1c1',
+    },
+    accent: { primary: '#88c0d0', hover: '#7eb6c6', light: 'rgba(136,192,208,0.15)', dark: '#5e81ac' },
+    success: { primary: '#a3be8c', light: 'rgba(163,190,140,0.15)', dark: '#8fbcbb' },
+    warning: { primary: '#ebcb8b', light: 'rgba(235,203,139,0.15)', dark: '#d08770' },
+    danger: { primary: '#bf616a', light: 'rgba(191,97,106,0.15)', dark: '#ab4e57' },
+    info: { primary: '#81a1c1', light: 'rgba(129,161,193,0.15)' },
+    border: { primary: '#3b4252', secondary: '#2e3440', focus: '#88c0d0', subtle: '#2a303c' },
+  },
+};
+
+export const oneDarkTheme: Theme = {
+  ...darkTheme,
+  name: 'One Dark Pro',
+  label: 'One Dark Pro',
+  mode: 'dark',
+  category: 'professional',
+  colors: {
+    ...darkTheme.colors,
+    bg: {
+      primary: '#21252b',
+      secondary: '#282c34',
+      tertiary: '#2f343f',
+      elevated: '#3e4451',
+      hover: '#353b45',
+      active: '#3e4451',
+      overlay: 'rgba(0,0,0,0.7)',
+      input: '#1d2026',
+    },
+    text: {
+      primary: '#abb2bf',
+      secondary: '#828997',
+      muted: '#5c6370',
+      inverse: '#21252b',
+      accent: '#61afef',
+      link: '#56b6c2',
+    },
+    accent: { primary: '#61afef', hover: '#4fa1e0', light: 'rgba(97,175,239,0.15)', dark: '#4078f2' },
+    success: { primary: '#98c379', light: 'rgba(152,195,121,0.15)', dark: '#7cb35b' },
+    warning: { primary: '#e5c07b', light: 'rgba(229,192,123,0.15)', dark: '#d19a66' },
+    danger: { primary: '#e06c75', light: 'rgba(224,108,117,0.15)', dark: '#be5046' },
+    info: { primary: '#56b6c2', light: 'rgba(86,182,194,0.15)' },
+    border: { primary: '#3e4451', secondary: '#2f343f', focus: '#61afef', subtle: '#282c34' },
+  },
+};
+
+export const monokaiProTheme: Theme = {
+  ...darkTheme,
+  name: 'Monokai Pro',
+  label: 'Monokai Pro',
+  mode: 'dark',
+  category: 'professional',
+  colors: {
+    ...darkTheme.colors,
+    bg: {
+      primary: '#19181a',
+      secondary: '#221f22',
+      tertiary: '#2d2a2e',
+      elevated: '#3a383b',
+      hover: '#343135',
+      active: '#3a383b',
+      overlay: 'rgba(0,0,0,0.7)',
+      input: '#161517',
+    },
+    text: {
+      primary: '#fcfcfa',
+      secondary: '#939293',
+      muted: '#727072',
+      inverse: '#19181a',
+      accent: '#ffd866',
+      link: '#78dce8',
+    },
+    accent: { primary: '#ffd866', hover: '#f5cb51', light: 'rgba(255,216,102,0.15)', dark: '#e0b536' },
+    success: { primary: '#a9dc76', light: 'rgba(169,220,118,0.15)', dark: '#8cbd58' },
+    warning: { primary: '#fc9867', light: 'rgba(252,152,103,0.15)', dark: '#e07d4c' },
+    danger: { primary: '#ff6188', light: 'rgba(255,97,136,0.15)', dark: '#de436a' },
+    info: { primary: '#78dce8', light: 'rgba(120,220,232,0.15)' },
+    border: { primary: '#403e41', secondary: '#2d2a2e', focus: '#ffd866', subtle: '#252326' },
+  },
+};
+
+export const solarizedDarkTheme: Theme = {
+  ...darkTheme,
+  name: 'Solarized Dark',
+  label: 'Solarized Dark',
+  mode: 'dark',
+  category: 'professional',
+  colors: {
+    ...darkTheme.colors,
+    bg: {
+      primary: '#00212b',
+      secondary: '#002b36',
+      tertiary: '#073642',
+      elevated: '#0d4352',
+      hover: '#09404f',
+      active: '#0d4352',
+      overlay: 'rgba(0,18,24,0.75)',
+      input: '#001b24',
+    },
+    text: {
+      primary: '#93a1a1',
+      secondary: '#839496',
+      muted: '#586e75',
+      inverse: '#002b36',
+      accent: '#268bd2',
+      link: '#2aa198',
+    },
+    accent: { primary: '#268bd2', hover: '#1e75b3', light: 'rgba(38,139,210,0.15)', dark: '#185b8c' },
+    success: { primary: '#859900', light: 'rgba(133,153,0,0.15)', dark: '#687800' },
+    warning: { primary: '#b58900', light: 'rgba(181,137,0,0.15)', dark: '#8f6c00' },
+    danger: { primary: '#dc322f', light: 'rgba(220,50,47,0.15)', dark: '#ad2422' },
+    info: { primary: '#2aa198', light: 'rgba(42,161,152,0.15)' },
+    border: { primary: '#073642', secondary: '#052b35', focus: '#268bd2', subtle: '#04222a' },
+  },
+};
+
+export const solarizedLightTheme: Theme = {
+  ...darkTheme,
+  name: 'Solarized Light',
+  label: 'Solarized Light',
+  mode: 'light',
+  category: 'light',
+  colors: {
+    ...darkTheme.colors,
+    bg: {
+      primary: '#fdf6e3',
+      secondary: '#eee8d5',
+      tertiary: '#e4dcba',
+      elevated: '#fcf7e8',
+      hover: '#e3dac0',
+      active: '#d8ceb0',
+      overlay: 'rgba(0,0,0,0.35)',
+      input: '#ffffff',
+    },
+    text: {
+      primary: '#657b83',
+      secondary: '#586e75',
+      muted: '#93a1a1',
+      inverse: '#fdf6e3',
+      accent: '#268bd2',
+      link: '#2aa198',
+    },
+    accent: { primary: '#268bd2', hover: '#1e75b3', light: 'rgba(38,139,210,0.12)', dark: '#185b8c' },
+    success: { primary: '#859900', light: 'rgba(133,153,0,0.12)', dark: '#687800' },
+    warning: { primary: '#b58900', light: 'rgba(181,137,0,0.12)', dark: '#8f6c00' },
+    danger: { primary: '#dc322f', light: 'rgba(220,50,47,0.12)', dark: '#ad2422' },
+    info: { primary: '#2aa198', light: 'rgba(42,161,152,0.12)' },
+    border: { primary: '#d3cbb7', secondary: '#dfd7c2', focus: '#268bd2', subtle: '#e8e1cb' },
+  },
+};
+
+export const slateTheme: Theme = {
+  ...darkTheme,
+  name: 'Slate',
+  label: 'Slate Executive',
+  mode: 'dark',
+  category: 'professional',
+  colors: {
+    ...darkTheme.colors,
+    bg: {
+      primary: '#0b0f19',
+      secondary: '#111827',
+      tertiary: '#1f2937',
+      elevated: '#374151',
+      hover: '#263345',
+      active: '#374151',
+      overlay: 'rgba(2,6,23,0.8)',
+      input: '#0e1524',
+    },
+    text: {
+      primary: '#f3f4f6',
+      secondary: '#cbd5e1',
+      muted: '#94a3b8',
+      inverse: '#0b0f19',
+      accent: '#38bdf8',
+      link: '#60a5fa',
+    },
+    accent: { primary: '#38bdf8', hover: '#0ea5e9', light: 'rgba(56,189,248,0.15)', dark: '#0284c7' },
+    success: { primary: '#10b981', light: 'rgba(16,185,129,0.15)', dark: '#059669' },
+    warning: { primary: '#f59e0b', light: 'rgba(245,158,11,0.15)', dark: '#d97706' },
+    danger: { primary: '#ef4444', light: 'rgba(239,68,68,0.15)', dark: '#dc2626' },
+    info: { primary: '#38bdf8', light: 'rgba(56,189,248,0.15)' },
+    border: { primary: '#1f2937', secondary: '#182232', focus: '#38bdf8', subtle: '#141d2b' },
+  },
+};
+
+export const emeraldTheme: Theme = {
+  ...darkTheme,
+  name: 'Emerald Studio',
+  label: 'Emerald Studio',
+  mode: 'dark',
+  category: 'professional',
+  colors: {
+    ...darkTheme.colors,
+    bg: {
+      primary: '#071510',
+      secondary: '#0d211a',
+      tertiary: '#143329',
+      elevated: '#1c4437',
+      hover: '#1a3e32',
+      active: '#1c4437',
+      overlay: 'rgba(1,10,7,0.8)',
+      input: '#091c15',
+    },
+    text: {
+      primary: '#ecfdf5',
+      secondary: '#a7f3d0',
+      muted: '#6ee7b7',
+      inverse: '#071510',
+      accent: '#10b981',
+      link: '#34d399',
+    },
+    accent: { primary: '#10b981', hover: '#059669', light: 'rgba(16,185,129,0.15)', dark: '#047857' },
+    success: { primary: '#10b981', light: 'rgba(16,185,129,0.15)', dark: '#059669' },
+    warning: { primary: '#f59e0b', light: 'rgba(245,158,11,0.15)', dark: '#d97706' },
+    danger: { primary: '#ef4444', light: 'rgba(239,68,68,0.15)', dark: '#dc2626' },
+    info: { primary: '#2dd4bf', light: 'rgba(45,212,191,0.15)' },
+    border: { primary: '#1e4a3b', secondary: '#143329', focus: '#10b981', subtle: '#102920' },
+  },
+};
+
+// ── Creative & Light themes ───────────────────────────────────────────
 
 export const neonTokyoTheme: Theme = {
   ...darkTheme,
   name: 'Neon Tokyo',
+  label: 'Neon Tokyo',
+  mode: 'dark',
+  category: 'creative',
   colors: {
     ...darkTheme.colors,
-    accent: { primary: '#ff2d95', hover: '#e62788', light: 'rgba(255,45,149,0.12)', dark: '#cc1a75' },
-    border: { ...darkTheme.colors.border, primary: '#2d1f3d', subtle: '#1a1225' },
-    bg: { ...darkTheme.colors.bg, primary: '#0d0221', secondary: '#12052e', tertiary: '#1a0a3e', hover: '#250f4a' },
+    accent: { primary: '#ff2d95', hover: '#e62788', light: 'rgba(255,45,149,0.15)', dark: '#cc1a75' },
+    border: { ...darkTheme.colors.border, primary: '#2d1f3d', subtle: '#1a1225', focus: '#ff2d95' },
+    bg: { ...darkTheme.colors.bg, primary: '#0d0221', secondary: '#12052e', tertiary: '#1a0a3e', elevated: '#240f50', hover: '#250f4a', active: '#2c1458', input: '#100326' },
   },
 };
 
 export const synthwaveTheme: Theme = {
   ...darkTheme,
   name: 'Synthwave',
+  label: 'Synthwave',
+  mode: 'dark',
+  category: 'creative',
   colors: {
     ...darkTheme.colors,
-    accent: { primary: '#f72585', hover: '#d91e75', light: 'rgba(247,37,133,0.12)', dark: '#b51565' },
+    accent: { primary: '#f72585', hover: '#d91e75', light: 'rgba(247,37,133,0.15)', dark: '#b51565' },
     text: { ...darkTheme.colors.text, accent: '#f72585', link: '#ff6ec7' },
-    bg: { ...darkTheme.colors.bg, primary: '#1a0a2e', secondary: '#240f42', tertiary: '#2e1455' },
+    bg: { ...darkTheme.colors.bg, primary: '#1a0a2e', secondary: '#240f42', tertiary: '#2e1455', elevated: '#3d1a70', hover: '#371866', active: '#3d1a70', input: '#1e0c35' },
+    border: { ...darkTheme.colors.border, primary: '#3d1d6a', subtle: '#260e44', focus: '#f72585' },
   },
 };
 
 export const paperTheme: Theme = {
   ...darkTheme,
   name: 'Paper',
+  label: 'Paper (Light)',
+  mode: 'light',
+  category: 'light',
   colors: {
     ...darkTheme.colors,
     bg: { primary: '#ffffff', secondary: '#f8f9fa', tertiary: '#f0f1f3', elevated: '#ffffff', hover: '#f0f1f3', active: '#e8e9eb', overlay: 'rgba(0,0,0,0.4)', input: '#ffffff' },
@@ -138,11 +476,212 @@ export const paperTheme: Theme = {
   },
 };
 
+// ── Customizable Theme Engine ─────────────────────────────────────────
+
+export interface CustomThemeConfig {
+  baseMode: 'dark' | 'light';
+  bgPrimary: string;
+  bgSecondary: string;
+  bgTertiary: string;
+  bgElevated: string;
+  accent: string;
+  textPrimary: string;
+  textMuted: string;
+  border: string;
+}
+
+export const DEFAULT_CUSTOM_THEME_CONFIG: CustomThemeConfig = {
+  baseMode: 'dark',
+  bgPrimary: '#0f111a',
+  bgSecondary: '#161926',
+  bgTertiary: '#1f2436',
+  bgElevated: '#2a3149',
+  accent: '#7c3aed',
+  textPrimary: '#f1f5f9',
+  textMuted: '#94a3b8',
+  border: '#282f45',
+};
+
+export interface CustomPreset {
+  id: string;
+  label: string;
+  config: CustomThemeConfig;
+}
+
+export const CUSTOM_THEME_PRESETS: CustomPreset[] = [
+  {
+    id: 'cyber-amber',
+    label: 'Cyber Amber',
+    config: {
+      baseMode: 'dark',
+      bgPrimary: '#0a0908',
+      bgSecondary: '#14120e',
+      bgTertiary: '#1f1b15',
+      bgElevated: '#2d271e',
+      accent: '#f59e0b',
+      textPrimary: '#fef3c7',
+      textMuted: '#b45309',
+      border: '#332a1e',
+    },
+  },
+  {
+    id: 'deep-ocean',
+    label: 'Deep Ocean',
+    config: {
+      baseMode: 'dark',
+      bgPrimary: '#030c1b',
+      bgSecondary: '#071730',
+      bgTertiary: '#0d254c',
+      bgElevated: '#14356b',
+      accent: '#06b6d4',
+      textPrimary: '#e0f2fe',
+      textMuted: '#38bdf8',
+      border: '#113366',
+    },
+  },
+  {
+    id: 'rose-pine',
+    label: 'Rosé Pine',
+    config: {
+      baseMode: 'dark',
+      bgPrimary: '#191724',
+      bgSecondary: '#1f1d2e',
+      bgTertiary: '#26233a',
+      bgElevated: '#312f44',
+      accent: '#eb6f92',
+      textPrimary: '#e0def4',
+      textMuted: '#908caa',
+      border: '#393552',
+    },
+  },
+  {
+    id: 'royal-amethyst',
+    label: 'Royal Amethyst',
+    config: {
+      baseMode: 'dark',
+      bgPrimary: '#120b22',
+      bgSecondary: '#1a1130',
+      bgTertiary: '#251944',
+      bgElevated: '#34235e',
+      accent: '#a855f7',
+      textPrimary: '#f3e8ff',
+      textMuted: '#c084fc',
+      border: '#372361',
+    },
+  },
+  {
+    id: 'warm-coffee',
+    label: 'Warm Espresso',
+    config: {
+      baseMode: 'dark',
+      bgPrimary: '#140f0c',
+      bgSecondary: '#1e1713',
+      bgTertiary: '#2b211b',
+      bgElevated: '#3d2f27',
+      accent: '#d97706',
+      textPrimary: '#fef3c7',
+      textMuted: '#a87955',
+      border: '#3b2c23',
+    },
+  },
+  {
+    id: 'matrix-hacker',
+    label: 'Matrix Hacker',
+    config: {
+      baseMode: 'dark',
+      bgPrimary: '#040d07',
+      bgSecondary: '#08170d',
+      bgTertiary: '#0f2415',
+      bgElevated: '#173620',
+      accent: '#22c55e',
+      textPrimary: '#bbf7d0',
+      textMuted: '#4ade80',
+      border: '#144021',
+    },
+  },
+  {
+    id: 'clean-slate-light',
+    label: 'Clean Slate Light',
+    config: {
+      baseMode: 'light',
+      bgPrimary: '#f8fafc',
+      bgSecondary: '#f1f5f9',
+      bgTertiary: '#e2e8f0',
+      bgElevated: '#ffffff',
+      accent: '#2563eb',
+      textPrimary: '#0f172a',
+      textMuted: '#64748b',
+      border: '#cbd5e1',
+    },
+  },
+];
+
+export function buildCustomTheme(cfg: CustomThemeConfig): Theme {
+  const isLight = cfg.baseMode === 'light';
+  return {
+    ...darkTheme,
+    name: 'Custom',
+    label: 'Custom Theme',
+    mode: cfg.baseMode,
+    category: 'custom',
+    colors: {
+      ...darkTheme.colors,
+      bg: {
+        primary: cfg.bgPrimary,
+        secondary: cfg.bgSecondary,
+        tertiary: cfg.bgTertiary,
+        elevated: cfg.bgElevated,
+        hover: cfg.bgTertiary,
+        active: cfg.bgElevated,
+        overlay: isLight ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.75)',
+        input: isLight ? '#ffffff' : cfg.bgPrimary,
+      },
+      text: {
+        primary: cfg.textPrimary,
+        secondary: cfg.textMuted,
+        muted: cfg.textMuted,
+        inverse: isLight ? '#ffffff' : '#0a0a0a',
+        accent: cfg.accent,
+        link: cfg.accent,
+      },
+      accent: {
+        primary: cfg.accent,
+        hover: cfg.accent,
+        light: `${cfg.accent}26`,
+        dark: cfg.accent,
+      },
+      border: {
+        primary: cfg.border,
+        secondary: cfg.border,
+        focus: cfg.accent,
+        subtle: cfg.border,
+      },
+    },
+  };
+}
+
 // ── All themes registry ───────────────────────────────────────────────
 
-export const ALL_THEMES: Theme[] = [darkTheme, neonTokyoTheme, synthwaveTheme, paperTheme];
+export const ALL_THEMES: Theme[] = [
+  darkTheme,
+  githubDarkTheme,
+  draculaTheme,
+  nordTheme,
+  oneDarkTheme,
+  monokaiProTheme,
+  solarizedDarkTheme,
+  slateTheme,
+  emeraldTheme,
+  neonTokyoTheme,
+  synthwaveTheme,
+  solarizedLightTheme,
+  paperTheme,
+];
 
-export function getThemeByName(name: string): Theme {
+export function getThemeByName(name: string, customConfig?: CustomThemeConfig): Theme {
+  if (name === 'Custom' || name === 'custom') {
+    return buildCustomTheme(customConfig || DEFAULT_CUSTOM_THEME_CONFIG);
+  }
   return ALL_THEMES.find((t) => t.name === name) || darkTheme;
 }
 

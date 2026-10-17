@@ -1411,7 +1411,15 @@ export function Sidebar({
                           onMouseEnter={() => setHoveredTty(tty)}
                           onMouseLeave={() => setHoveredTty(null)}
                           onClick={() => onSelectTerminal?.(tty)}
-                          title={`${label} · ${cli || 'shell'} (${tty})\nStatus: ${statusLabelInfo.text}\nStarted: ${duration.startTimeFormatted}${duration.endTimeFormatted ? `\nEnded: ${duration.endTimeFormatted}` : ''}${duration.durationStr ? `\nDuration: ${duration.durationStr}` : ''}`}
+                          title={`${label} · ${cli || 'shell'} (${tty})\nStatus: ${statusLabelInfo.text}${
+                            status === 'running'
+                              ? `\nStarted: ${duration.startTimeFormatted}\nDuration: ${duration.durationStr}`
+                              : status === 'asking'
+                              ? `\nWaiting: ${duration.durationStr}`
+                              : (duration as any)?.lastTaskDurationStr
+                              ? `\nLast Task: ${(duration as any).lastTaskDurationStr}${duration.endTimeFormatted ? ` (ended ${duration.endTimeFormatted})` : ''}`
+                              : '\n(Idle)'
+                          }`}
                         >
                           {/* Status dot */}
                           <span
@@ -1497,7 +1505,13 @@ export function Sidebar({
                                 lineHeight: '13px',
                               }}
                             >
-                              {duration.durationStr || statusLabelInfo.text}
+                              {status === 'running'
+                                ? duration.durationStr || 'RUNNING'
+                                : status === 'asking'
+                                ? duration.durationStr ? `ASK (${duration.durationStr})` : 'ASKING'
+                                : status === 'over' && duration.durationStr
+                                ? `OVER (${duration.durationStr})`
+                                : statusLabelInfo.text}
                             </span>
                           )}
 

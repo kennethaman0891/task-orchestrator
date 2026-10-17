@@ -20,9 +20,14 @@ export class AntigravityAdapter implements ICLIAdapter {
   }
 
   parse(bufferLines: string[], _currentContext?: Partial<SessionContext>): CLIAdapterResult {
-    const lastLine = bufferLines[bufferLines.length - 1] || '';
+    const nonBlank = bufferLines.map((l) => l.trim()).filter(Boolean);
+    const lastLine = nonBlank[nonBlank.length - 1] || '';
+    const secondLastLine = nonBlank[nonBlank.length - 2] || '';
     const waitingForInput =
       /[❯>$?]\s*$/.test(lastLine) ||
+      /[>❯]\s*\[\s*\]/.test(lastLine) ||
+      /[>❯]\s*\[\s*\]/.test(secondLastLine) ||
+      /\?\s*for\s*shortcuts/i.test(lastLine) ||
       /type a message/i.test(lastLine) ||
       /waiting for/i.test(lastLine);
 

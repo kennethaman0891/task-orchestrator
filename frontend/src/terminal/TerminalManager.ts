@@ -261,9 +261,6 @@ export const TerminalManager = {
         console.log(`[TerminalManager] Channel output chunk #${chunkCount} for ${resolvedId}: ${data.length} bytes`);
       }
       const now = Date.now();
-      if (!h.workStartedAt) {
-        h.workStartedAt = now;
-      }
       h.lastOutputAt = now;
       let filter = TerminalManager._syncFilters.get(resolvedId);
       if (!filter) {
@@ -302,9 +299,6 @@ export const TerminalManager = {
         console.log(`[TerminalManager] Scrollback for ${resolvedId}: ${Array.isArray(scrollback) ? scrollback.length : 'N/A'} bytes`);
         if (Array.isArray(scrollback) && scrollback.length > 0) {
           const now = Date.now();
-          if (!h.workStartedAt) {
-            h.workStartedAt = now;
-          }
           h.lastOutputAt = now;
           h.queue.push(new Uint8Array(scrollback));
         }
@@ -415,8 +409,10 @@ export const TerminalManager = {
     const resolvedId = TerminalManager.resolveSessionId(id);
     const h = TerminalManager.handles.get(resolvedId);
     if (h) {
-      h.lastOutputAt = Date.now();
-      if (!h.workStartedAt) h.workStartedAt = Date.now();
+      const now = Date.now();
+      h.lastOutputAt = now;
+      h.workStartedAt = now;
+      h.workEndedAt = 0;
       // Watchdog: If output channel got detached or failed previously, re-attach before sending!
       if (!h.attached) {
         console.warn(`[TerminalManager] Re-attaching unattached PTY before sendPrompt for ${resolvedId}`);
@@ -443,8 +439,10 @@ export const TerminalManager = {
     const resolvedId = TerminalManager.resolveSessionId(id);
     const h = TerminalManager.handles.get(resolvedId);
     if (h) {
-      h.lastOutputAt = Date.now();
-      if (!h.workStartedAt) h.workStartedAt = Date.now();
+      const now = Date.now();
+      h.lastOutputAt = now;
+      h.workStartedAt = now;
+      h.workEndedAt = 0;
       if (!h.attached) {
         await this.attachToPty(resolvedId);
       }
@@ -464,8 +462,10 @@ export const TerminalManager = {
     const resolvedId = TerminalManager.resolveSessionId(id);
     const h = TerminalManager.handles.get(resolvedId);
     if (h) {
-      h.lastOutputAt = Date.now();
-      if (!h.workStartedAt) h.workStartedAt = Date.now();
+      const now = Date.now();
+      h.lastOutputAt = now;
+      h.workStartedAt = now;
+      h.workEndedAt = 0;
       if (!h.attached) {
         await this.attachToPty(resolvedId);
       }
@@ -777,14 +777,14 @@ export const TerminalManager = {
     return TerminalManager.get(id)?.createdAt ?? 0;
   },
 
-  /** Unix ms when active work/output started. */
+  /** Unix ms when active work/output started (0 if no task has run). */
   workStartedAt(id: string): number {
     const h = TerminalManager.get(id);
     if (!h) return 0;
-    return h.workStartedAt || h.createdAt || 0;
+    return h.workStartedAt || 0;
   },
 
-  /** Unix ms when active work completed/ended (0 if in progress). */
+  /** Unix ms when active work completed/ended (0 if in progress or never started). */
   workEndedAt(id: string): number {
     return TerminalManager.get(id)?.workEndedAt ?? 0;
   },
@@ -824,8 +824,16 @@ export const TerminalManager = {
     const entryCli = entry?.cli || '';
     const cached = _metaCache.get(tty);
 
-    // Fast-path: return cached metadata if checked recently (< 1500ms) and neither output nor process changed
-    if (cached && now - cached.cachedAt < 1500 && cached.lastOutputAt === lastOut && cached.entryCli === entryCli) {
+    // Fast-path: return cached metadata if checked recently (< 1000ms),
+    // output hasn't changed, and status is not a live-ticking state (running/asking)
+    if (
+      cached &&
+      now - cached.cachedAt < 1000 &&
+      cached.lastOutputAt === lastOut &&
+      cached.entryCli === entryCli &&
+      cached.status !== 'running' &&
+      cached.status !== 'asking'
+    ) {
       return {
         cli: cached.cli,
         cliName: cached.cliName,
@@ -837,6 +845,22 @@ export const TerminalManager = {
     const lines = h ? TerminalManager.lastLines(tty, 60) : [];
     const detected = detectCliFn(lines, entry?.cli, entry?.agent);
     const status = deriveStatusFn(tty, entry, closed);
+
+    // State transition tracking: automatically manage workStartedAt and workEndedAt
+    const prevStatus = cached?.status as string | undefined;
+    if (h) {
+      if (status === 'running') {
+        if (!h.workStartedAt || (prevStatus && prevStatus !== 'running')) {
+          h.workStartedAt = now;
+          h.workEndedAt = 0;
+        }
+      } else if (status === 'stopped' || status === 'over') {
+        if (prevStatus === 'running' && h.workStartedAt > 0 && !h.workEndedAt) {
+          h.workEndedAt = h.lastOutputAt || now;
+        }
+      }
+    }
+
     const duration = durationFn(tty, status);
 
     // Strict truth-based resolution:

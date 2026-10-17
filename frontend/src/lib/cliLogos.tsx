@@ -25,6 +25,9 @@ import primeRaw from '../assets/cli-logos/prime.svg?raw';
 // in the pane header instead of the Anthropic Simple Icons mark.
 import claudePng from '../assets/cli-logos/claude.png';
 
+const aiderRaw = '<svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>';
+const kiloRaw = '<svg viewBox="0 0 24 24"><path d="M12 2l9 5.2v10.4L12 22.8 3 17.6V7.2L12 2zm-1.5 5.5v9h2.2v-3.4l3.1 3.4h2.7l-3.8-4.2 3.5-4.8h-2.6l-2.9 4v-4h-2.2z"/></svg>';
+
 interface LogoDef {
   /** Brand color applied to the monochrome mark. */
   color: string;
@@ -47,6 +50,9 @@ function parseSvg(raw: string): { viewBox: string; inner: string } {
 }
 
 const LOGOS: Record<string, LogoDef> = {
+  aider: { color: '#8B5CF6', raw: aiderRaw },
+  kilo: { color: '#F59E0B', raw: kiloRaw },
+  'kilo-code': { color: '#F59E0B', raw: kiloRaw },
   prime: { color: '#ffffff', raw: primeRaw },
   'prime-agent': { color: '#ffffff', raw: primeRaw },
   primeagent: { color: '#ffffff', raw: primeRaw },

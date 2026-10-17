@@ -6,6 +6,11 @@
 export function extractDropPaths(dt: DataTransfer | null): string[] {
   if (!dt) return [];
 
+  // Ignore internal pane reorder drags
+  if (dt.types && Array.from(dt.types).includes('application/x-tto-grid-pane')) {
+    return [];
+  }
+
   // 1) OS file drag (HTML5 DataTransfer.files)
   const files = Array.from(dt.files || []);
   const filePaths = files

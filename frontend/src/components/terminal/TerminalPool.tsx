@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
+import { isLightTheme } from '@/lib/theme';
 import { isTauri as checkTauri, tauri } from '@/lib/tauri';
 import { TerminalManager } from '@/terminal/TerminalManager';
 import { FitAddon } from '@xterm/addon-fit';
@@ -22,7 +23,7 @@ const ANCHOR_HOST_STYLE = 'position:absolute;left:0;top:0;width:100%;height:100%
  * defaults and every cell renders monochrome.
  */
 function buildXtermTheme(t: import('@/lib/theme').Theme) {
-  const isLight = t.name === 'Paper';
+  const isLight = isLightTheme(t);
   return {
     background: t.colors.bg.primary,
     foreground: t.colors.text.primary,

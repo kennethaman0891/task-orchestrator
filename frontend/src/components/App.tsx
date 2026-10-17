@@ -729,18 +729,37 @@ export default function App() {
     }
   }, [workspaces, focusedTerminal]);
 
-  // ── Reorder / Swap panes within grid via drag-and-drop ──────────────
-  const handleReorderPanes = useCallback((workspaceId: string, fromIndex: number, toIndex: number) => {
-    if (fromIndex === toIndex) return;
+  // ── Reorder / Splice panes within grid via drag-and-drop ──────────────
+  const handleReorderPanes = useCallback((
+    workspaceId: string,
+    fromPaneOrIndex: string | number,
+    toPaneOrIndex: string | number,
+    position: 'before' | 'after' = 'after'
+  ) => {
     setWorkspaces((prev) => {
       const next = prev.map((w) => {
         if (w.id !== workspaceId) return w;
         const newPanes = [...w.panes];
-        if (fromIndex < 0 || fromIndex >= newPanes.length || toIndex < 0 || toIndex >= newPanes.length) return w;
-        // True slot swap: target slot takes source pane, source slot takes target pane (even if empty)
-        const temp = newPanes[fromIndex];
-        newPanes[fromIndex] = newPanes[toIndex];
-        newPanes[toIndex] = temp;
+
+        const fromIdx = typeof fromPaneOrIndex === 'string'
+          ? newPanes.findIndex((p) => p.id === fromPaneOrIndex)
+          : fromPaneOrIndex;
+
+        if (fromIdx < 0 || fromIdx >= newPanes.length) return w;
+
+        const [moved] = newPanes.splice(fromIdx, 1);
+
+        const targetIdx = typeof toPaneOrIndex === 'string'
+          ? newPanes.findIndex((p) => p.id === toPaneOrIndex)
+          : (toPaneOrIndex > fromIdx ? toPaneOrIndex - 1 : toPaneOrIndex);
+
+        if (targetIdx === -1) {
+          newPanes.push(moved);
+        } else {
+          const insertIdx = position === 'before' ? targetIdx : targetIdx + 1;
+          newPanes.splice(Math.max(0, Math.min(newPanes.length, insertIdx)), 0, moved);
+        }
+
         return { ...w, panes: newPanes };
       });
       saveWorkspaces(next);

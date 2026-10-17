@@ -38,7 +38,10 @@ export class ClaudeCodeAdapter implements ICLIAdapter {
       (/^([❯>]{1,2})\s*$/.test(lastLine) ||
        /\?\s*\(y\/n\)/i.test(lastLine) ||
        /\b(do you want to proceed|allow\s+)/i.test(lastLine) ||
-       (secondLastLine.startsWith('>') && /auto mode on/i.test(lastLine)));
+       /auto mode on/i.test(lastLine) ||
+       /auto mode on/i.test(secondLastLine) ||
+       /^[>❯]\s*Try\s+["']/i.test(secondLastLine) ||
+       /^[>❯]\s*Try\s+["']/i.test(lastLine));
 
     let taskTitle: string | undefined;
     let currentActivity: string | undefined;
