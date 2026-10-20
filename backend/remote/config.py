@@ -117,6 +117,7 @@ class RemoteConfig:
     webhook_secret: str = ""
     allowed_chat_ids: List[str] = field(default_factory=list)
     allowed_phone_numbers: List[str] = field(default_factory=list)
+    discord_allowed_user_ids: List[str] = field(default_factory=list)
 
     # Command policy.
     rate_limit_per_minute: int = 30
@@ -176,6 +177,7 @@ def load_config() -> RemoteConfig:
         webhook_secret=os.environ.get("OPENWA_WEBHOOK_SECRET", ""),
         allowed_chat_ids=_env_list("OPENWA_ALLOWED_CHAT_IDS"),
         allowed_phone_numbers=_env_list("OPENWA_ALLOWED_PHONE_NUMBERS"),
+        discord_allowed_user_ids=_env_list("DISCORD_ALLOWED_USER_IDS"),
         rate_limit_per_minute=_env_int("TTO_REMOTE_RATE_LIMIT", 30),
         confirm_ttl_seconds=_env_int("TTO_REMOTE_CONFIRM_TTL", 60),
         logs_max_lines=max(1, min(_env_int("TTO_REMOTE_LOGS_MAX", 200), 500)),

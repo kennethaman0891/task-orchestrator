@@ -46,6 +46,9 @@ export interface TerminalEntry {
   /** Backend process-scan truth: is Claude Code running on this tty? */
   claude_running?: boolean;
   claude_pid?: number;
+  /** Backend process-scan truth: is Antigravity CLI running on this tty? */
+  antigravity_running?: boolean;
+  antigravity_pid?: number;
   /** Epoch seconds when this terminal was first observed by the sidecar scan.
    *  Used by the frontend to compute and display live uptime. */
   registered_at?: number;

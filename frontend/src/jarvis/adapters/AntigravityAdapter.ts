@@ -7,7 +7,14 @@ export class AntigravityAdapter implements ICLIAdapter {
   detect(bufferLines: string[], processCli?: string, ttyAgent?: string): boolean {
     const p = (processCli || '').toLowerCase();
     const a = (ttyAgent || '').toLowerCase();
-    if (p.includes('antigravity') || p.includes('agy') || a.includes('antigravity') || a.includes('agy')) {
+    if (
+      p.includes('antigravity') ||
+      p.includes('agy') ||
+      a.includes('antigravity') ||
+      a.includes('agy') ||
+      p.includes('jetski') ||
+      a.includes('jetski')
+    ) {
       return true;
     }
     return this.detectBuffer(bufferLines);
@@ -16,7 +23,13 @@ export class AntigravityAdapter implements ICLIAdapter {
   detectBuffer(bufferLines: string[]): boolean {
     if (!bufferLines || bufferLines.length === 0) return false;
     const text = bufferLines.join('\n');
-    return /\bantigravity\b|\bagy\b|antigravity-cli|google\s+antigravity|google\s+deepmind\b/i.test(text);
+    return (
+      /\bantigravity\b|\bagy\b|antigravity-cli|google\s+antigravity|google\s+deepmind\b/i.test(text) ||
+      /advanced agentic coding|pair programming with a user/i.test(text) ||
+      /\/goal\b|\/boost\b|\/grill-me\b|\/teamwork\b|\/compact\b|\/browser\b/i.test(text) ||
+      /BypassSandbox|terminal_sandbox/i.test(text) ||
+      /Requesting permission for:\s*(run_command|write_file|edit_file|read_file|manage_task)/i.test(text)
+    );
   }
 
   parse(bufferLines: string[], _currentContext?: Partial<SessionContext>): CLIAdapterResult {

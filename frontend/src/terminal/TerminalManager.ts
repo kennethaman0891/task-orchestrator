@@ -871,7 +871,14 @@ export const TerminalManager = {
     let cli = 'shell';
     let cliName = 'Terminal';
 
-    if (detected.detected && detected.cli && detected.cli !== 'unknown' && detected.cli !== 'shell') {
+    if ((entry as any)?.antigravity_running || entryCli === 'antigravity' || entryCli === 'agy') {
+      cli = 'antigravity';
+      cliName = 'Antigravity';
+      if (entry) {
+        entry.cli = 'antigravity';
+        entry.agent = 'antigravity';
+      }
+    } else if (detected.detected && detected.cli && detected.cli !== 'unknown' && detected.cli !== 'shell') {
       cli = detected.cli.toLowerCase().trim();
       cliName = detected.cliName || CLI_DISPLAY_NAMES[cli] || (cli.charAt(0).toUpperCase() + cli.slice(1));
       if (entry) {

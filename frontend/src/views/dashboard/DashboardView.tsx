@@ -36,6 +36,8 @@ import {
   Filter,
   Pencil,
   Check,
+  Phone,
+  PhoneCall,
 } from 'lucide-react';
 
 interface Props {
@@ -81,7 +83,7 @@ export function DashboardView({
 
   // ── Interactive Voice Assistant Modal ──
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
-  const [voiceTargetTerminal, setVoiceTargetTerminal] = useState<string | null>(null); // null = global
+  const [voiceTargetTerminal] = useState<string | null>(null); // null = global
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [voiceTextDraft, setVoiceTextDraft] = useState('');
@@ -129,8 +131,11 @@ export function DashboardView({
   }, []);
 
   // Subscribe to JarvisManager updates so UI re-renders live on any assignment/task change!
+  const [activeCallIds, setActiveCallIds] = useState<string[]>(() => jarvisManager.getActiveCallTerminalIds());
+
   useEffect(() => {
     return jarvisManager.subscribe(() => {
+      setActiveCallIds(jarvisManager.getActiveCallTerminalIds());
       setAgentVersion((v) => v + 1);
     });
   }, []);
@@ -466,24 +471,35 @@ export function DashboardView({
           <button
             type="button"
             onClick={() => {
-              setVoiceTargetTerminal(null);
-              setVoiceModalOpen(true);
-              startRecordingAudio();
+              const target = focusedTerminal || filteredSessionList[0]?.id || Object.keys(terminals)[0];
+              if (target) {
+                if (activeCallIds.length > 0) {
+                  jarvisManager.endAllCalls();
+                  onToast('Ended all voice calls.');
+                } else {
+                  jarvisManager.startCall(target);
+                  onToast(`Starting voice call with ${contexts[target]?.terminalName || target}...`);
+                }
+              } else {
+                onToast('No active terminals to call', true);
+              }
             }}
             style={{
               ...buttonBase(t),
               ...buttonSize(t, 'sm'),
-              ...buttonVariant(t, 'primary'),
+              ...buttonVariant(t, activeCallIds.length > 0 ? 'primary' : 'secondary'),
               display: 'flex',
               alignItems: 'center',
               gap: 6,
               height: '30px',
               padding: '0 12px',
+              backgroundColor: activeCallIds.length > 0 ? '#10b981' : undefined,
+              color: activeCallIds.length > 0 ? '#fff' : undefined,
             }}
-            title="Global Workstation Voice: Speak an instruction to any terminal"
+            title={activeCallIds.length > 0 ? `In ${activeCallIds.length} Call${activeCallIds.length > 1 ? 's' : ''} (Click to End All)` : "Voice Call: Start interactive OpenDots voice call with terminal"}
           >
-            <Mic size={14} />
-            <span>Global Voice</span>
+            {activeCallIds.length > 0 ? <PhoneCall size={14} className="animate-pulse" /> : <Phone size={14} />}
+            <span>{activeCallIds.length > 0 ? `${activeCallIds.length} In Call` : 'Voice Call'}</span>
           </button>
         </div>
       </div>
@@ -950,24 +966,35 @@ export function DashboardView({
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      {/* Mode 1: Terminal-Specific Mic Button */}
+                      {/* Mode 1: OpenDots Terminal Voice Call Button */}
                       <button
                         type="button"
                         onClick={() => {
-                          setVoiceTargetTerminal(id);
-                          setVoiceModalOpen(true);
-                          startRecordingAudio();
+                          if (jarvisManager.isCallActive(id)) {
+                            jarvisManager.endCall(id);
+                            onToast(`Ended call with ${ctx.terminalName}`);
+                          } else {
+                            jarvisManager.startCall(id);
+                            onToast(`Added voice call with ${ctx.terminalName}...`);
+                          }
                         }}
                         style={{
                           ...buttonBase(t),
                           ...buttonSize(t, 'sm'),
-                          ...buttonVariant(t, 'ghost'),
-                          padding: '4px 6px',
+                          ...buttonVariant(t, jarvisManager.isCallActive(id) ? 'primary' : 'ghost'),
+                          padding: '4px 8px',
                           height: '26px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          fontSize: '11px',
+                          backgroundColor: jarvisManager.isCallActive(id) ? '#10b981' : undefined,
+                          color: jarvisManager.isCallActive(id) ? '#fff' : undefined,
                         }}
-                        title={`Voice command for ${ctx.terminalName}`}
+                        title={jarvisManager.isCallActive(id) ? `In call with ${ctx.terminalName} (click to end)` : `Start OpenDots voice call with ${ctx.terminalName}`}
                       >
-                        <Mic size={12} />
+                        {jarvisManager.isCallActive(id) ? <PhoneCall size={12} className="animate-pulse" /> : <Phone size={12} />}
+                        <span>{jarvisManager.isCallActive(id) ? 'In Call' : 'Call'}</span>
                       </button>
 
                       {isAssigned ? (

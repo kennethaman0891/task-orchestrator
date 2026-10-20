@@ -28,8 +28,11 @@ import {
   ImagePlus,
   Trash2,
   Users,
+  MoreHorizontal,
+  ExternalLink,
+  Search,
 } from 'lucide-react';
-import { listFiles, renameFile, type FileEntry } from '@/lib/api';
+import { listFiles, renameFile, searchProjectFiles, type FileEntry, type FileSearchResult } from '@/lib/api';
 import { isTauri as checkTauri, tauri } from '@/lib/tauri';
 import { FolderIcon, FileIcon } from '@/lib/treeIcons';
 import { usePointerFileDrag } from '@/hooks/usePointerFileDrag';
@@ -48,6 +51,7 @@ interface Props {
   onSelectWorkspace: (id: string) => void;
   onRenameWorkspace: (id: string, name: string) => void;
   onSetProjectPath: (id: string, path: string) => void;
+  onOpenProjectFolder?: () => void;
   /** Upload (data URL) or clear a workspace icon; mirrored onto its city building. */
   onSetWorkspaceLogo?: (id: string, logo: string | null) => void;
   onCloseWorkspace: (id: string) => void;
@@ -232,6 +236,7 @@ export function Sidebar({
   onSelectWorkspace,
   onRenameWorkspace,
   onSetProjectPath,
+  onOpenProjectFolder,
   onSetWorkspaceLogo,
   onCloseWorkspace,
   onNewWorkspace,
@@ -261,13 +266,21 @@ export function Sidebar({
   onCancelRenameTerminal,
 }: Props) {
   const { theme: t } = useTheme();
-  const { collabActivity } = {} as Props;
   const [editingId, setEditingId] = useState<string | null>(null);
   const [hoveredWsId, setHoveredWsId] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState('');
   const [filesOpen, setFilesOpen] = useState(true);
   const [terminalsOpen, setTerminalsOpen] = useState(true);
   const [tick, setTick] = useState(0);
+  const [menuOpenWsId, setMenuOpenWsId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!menuOpenWsId) return;
+    const handleClickOutside = () => setMenuOpenWsId(null);
+    window.addEventListener('click', handleClickOutside);
+    return () => window.removeEventListener('click', handleClickOutside);
+  }, [menuOpenWsId]);
+
   useEffect(() => {
     const id = window.setInterval(() => setTick((v) => v + 1), 1000);
     return () => window.clearInterval(id);
@@ -316,6 +329,11 @@ export function Sidebar({
   const [fileTreePath, setFileTreePath] = useState('');
   const [dragOverTree, setDragOverTree] = useState(false);
   const [editorOpen, setEditorOpen] = useState(true);
+
+  // File search state
+  const [fileSearchQuery, setFileSearchQuery] = useState('');
+  const [isSearchingFiles, setIsSearchingFiles] = useState(false);
+  const [searchResults, setSearchResults] = useState<FileSearchResult[]>([]);
 
   // Hook for reliable drag-and-drop from the sidebar (WKWebView-safe + standard)
   const { beginDrag, consumeDrag } = usePointerFileDrag({
@@ -366,6 +384,65 @@ export function Sidebar({
       })
       .catch(() => {});
   }, [activeWorkspace?.projectPath]);
+
+  // Reset search when active workspace or its project path changes
+  useEffect(() => {
+    setFileSearchQuery('');
+    setSearchResults([]);
+    setIsSearchingFiles(false);
+  }, [activeWorkspace?.id, activeWorkspace?.projectPath]);
+
+  // Handle file search with instant local filter + debounced recursive search
+  useEffect(() => {
+    const q = fileSearchQuery.trim();
+    if (!q) {
+      setSearchResults([]);
+      setIsSearchingFiles(false);
+      return;
+    }
+
+    const lower = q.toLowerCase();
+    // Immediate local matches from current fileTree for 0ms visual response
+    const localMatches: FileSearchResult[] = fileTree
+      .filter((f) => f.name.toLowerCase().includes(lower))
+      .map((f) => ({
+        name: f.name,
+        path: fileTreePath ? `${fileTreePath}/${f.name}` : f.name,
+        rel_path: f.name,
+        is_dir: f.is_dir,
+      }));
+    setSearchResults(localMatches);
+
+    const root = activeWorkspace?.projectPath || fileTreePath;
+    if (!root) return;
+
+    let active = true;
+    setIsSearchingFiles(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await searchProjectFiles(root, q, 100);
+        if (active) {
+          const map = new Map<string, FileSearchResult>();
+          for (const item of localMatches) {
+            map.set(item.path, item);
+          }
+          for (const item of res.results || []) {
+            map.set(item.path, item);
+          }
+          setSearchResults(Array.from(map.values()));
+        }
+      } catch (err) {
+        console.warn('Failed to search project files:', err);
+      } finally {
+        if (active) setIsSearchingFiles(false);
+      }
+    }, 200);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [fileSearchQuery, activeWorkspace?.projectPath, fileTree, fileTreePath]);
 
   // ── Terminal helpers (scoped strictly to current active workspace) ──
   const terminalList = useMemo(() => {
@@ -464,6 +541,104 @@ export function Sidebar({
     const parent = fileTreePath.split('/').slice(0, -1).join('/') || rootPathRef.current;
     navigateTo(parent);
   }, [fileTreePath, navigateTo]);
+
+  const renderFileRow = (
+    name: string,
+    fullPath: string,
+    isDir: boolean,
+    relPath?: string,
+    keyPrefix = ''
+  ) => {
+    const dirHint =
+      relPath && relPath !== name && relPath.includes('/')
+        ? relPath.slice(0, relPath.lastIndexOf('/'))
+        : '';
+
+    return (
+      <div
+        key={`${keyPrefix}-${fullPath}`}
+        className={`fb-item ${isDir ? 'fb-dir' : 'fb-file'}`}
+        data-folder-path={isDir ? fullPath : undefined}
+        draggable={true}
+        onMouseDown={(e) => {
+          beginDrag(e, {
+            label: name,
+            path: fullPath,
+            kind: isDir ? 'folder' : 'file',
+          });
+        }}
+        onDragStart={(e) => {
+          e.dataTransfer.setData('text/plain', fullPath);
+          e.dataTransfer.setData('application/x-tto-file', fullPath);
+          e.dataTransfer.setData('text/uri-list', `file://${encodeURI(fullPath)}`);
+          e.dataTransfer.effectAllowed = 'copyMove';
+
+          try {
+            const ghost = document.createElement('div');
+            ghost.className = 'tto-drag-ghost';
+            const emoji = isDir ? '📁' : '📄';
+            ghost.textContent = `${emoji} ${name}`;
+            document.body.appendChild(ghost);
+            e.dataTransfer.setDragImage(ghost, 0, 0);
+            setTimeout(() => ghost.remove(), 0);
+          } catch {}
+        }}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '4px 8px 4px 16px',
+          fontSize: '11.5px',
+          color: isDir ? t.colors.text.secondary : t.colors.text.muted,
+          cursor: 'grab',
+          borderRadius: '4px',
+          transition: 'all 0.12s ease',
+          userSelect: 'none',
+        }}
+        onClick={() => {
+          if (consumeDrag()) return;
+          if (isDir) {
+            toggleDir(fullPath);
+            if (fileSearchQuery) setFileSearchQuery('');
+          } else {
+            onOpenFile(fullPath, name);
+          }
+        }}
+        title={relPath || fullPath}
+      >
+        {isDir ? <FolderIcon name={name} open={false} size={14} /> : <FileRowIcon name={name} />}
+        <span
+          style={{
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
+            maxWidth: dirHint ? '135px' : '100%',
+          }}
+        >
+          {name}
+        </span>
+        {dirHint && (
+          <span
+            style={{
+              fontSize: '9.5px',
+              color: t.colors.text.muted,
+              opacity: 0.6,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              marginLeft: 'auto',
+              maxWidth: '85px',
+              textAlign: 'right',
+            }}
+            title={relPath}
+          >
+            {dirHint}
+          </span>
+        )}
+      </div>
+    );
+  };
 
   const handlePickFolder = async (wsId: string) => {
     if (!checkTauri()) return;
@@ -567,7 +742,7 @@ export function Sidebar({
                 fontFamily: t.fontFamily.mono,
               }}
             >
-              v0.9
+              v1.0
             </span>
           </>
         )}
@@ -803,42 +978,109 @@ export function Sidebar({
                   </span>
                 </div>
 
-                {/* Quick Add Button */}
-                <button
-                  onClick={onNewWorkspace}
-                  title="Create new workspace"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    width: '20px',
-                    height: '20px',
-                    borderRadius: '4px',
-                    background: 'transparent',
-                    border: 'none',
-                    color: t.colors.text.muted,
-                    cursor: 'pointer',
-                    transition: 'all 0.15s ease',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = t.colors.bg.hover;
-                    e.currentTarget.style.color = t.colors.text.primary;
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'transparent';
-                    e.currentTarget.style.color = t.colors.text.muted;
-                  }}
-                >
-                  <Plus size={13} />
-                </button>
+                {/* Action buttons: Professional Open Project + New Template */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onOpenProjectFolder) {
+                        onOpenProjectFolder();
+                      } else {
+                        handlePickFolder(activeId);
+                      }
+                    }}
+                    title="Open any project folder from Finder"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '4px 9px',
+                      borderRadius: '6px',
+                      background: 'linear-gradient(180deg, rgba(56, 189, 248, 0.18) 0%, rgba(56, 189, 248, 0.08) 100%)',
+                      border: '1px solid rgba(56, 189, 248, 0.35)',
+                      color: '#38bdf8',
+                      fontSize: '11px',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.12)',
+                      transition: 'all 0.14s cubic-bezier(0.16, 1, 0.3, 1)',
+                      lineHeight: '13px',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'linear-gradient(180deg, rgba(56, 189, 248, 0.28) 0%, rgba(56, 189, 248, 0.16) 100%)';
+                      e.currentTarget.style.borderColor = 'rgba(56, 189, 248, 0.6)';
+                      e.currentTarget.style.color = '#7dd3fc';
+                      e.currentTarget.style.boxShadow = '0 2px 10px rgba(56, 189, 248, 0.35), inset 0 1px 0 rgba(255,255,255,0.2)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'linear-gradient(180deg, rgba(56, 189, 248, 0.18) 0%, rgba(56, 189, 248, 0.08) 100%)';
+                      e.currentTarget.style.borderColor = 'rgba(56, 189, 248, 0.35)';
+                      e.currentTarget.style.color = '#38bdf8';
+                      e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.12)';
+                      e.currentTarget.style.transform = 'scale(1)';
+                    }}
+                    onMouseDown={(e) => {
+                      e.currentTarget.style.transform = 'scale(0.96)';
+                    }}
+                    onMouseUp={(e) => {
+                      e.currentTarget.style.transform = 'scale(1)';
+                    }}
+                  >
+                    <FolderOpen size={12} style={{ flexShrink: 0 }} />
+                    <span>Open Project</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={onNewWorkspace}
+                    title="Create new workspace template"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: '24px',
+                      height: '24px',
+                      borderRadius: '6px',
+                      background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.02) 100%)',
+                      border: `1px solid ${t.colors.border.subtle}`,
+                      color: t.colors.text.secondary,
+                      cursor: 'pointer',
+                      boxShadow: '0 1px 2px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.06)',
+                      transition: 'all 0.14s cubic-bezier(0.16, 1, 0.3, 1)',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'linear-gradient(180deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.04) 100%)';
+                      e.currentTarget.style.color = t.colors.text.primary;
+                      e.currentTarget.style.borderColor = t.colors.border.primary;
+                      e.currentTarget.style.boxShadow = '0 2px 6px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'linear-gradient(180deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.02) 100%)';
+                      e.currentTarget.style.color = t.colors.text.secondary;
+                      e.currentTarget.style.borderColor = t.colors.border.subtle;
+                      e.currentTarget.style.boxShadow = '0 1px 2px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.06)';
+                      e.currentTarget.style.transform = 'scale(1)';
+                    }}
+                    onMouseDown={(e) => {
+                      e.currentTarget.style.transform = 'scale(0.95)';
+                    }}
+                    onMouseUp={(e) => {
+                      e.currentTarget.style.transform = 'scale(1)';
+                    }}
+                  >
+                    <Plus size={13} />
+                  </button>
+                </div>
               </div>
 
               {/* Workspace cards list */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
                 {workspaces.map((ws) => {
                   const isActive = ws.id === activeId;
                   const isHovered = hoveredWsId === ws.id;
                   const editing = editingId === ws.id;
+                  const isMenuOpen = menuOpenWsId === ws.id;
                   const liveCount = ws.panes?.filter((p) => p.tty).length || 0;
                   const palette = getWorkspacePalette(ws.id, ws.name);
                   const initials = getWorkspaceInitials(ws.name);
@@ -854,21 +1096,21 @@ export function Sidebar({
                         style={{
                           display: 'flex',
                           alignItems: 'center',
-                          gap: '9px',
-                          padding: '7px 9px 7px 11px',
+                          gap: '10px',
+                          padding: '8px 10px',
                           background: isActive
                             ? t.colors.bg.active
                             : isHovered
                               ? t.colors.bg.hover
                               : 'transparent',
                           cursor: 'pointer',
-                          borderRadius: '6px',
+                          borderRadius: '7px',
                           border: isActive
                             ? `1px solid ${t.colors.border.primary}`
                             : isHovered
                               ? `1px solid ${t.colors.border.subtle}`
                               : '1px solid transparent',
-                          boxShadow: isActive ? '0 1px 3px rgba(0,0,0,0.2)' : 'none',
+                          boxShadow: isActive ? '0 1px 4px rgba(0,0,0,0.25)' : 'none',
                           transition: 'all 0.12s ease',
                           position: 'relative',
                         }}
@@ -882,39 +1124,37 @@ export function Sidebar({
                               left: 0,
                               top: '6px',
                               bottom: '6px',
-                              width: '3px',
-                              borderRadius: '0 3px 3px 0',
+                              width: '3.5px',
+                              borderRadius: '0 4px 4px 0',
                               background: t.colors.accent.primary,
+                              boxShadow: '0 0 8px rgba(56, 189, 248, 0.4)',
                             }}
                           />
                         )}
 
-                        {/* Workspace Colored Avatar (uploaded icon or initials) */}
+                        {/* Workspace Colored Avatar */}
                         <span
                           style={{
-                            width: '26px',
-                            height: '26px',
-                            borderRadius: '6px',
+                            width: '28px',
+                            height: '28px',
+                            borderRadius: '7px',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            fontSize: '9.5px',
+                            fontSize: '10px',
                             fontWeight: '700',
                             background: ws.logo ? 'transparent' : (isActive
-                              ? palette.bg.replace('0.14', '0.22')
+                              ? palette.bg.replace('0.14', '0.24')
                               : palette.bg),
                             color: palette.text,
-                            border: `1px solid ${isActive ? palette.border.replace('0.3', '0.5') : palette.border}`,
-                            boxShadow: isActive ? `0 0 8px ${palette.text}26` : 'none',
+                            border: `1px solid ${isActive ? palette.border.replace('0.3', '0.6') : palette.border}`,
+                            boxShadow: isActive ? `0 0 10px ${palette.text}33` : 'none',
                             flexShrink: 0,
                             letterSpacing: '0.2px',
                             fontFamily: t.fontFamily.mono,
                             transition: 'all 0.15s ease',
                             overflow: 'hidden',
-                            cursor: ws.logo ? 'pointer' : 'default',
                           }}
-                          title={ws.logo ? 'Workspace icon (click to change)' : initials}
-                          onClick={ws.logo ? (e) => { e.stopPropagation(); pickWorkspaceIcon(ws.id); } : undefined}
                         >
                           {ws.logo && !brokenLogos.has(ws.id) ? (
                             <img
@@ -951,7 +1191,7 @@ export function Sidebar({
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div
                               style={{
-                                fontSize: '12px',
+                                fontSize: '12.5px',
                                 color: isActive ? t.colors.text.primary : t.colors.text.secondary,
                                 overflow: 'hidden',
                                 textOverflow: 'ellipsis',
@@ -962,17 +1202,95 @@ export function Sidebar({
                             >
                               {ws.name}
                             </div>
+
+                            {/* Clean metadata row (no messy clutter buttons) */}
                             <div
                               style={{
-                                fontSize: '10.5px',
+                                fontSize: '10px',
                                 color: t.colors.text.muted,
                                 display: 'flex',
                                 alignItems: 'center',
-                                gap: '5px',
+                                gap: '6px',
                                 marginTop: '2px',
                                 overflow: 'hidden',
                               }}
                             >
+                              {/* Clean project directory label */}
+                              {ws.projectPath ? (
+                                <span
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3.5px',
+                                    fontFamily: t.fontFamily.mono,
+                                    fontSize: '9.5px',
+                                    color: isActive ? t.colors.text.secondary : t.colors.text.muted,
+                                    background: isActive ? 'rgba(255, 255, 255, 0.05)' : 'rgba(255, 255, 255, 0.02)',
+                                    border: `1px solid ${isActive ? t.colors.border.subtle : 'transparent'}`,
+                                    padding: '1px 5px',
+                                    borderRadius: '4px',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                    maxWidth: '120px',
+                                    transition: 'all 0.14s ease',
+                                    cursor: 'pointer',
+                                  }}
+                                  title={`${ws.projectPath} (Click to change folder in Finder)`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handlePickFolder(ws.id);
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.background = 'rgba(56, 189, 248, 0.14)';
+                                    e.currentTarget.style.borderColor = 'rgba(56, 189, 248, 0.35)';
+                                    e.currentTarget.style.color = '#38bdf8';
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.background = isActive ? 'rgba(255, 255, 255, 0.05)' : 'rgba(255, 255, 255, 0.02)';
+                                    e.currentTarget.style.borderColor = isActive ? t.colors.border.subtle : 'transparent';
+                                    e.currentTarget.style.color = isActive ? t.colors.text.secondary : t.colors.text.muted;
+                                  }}
+                                >
+                                  <FolderOpen size={10} style={{ flexShrink: 0, opacity: 0.85 }} />
+                                  <span>{baseName(ws.projectPath)}</span>
+                                </span>
+                              ) : (
+                                <span
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    fontSize: '9px',
+                                    color: t.colors.text.muted,
+                                    background: 'rgba(255, 255, 255, 0.03)',
+                                    border: `1px dashed ${t.colors.border.subtle}`,
+                                    padding: '1px 5px',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.14s ease',
+                                  }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handlePickFolder(ws.id);
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.color = t.colors.accent.primary;
+                                    e.currentTarget.style.borderColor = t.colors.accent.primary;
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.color = t.colors.text.muted;
+                                    e.currentTarget.style.borderColor = t.colors.border.subtle;
+                                  }}
+                                  title="Assign project folder from Finder"
+                                >
+                                  <FolderOpen size={9} />
+                                  <span>+ Folder</span>
+                                </span>
+                              )}
+
+                              <span style={{ opacity: 0.3 }}>·</span>
+
                               {/* Layout Template Badge */}
                               <span
                                 style={{
@@ -1008,7 +1326,7 @@ export function Sidebar({
                                       height: '5px',
                                       borderRadius: '50%',
                                       background: '#22c55e',
-                                      boxShadow: '0 0 5px rgba(34, 197, 94, 0.5)',
+                                      boxShadow: '0 0 5px rgba(34, 197, 94, 0.6)',
                                     }}
                                   />
                                   <span>{liveCount}</span>
@@ -1018,275 +1336,246 @@ export function Sidebar({
                                   idle
                                 </span>
                               )}
-
-                              {/* Project folder inline link */}
-                              {ws.projectPath && (
-                                <span
-                                  style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '3px',
-                                    fontSize: '9.5px',
-                                    color: t.colors.text.muted,
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                    whiteSpace: 'nowrap',
-                                    opacity: 0.75,
-                                    cursor: 'pointer',
-                                  }}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handlePickFolder(ws.id);
-                                  }}
-                                  title={`${ws.projectPath} (Click to change folder)`}
-                                  onMouseEnter={(e) => { e.currentTarget.style.color = t.colors.accent.primary; e.currentTarget.style.opacity = '1'; }}
-                                  onMouseLeave={(e) => { e.currentTarget.style.color = t.colors.text.muted; e.currentTarget.style.opacity = '0.75'; }}
-                                >
-                                  <span>·</span>
-                                  <FolderOpen size={10} style={{ flexShrink: 0 }} />
-                                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {baseName(ws.projectPath)}
-                                  </span>
-                                </span>
-                              )}
                             </div>
                           </div>
                         )}
 
-                        {/* Collab activity row */}
-                        {collabActivity?.[ws.id] && collabActivity[ws.id].length > 0 && (
-                          <div style={{
-                            marginTop: '8px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                            flexWrap: 'wrap',
-                            fontSize: '11px',
-                          }}>
-                            {/* Status indicator */}
-                            <span style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '5px',
-                              color: t.colors.success.primary,
-                              fontSize: '10.5px',
-                              fontWeight: '500',
-                              flexShrink: 0,
-                            }}>
-                              <span style={{
-                                width: '6px', height: '6px', borderRadius: '50%',
-                                background: '#22c55e',
-                                boxShadow: '0 0 5px rgba(34,197,94,0.5)',
-                                display: 'inline-block',
-                              }} />
-                              <Users size={12} />
-                              <span style={{ opacity: 0.8 }}>{collabActivity[ws.id].length}</span>
-                            </span>
-
-                            {/* Separator */}
-                            <span style={{ color: t.colors.text.muted, opacity: 0.5, fontSize: '9px' }}>·</span>
-
-                            {/* User avatars / tags */}
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
-                              {collabActivity[ws.id].slice(0, 4).map((username: string) => {
-                                const initial = username.slice(0, 1).toUpperCase();
-                                // Deterministic color per user
-                                let hash = 0;
-                                for (let i = 0; i < username.length; i++) {
-                                  hash = (hash << 5) - hash + username.charCodeAt(i);
-                                  hash |= 0;
-                                }
-                                const colors = [
-                                  { bg: 'rgba(74,158,255,0.18)', fg: '#60a5fa', border: 'rgba(74,158,255,0.3)' },
-                                  { bg: 'rgba(34,197,94,0.18)', fg: '#4ade80', border: 'rgba(34,197,94,0.3)' },
-                                  { bg: 'rgba(168,85,247,0.18)', fg: '#c084fc', border: 'rgba(168,85,247,0.3)' },
-                                  { bg: 'rgba(251,146,60,0.18)', fg: '#fb923c', border: 'rgba(251,146,60,0.3)' },
-                                  { bg: 'rgba(236,72,153,0.18)', fg: '#f472b6', border: 'rgba(236,72,153,0.3)' },
-                                  { bg: 'rgba(20,184,166,0.18)', fg: '#2dd4bf', border: 'rgba(20,184,166,0.3)' },
-                                ];
-                                const c = colors[Math.abs(hash) % colors.length];
-                                return (
-                                  <span key={username} title={username} style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                    padding: '2px 6px 2px 4px',
-                                    background: c.bg,
-                                    border: `1px solid ${c.border}`,
-                                    borderRadius: '12px',
-                                    cursor: 'default',
-                                    transition: 'opacity 0.15s',
-                                  }}
-                                    onMouseEnter={e => { (e.currentTarget as HTMLSpanElement).style.opacity = '0.8'; }}
-                                    onMouseLeave={e => { (e.currentTarget as HTMLSpanElement).style.opacity = '1'; }}
-                                  >
-                                    <span style={{
-                                      width: '14px', height: '14px', borderRadius: '50%',
-                                      background: c.fg,
-                                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                                      fontSize: '8px', fontWeight: '700', color: '#0a0a0a',
-                                      flexShrink: 0, lineHeight: 1,
-                                    }}>{initial}</span>
-                                    <span style={{ fontSize: '10.5px', fontWeight: '500', color: c.fg, whiteSpace: 'nowrap' }}>
-                                      {username}
-                                    </span>
-                                  </span>
-                                );
-                              })}
-                              {collabActivity[ws.id].length > 4 && (
-                                <span style={{
-                                  fontSize: '10px',
-                                  color: t.colors.text.muted,
-                                  padding: '2px 6px',
-                                  background: t.colors.bg.elevated,
-                                  border: `1px solid ${t.colors.border.subtle}`,
-                                  borderRadius: '10px',
-                                  fontWeight: '500',
-                                  whiteSpace: 'nowrap',
-                                }}>
-                                  +{collabActivity[ws.id].length - 4} more
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Action buttons (Icon, Rename & Close) */}
+                        {/* Single clean overflow options menu button */}
                         <div
                           style={{
                             display: 'flex',
                             alignItems: 'center',
-                            gap: '2px',
-                            opacity: isHovered || isActive ? 1 : 0,
+                            opacity: isHovered || isActive || isMenuOpen ? 1 : 0,
                             transition: 'opacity 0.15s ease',
+                            flexShrink: 0,
                           }}
                         >
                           <button
+                            type="button"
                             style={{
-                              width: '20px',
-                              height: '20px',
+                              width: '22px',
+                              height: '22px',
                               borderRadius: '4px',
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'center',
-                              background: 'transparent',
+                              background: isMenuOpen ? t.colors.bg.elevated : 'transparent',
                               border: 'none',
-                              color: t.colors.text.muted,
+                              color: isMenuOpen ? t.colors.text.primary : t.colors.text.muted,
                               cursor: 'pointer',
                               padding: 0,
+                              transition: 'all 0.12s ease',
                             }}
                             onClick={(e) => {
                               e.stopPropagation();
-                              pickWorkspaceIcon(ws.id);
+                              setMenuOpenWsId(isMenuOpen ? null : ws.id);
                             }}
                             onMouseEnter={(e) => {
                               e.currentTarget.style.background = t.colors.bg.elevated;
                               e.currentTarget.style.color = t.colors.text.primary;
                             }}
                             onMouseLeave={(e) => {
-                              e.currentTarget.style.background = 'transparent';
-                              e.currentTarget.style.color = t.colors.text.muted;
-                            }}
-                            title={ws.logo ? 'Change workspace icon' : 'Upload workspace icon'}
-                          >
-                            <ImagePlus size={11} />
-                          </button>
-                          {ws.logo && onSetWorkspaceLogo && (
-                            <button
-                              style={{
-                                width: '20px',
-                                height: '20px',
-                                borderRadius: '4px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                background: 'transparent',
-                                border: 'none',
-                                color: t.colors.text.muted,
-                                cursor: 'pointer',
-                                padding: 0,
-                              }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onSetWorkspaceLogo(ws.id, null);
-                              }}
-                              onMouseEnter={(e) => {
-                                e.currentTarget.style.background = 'rgba(239, 68, 68, 0.15)';
-                                e.currentTarget.style.color = '#ef4444';
-                              }}
-                              onMouseLeave={(e) => {
+                              if (!isMenuOpen) {
                                 e.currentTarget.style.background = 'transparent';
                                 e.currentTarget.style.color = t.colors.text.muted;
-                              }}
-                              title="Remove icon (back to initials)"
-                            >
-                              <Trash2 size={11} />
-                            </button>
-                          )}
-                          <button
-                            style={{
-                              width: '20px',
-                              height: '20px',
-                              borderRadius: '4px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              background: 'transparent',
-                              border: 'none',
-                              color: t.colors.text.muted,
-                              cursor: 'pointer',
-                              padding: 0,
+                              }
                             }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (editing) commitRename(ws.id);
-                              else startRename(ws);
-                            }}
-                            onMouseEnter={(e) => {
-                              e.currentTarget.style.background = t.colors.bg.elevated;
-                              e.currentTarget.style.color = t.colors.text.primary;
-                            }}
-                            onMouseLeave={(e) => {
-                              e.currentTarget.style.background = 'transparent';
-                              e.currentTarget.style.color = t.colors.text.muted;
-                            }}
-                            title="Rename workspace"
+                            title="Workspace options"
                           >
-                            <Pencil size={11} />
-                          </button>
-
-                          <button
-                            style={{
-                              width: '20px',
-                              height: '20px',
-                              borderRadius: '4px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              background: 'transparent',
-                              border: 'none',
-                              color: t.colors.text.muted,
-                              cursor: 'pointer',
-                              padding: 0,
-                            }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onCloseWorkspace(ws.id);
-                            }}
-                            onMouseEnter={(e) => {
-                              e.currentTarget.style.background = 'rgba(239, 68, 68, 0.15)';
-                              e.currentTarget.style.color = '#f87171';
-                            }}
-                            onMouseLeave={(e) => {
-                              e.currentTarget.style.background = 'transparent';
-                              e.currentTarget.style.color = t.colors.text.muted;
-                            }}
-                            title="Close workspace"
-                          >
-                            <X size={12} />
+                            <MoreHorizontal size={14} />
                           </button>
                         </div>
                       </div>
+
+                      {/* Floating Context Dropdown Menu */}
+                      {isMenuOpen && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            position: 'absolute',
+                            right: '8px',
+                            top: '38px',
+                            zIndex: 100,
+                            background: t.colors.bg.elevated,
+                            border: `1px solid ${t.colors.border.primary}`,
+                            borderRadius: '8px',
+                            padding: '4px',
+                            minWidth: '180px',
+                            boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '2px',
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuOpenWsId(null);
+                              handlePickFolder(ws.id);
+                            }}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px',
+                              padding: '6px 10px',
+                              borderRadius: '5px',
+                              background: 'transparent',
+                              border: 'none',
+                              color: t.colors.text.primary,
+                              fontSize: '11px',
+                              cursor: 'pointer',
+                              textAlign: 'left',
+                              width: '100%',
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = t.colors.bg.hover; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            <FolderOpen size={13} style={{ color: t.colors.accent.primary }} />
+                            <span>Change Project Folder...</span>
+                          </button>
+
+                          {ws.projectPath && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuOpenWsId(null);
+                                tauri.revealInFinder(ws.projectPath!);
+                              }}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px',
+                                padding: '6px 10px',
+                                borderRadius: '5px',
+                                background: 'transparent',
+                                border: 'none',
+                                color: t.colors.text.primary,
+                                fontSize: '11px',
+                                cursor: 'pointer',
+                                textAlign: 'left',
+                                width: '100%',
+                              }}
+                              onMouseEnter={(e) => { e.currentTarget.style.background = t.colors.bg.hover; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                            >
+                              <ExternalLink size={13} style={{ color: '#2dd4bf' }} />
+                              <span>Reveal in macOS Finder</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuOpenWsId(null);
+                              pickWorkspaceIcon(ws.id);
+                            }}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px',
+                              padding: '6px 10px',
+                              borderRadius: '5px',
+                              background: 'transparent',
+                              border: 'none',
+                              color: t.colors.text.primary,
+                              fontSize: '11px',
+                              cursor: 'pointer',
+                              textAlign: 'left',
+                              width: '100%',
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = t.colors.bg.hover; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            <ImagePlus size={13} style={{ color: '#fbbf24' }} />
+                            <span>Change Workspace Icon...</span>
+                          </button>
+
+                          {ws.logo && onSetWorkspaceLogo && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuOpenWsId(null);
+                                onSetWorkspaceLogo(ws.id, null);
+                              }}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px',
+                                padding: '6px 10px',
+                                borderRadius: '5px',
+                                background: 'transparent',
+                                border: 'none',
+                                color: t.colors.text.secondary,
+                                fontSize: '11px',
+                                cursor: 'pointer',
+                                textAlign: 'left',
+                                width: '100%',
+                              }}
+                              onMouseEnter={(e) => { e.currentTarget.style.background = t.colors.bg.hover; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                            >
+                              <Trash2 size={13} />
+                              <span>Reset Icon to Initials</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuOpenWsId(null);
+                              startRename(ws);
+                            }}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px',
+                              padding: '6px 10px',
+                              borderRadius: '5px',
+                              background: 'transparent',
+                              border: 'none',
+                              color: t.colors.text.primary,
+                              fontSize: '11px',
+                              cursor: 'pointer',
+                              textAlign: 'left',
+                              width: '100%',
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = t.colors.bg.hover; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            <Pencil size={13} style={{ color: '#38bdf8' }} />
+                            <span>Rename Workspace</span>
+                          </button>
+
+                          <div style={{ height: '1px', background: t.colors.border.subtle, margin: '2px 0' }} />
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMenuOpenWsId(null);
+                              onCloseWorkspace(ws.id);
+                            }}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px',
+                              padding: '6px 10px',
+                              borderRadius: '5px',
+                              background: 'transparent',
+                              border: 'none',
+                              color: '#ef4444',
+                              fontSize: '11px',
+                              cursor: 'pointer',
+                              textAlign: 'left',
+                              width: '100%',
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.12)'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            <X size={13} />
+                            <span>Close Workspace</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1435,8 +1724,12 @@ export function Sidebar({
                             }}
                           />
 
-                          {/* CLI Logo */}
-                          <CliLogo cli={cli} size={13} />
+                          {/* CLI Logo / Terminal Icon */}
+                          {cli && ['zsh', 'bash', 'sh'].includes(cli) ? (
+                            <Terminal size={12} style={{ opacity: 0.75, color: isActive ? t.colors.accent.primary : t.colors.text.muted, flexShrink: 0 }} />
+                          ) : (
+                            <CliLogo cli={cli} size={13} />
+                          )}
 
                           {/* Terminal name / editor input */}
                           {isEditing ? (
@@ -1648,153 +1941,221 @@ export function Sidebar({
               </div>
 
               {filesOpen && (
-                <div
-                  className={`fb-tree${dragOverTree ? ' drag-over' : ''}`}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-                    setDragOverTree(true);
-                  }}
-                  onDragLeave={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setDragOverTree(false);
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setDragOverTree(false);
-                    const paths = extractDropPaths(e.dataTransfer);
-                    if (paths.length > 0) {
-                      if (onToast) onToast(`Received ${paths.length} file(s) in project folder`);
-                      if (fileTreePath) navigateTo(fileTreePath);
-                    }
-                  }}
-                  style={{
-                    maxHeight: '260px',
-                    overflowY: 'auto',
-                    position: 'relative',
-                    padding: '2px 0',
-                    borderRadius: '6px',
-                  }}
-                >
-                  {dragOverTree && (
-                    <div className="fb-drop-overlay">
-                      <span>📂 Drop files here</span>
-                    </div>
-                  )}
-
-                  {/* Up one level */}
-                  {fileTreePath && fileTreePath !== rootPathRef.current && (
-                    <button
-                      onClick={goUp}
-                      title={fileTreePath}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        width: '100%',
-                        padding: '4px 8px 4px 12px',
-                        background: 'transparent',
-                        border: 'none',
-                        fontSize: '11px',
-                        color: t.colors.text.secondary,
-                        cursor: 'pointer',
-                        textAlign: 'left',
-                        borderRadius: '4px',
-                        transition: 'background 0.12s ease',
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.background = t.colors.bg.hover;
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.background = 'transparent';
-                      }}
-                    >
-                      <span style={{ fontSize: '11px' }}>↑</span>
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {baseName(fileTreePath)}
-                      </span>
-                    </button>
-                  )}
-
-                  {fileTree.length === 0 && (
-                    <div
-                      style={{
-                        padding: '8px 12px',
-                        fontSize: '11px',
-                        color: t.colors.text.muted,
-                        fontStyle: 'italic',
-                      }}
-                    >
-                      {activeWorkspace?.projectPath ? 'Loading directory...' : 'No project folder selected'}
-                    </div>
-                  )}
-
-                  {fileTree
-                    .sort((a, b) => (b.is_dir ? 1 : 0) - (a.is_dir ? 1 : 0) || a.name.localeCompare(b.name))
-                    .map((entry) => {
-                      const fullPath = fileTreePath ? `${fileTreePath}/${entry.name}` : entry.name;
-                      return (
-                        <div
-                          key={entry.name}
-                          className={`fb-item ${entry.is_dir ? 'fb-dir' : 'fb-file'}`}
-                          data-folder-path={entry.is_dir ? fullPath : undefined}
-                          draggable={true}
-                          onMouseDown={(e) => {
-                            beginDrag(e, {
-                              label: entry.name,
-                              path: fullPath,
-                              kind: entry.is_dir ? 'folder' : 'file',
-                            });
-                          }}
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData('text/plain', fullPath);
-                            e.dataTransfer.setData('application/x-tto-file', fullPath);
-                            e.dataTransfer.setData('text/uri-list', `file://${encodeURI(fullPath)}`);
-                            e.dataTransfer.effectAllowed = 'copyMove';
-
-                            try {
-                              const ghost = document.createElement('div');
-                              ghost.className = 'tto-drag-ghost';
-                              const emoji = entry.is_dir ? '📁' : '📄';
-                              ghost.textContent = `${emoji} ${entry.name}`;
-                              document.body.appendChild(ghost);
-                              e.dataTransfer.setDragImage(ghost, 0, 0);
-                              setTimeout(() => ghost.remove(), 0);
-                            } catch {}
-                          }}
+                <>
+                  {/* Search Input Bar */}
+                  <div style={{ padding: '2px 8px 6px 8px' }}>
+                    <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                      <Search
+                        size={12}
+                        style={{
+                          position: 'absolute',
+                          left: '8px',
+                          color: t.colors.text.muted,
+                          pointerEvents: 'none',
+                          opacity: 0.6,
+                        }}
+                      />
+                      <input
+                        type="text"
+                        value={fileSearchQuery}
+                        onChange={(e) => setFileSearchQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') {
+                            setFileSearchQuery('');
+                          } else if (e.key === 'Enter' && searchResults.length > 0) {
+                            const top = searchResults[0];
+                            if (top.is_dir) {
+                              navigateTo(top.path);
+                              setFileSearchQuery('');
+                            } else {
+                              onOpenFile(top.path, top.name);
+                            }
+                          }
+                        }}
+                        placeholder="Search files..."
+                        style={{
+                          width: '100%',
+                          height: '24px',
+                          background: t.colors.bg.tertiary,
+                          border: `1px solid ${t.colors.border.subtle || t.colors.border.primary}`,
+                          borderRadius: '4px',
+                          paddingLeft: '26px',
+                          paddingRight: fileSearchQuery ? '24px' : '8px',
+                          fontSize: '11px',
+                          color: t.colors.text.primary,
+                          outline: 'none',
+                          boxSizing: 'border-box',
+                          fontFamily: 'inherit',
+                          transition: 'border-color 0.15s ease',
+                        }}
+                        onFocus={(e) => {
+                          e.currentTarget.style.borderColor = t.colors.accent.primary;
+                        }}
+                        onBlur={(e) => {
+                          e.currentTarget.style.borderColor = t.colors.border.subtle || t.colors.border.primary;
+                        }}
+                      />
+                      {fileSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setFileSearchQuery('')}
                           style={{
+                            position: 'absolute',
+                            right: '6px',
+                            background: 'transparent',
+                            border: 'none',
+                            padding: '2px',
+                            cursor: 'pointer',
+                            color: t.colors.text.muted,
                             display: 'flex',
                             alignItems: 'center',
-                            gap: '6px',
-                            padding: '4px 8px 4px 16px',
-                            fontSize: '11.5px',
-                            color: entry.is_dir ? t.colors.text.secondary : t.colors.text.muted,
-                            cursor: 'grab',
-                            borderRadius: '4px',
-                            transition: 'all 0.12s ease',
-                            userSelect: 'none',
+                            justifyContent: 'center',
                           }}
-                          onClick={() => {
-                            if (consumeDrag()) return;
-                            if (entry.is_dir) {
-                              toggleDir(fullPath);
-                            } else {
-                              onOpenFile(fullPath, entry.name);
-                            }
-                          }}
-                          title={fullPath}
+                          title="Clear search (Esc)"
                         >
-                          {entry.is_dir ? <FolderIcon name={entry.name} open={false} size={14} /> : <FileRowIcon name={entry.name} />}
-                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {entry.name}
+                          <X size={11} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div
+                    className={`fb-tree${dragOverTree ? ' drag-over' : ''}`}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+                      setDragOverTree(true);
+                    }}
+                    onDragLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDragOverTree(false);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDragOverTree(false);
+                      const paths = extractDropPaths(e.dataTransfer);
+                      if (paths.length > 0) {
+                        if (onToast) onToast(`Received ${paths.length} file(s) in project folder`);
+                        if (fileTreePath) navigateTo(fileTreePath);
+                      }
+                    }}
+                    style={{
+                      maxHeight: '260px',
+                      overflowY: 'auto',
+                      position: 'relative',
+                      padding: '2px 0',
+                      borderRadius: '6px',
+                    }}
+                  >
+                    {dragOverTree && (
+                      <div className="fb-drop-overlay">
+                        <span>📂 Drop files here</span>
+                      </div>
+                    )}
+
+                    {fileSearchQuery.trim() ? (
+                      /* ── Search Results Mode ── */
+                      <>
+                        <div
+                          style={{
+                            padding: '2px 10px 4px 10px',
+                            fontSize: '10px',
+                            color: t.colors.text.muted,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            borderBottom: `1px solid ${t.colors.border.subtle || t.colors.border.primary}`,
+                            marginBottom: '2px',
+                          }}
+                        >
+                          <span>
+                            {isSearchingFiles
+                              ? 'Searching...'
+                              : `${searchResults.length} ${searchResults.length === 1 ? 'result' : 'results'}`}
                           </span>
                         </div>
-                      );
-                    })}
-                </div>
+
+                        {searchResults.length === 0 && !isSearchingFiles && (
+                          <div
+                            style={{
+                              padding: '12px 10px',
+                              fontSize: '11px',
+                              color: t.colors.text.muted,
+                              fontStyle: 'italic',
+                              textAlign: 'center',
+                            }}
+                          >
+                            No files found matching &quot;{fileSearchQuery}&quot;
+                          </div>
+                        )}
+
+                        {searchResults.map((item) =>
+                          renderFileRow(item.name, item.path, item.is_dir, item.rel_path, 'search')
+                        )}
+                      </>
+                    ) : (
+                      /* ── Standard Directory Tree Mode ── */
+                      <>
+                        {/* Up one level */}
+                        {fileTreePath && fileTreePath !== rootPathRef.current && (
+                          <button
+                            onClick={goUp}
+                            title={fileTreePath}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              width: '100%',
+                              padding: '4px 8px 4px 12px',
+                              background: 'transparent',
+                              border: 'none',
+                              fontSize: '11px',
+                              color: t.colors.text.secondary,
+                              cursor: 'pointer',
+                              textAlign: 'left',
+                              borderRadius: '4px',
+                              transition: 'background 0.12s ease',
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.background = t.colors.bg.hover;
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = 'transparent';
+                            }}
+                          >
+                            <span style={{ fontSize: '11px' }}>↑</span>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {baseName(fileTreePath)}
+                            </span>
+                          </button>
+                        )}
+
+                        {fileTree.length === 0 && (
+                          <div
+                            style={{
+                              padding: '8px 12px',
+                              fontSize: '11px',
+                              color: t.colors.text.muted,
+                              fontStyle: 'italic',
+                            }}
+                          >
+                            {activeWorkspace?.projectPath ? 'Loading directory...' : 'No project folder selected'}
+                          </div>
+                        )}
+
+                        {fileTree
+                          .sort((a, b) => (b.is_dir ? 1 : 0) - (a.is_dir ? 1 : 0) || a.name.localeCompare(b.name))
+                          .map((entry) => {
+                            const fullPath = fileTreePath ? `${fileTreePath}/${entry.name}` : entry.name;
+                            return renderFileRow(entry.name, fullPath, entry.is_dir, undefined, 'tree');
+                          })}
+                      </>
+                    )}
+                  </div>
+                </>
               )}
             </div>
           </div>

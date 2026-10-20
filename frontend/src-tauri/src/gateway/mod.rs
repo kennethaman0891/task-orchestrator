@@ -429,6 +429,31 @@ async fn handle_message(
     let _ = app;
 }
 
+/// SEC-FIX SEC-10: Sensitive path fragments that are never served via the Gateway
+/// file API, even though they live under $HOME.  Mirrors BLOCKED_PATH_FRAGMENTS
+/// in backend/remote/config.py so both layers enforce the same policy.
+const GATEWAY_BLOCKED_FRAGMENTS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".config/opencode",
+    "credentials",
+    ".env",
+    "id_rsa",
+    "id_ed25519",
+    ".netrc",
+    "key.pem",
+    "secret",
+    ".tto-web/state.json",
+];
+
+/// Returns true when the resolved path contains a sensitive fragment and must
+/// not be returned to a remote gateway client.
+fn is_gateway_blocked(path: &std::path::Path) -> bool {
+    let s = path.to_string_lossy().to_lowercase();
+    GATEWAY_BLOCKED_FRAGMENTS.iter().any(|frag| s.contains(frag))
+}
+
 /// Validate and canonicalize a path, enforcing that it resides strictly within $HOME.
 fn safe_resolve_path(raw_path: &str) -> Result<std::path::PathBuf, &'static str> {
     if raw_path.trim().is_empty() {
@@ -464,6 +489,10 @@ fn handle_file_list(path: &str) -> serde_json::Value {
         Err("access_denied") => return json!({ "ok": false, "error": "access_denied" }),
         Err(_) => return json!({ "ok": false, "error": "not_a_directory" }),
     };
+    // SEC-FIX SEC-10: block sensitive directories even within $HOME.
+    if is_gateway_blocked(&dir) {
+        return json!({ "ok": false, "error": "access_denied" });
+    }
     if !dir.is_dir() {
         return json!({ "ok": false, "error": "not_a_directory" });
     }
@@ -495,6 +524,12 @@ fn handle_file_read(path: &str) -> serde_json::Value {
         Err("access_denied") => return json!({ "ok": false, "error": "access_denied" }),
         Err(_) => return json!({ "ok": false, "error": "not_a_file" }),
     };
+    // SEC-FIX SEC-10: block sensitive files (SSH keys, .env, AWS creds…) even
+    // within $HOME — the $HOME boundary alone is not sufficient since credentials
+    // like ~/.ssh/id_rsa and ~/.env live there.
+    if is_gateway_blocked(&p) {
+        return json!({ "ok": false, "error": "access_denied" });
+    }
     if !p.is_file() {
         return json!({ "ok": false, "error": "not_a_file" });
     }
@@ -547,5 +582,46 @@ mod tests {
         let resp = handle_file_read(&traversal);
         assert_eq!(resp["ok"], false);
         assert_eq!(resp["error"], "access_denied");
+    }
+
+    // SEC-FIX SEC-10: verify the gateway blocklist guards sensitive files within $HOME.
+    #[test]
+    fn test_gateway_blocked_detects_ssh() {
+        let home = crate::home_dir();
+        let ssh_key = home.join(".ssh").join("id_rsa");
+        assert!(
+            is_gateway_blocked(&ssh_key),
+            ".ssh/id_rsa must be blocked by gateway blocklist"
+        );
+    }
+
+    #[test]
+    fn test_gateway_blocked_detects_env() {
+        let home = crate::home_dir();
+        let env_file = home.join(".env");
+        assert!(
+            is_gateway_blocked(&env_file),
+            ".env must be blocked by gateway blocklist"
+        );
+    }
+
+    #[test]
+    fn test_gateway_blocked_detects_aws_credentials() {
+        let home = crate::home_dir();
+        let creds = home.join(".aws").join("credentials");
+        assert!(
+            is_gateway_blocked(&creds),
+            ".aws/credentials must be blocked by gateway blocklist"
+        );
+    }
+
+    #[test]
+    fn test_gateway_blocked_allows_normal_file() {
+        let home = crate::home_dir();
+        let normal = home.join("Documents").join("notes.txt");
+        assert!(
+            !is_gateway_blocked(&normal),
+            "Documents/notes.txt must not be blocked"
+        );
     }
 }

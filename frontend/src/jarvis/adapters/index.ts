@@ -27,6 +27,19 @@ export function detectCLI(
   ttyAgent?: string,
   currentContext?: Partial<SessionContext>,
 ): CLIAdapterResult {
+  const p = (processCli || '').toLowerCase().trim();
+  const a = (ttyAgent || '').toLowerCase().trim();
+
+  // Phase 0: Ground Truth OS Process Inspection
+  // If the operating system or PTY explicitly reports that Antigravity is running,
+  // believe the process ground truth immediately.
+  if (p === 'antigravity' || p === 'agy' || p === 'jetski' || a === 'antigravity' || a === 'agy') {
+    const antigravityAdapter = ADAPTERS.find((ad) => ad.id === 'antigravity');
+    if (antigravityAdapter) {
+      return antigravityAdapter.parse(bufferLines, currentContext);
+    }
+  }
+
   // Phase 1: High-fidelity buffer detection (active screen ground truth).
   // Check ALL adapters that implement detectBuffer, and pick the one with the
   // strongest evidence (highest match count). This prevents a single shared
@@ -84,9 +97,14 @@ function scoreBufferMatch(adapterId: string, bufferLines: string[]): number {
       /antigravity-cli/i,
       /google\s+antigravity/i,
       /google\s+deepmind/i,
+      /advanced agentic coding/i,
+      /BypassSandbox/i,
+      /Requesting permission for:/i,
       /\/goal\b/i,
       /\/boost\b/i,
       /\/grill-me\b/i,
+      /\/teamwork\b/i,
+      /thought for\s+\d+/i,
     ];
     for (const p of patterns) { if (p.test(text)) score++; }
   } else if (adapterId === 'codex') {
@@ -119,17 +137,19 @@ function scoreBufferMatch(adapterId: string, bufferLines: string[]): number {
     ];
     for (const p of patterns) { if (p.test(text)) score++; }
   } else if (adapterId === 'claude') {
+    // If text contains Antigravity signatures, disqualify Claude completely
+    if (/\bantigravity\b|\bagy\b|google\s+(antigravity|deepmind)|advanced agentic coding|BypassSandbox/i.test(text)) {
+      return 0;
+    }
     const patterns = [
-      /claude\s+code\s+v\d+/i,
+      /claude\s+code\b/i,
       /anthropics?\/claude\b/i,
+      /@anthropic-ai\/claude/i,
+      /welcome to claude\b/i,
       /\bauto mode on\b/i,
       /shift\+tab to cycle\b/i,
       /api usage billing\b/i,
-      /thought for\s+\d+/i,
-      /bypass permissions\b/i,
-      /compact mode\b/i,
       /laguna-/i,
-      /security-review\b/i,
     ];
     for (const p of patterns) { if (p.test(text)) score++; }
   } else if (adapterId === 'gemini') {

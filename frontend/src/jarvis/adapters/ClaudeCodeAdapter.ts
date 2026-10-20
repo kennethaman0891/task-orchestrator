@@ -5,19 +5,36 @@ export class ClaudeCodeAdapter implements ICLIAdapter {
   name = 'Claude Code';
 
   detect(bufferLines: string[], processCli?: string, ttyAgent?: string): boolean {
+    // 0. Hard disqualification: if the process or buffer belongs to Antigravity, never match Claude!
+    const p = (processCli || '').toLowerCase();
+    const a = (ttyAgent || '').toLowerCase();
+    if (
+      p.includes('antigravity') ||
+      p.includes('agy') ||
+      a.includes('antigravity') ||
+      a.includes('agy') ||
+      p.includes('jetski') ||
+      a.includes('jetski')
+    ) {
+      return false;
+    }
+
     // 1. Buffer evidence is the active ground truth of what is rendered on screen
     if (this.detectBuffer(bufferLines)) return true;
 
     // 2. Metadata fallback when buffer is empty/initializing
-    const p = (processCli || '').toLowerCase();
-    const a = (ttyAgent || '').toLowerCase();
     return p.includes('claude') || a.includes('claude');
   }
 
   detectBuffer(bufferLines: string[]): boolean {
     if (!bufferLines || bufferLines.length === 0) return false;
     const text = bufferLines.join('\n');
-    return /claude\s+code\s+v\d+|anthropics?\/claude\b|welcome to claude\b|\bauto mode on\b|shift\+tab to cycle\b|thought for\s+\d+|bypass permissions\b|compact mode\b|api usage billing\b|security-review\b/i.test(text);
+    // If text explicitly mentions antigravity, agy, or google deepmind, DO NOT hijack as Claude!
+    if (/\bantigravity\b|\bagy\b|google\s+antigravity|google\s+deepmind|advanced agentic coding|BypassSandbox/i.test(text)) {
+      return false;
+    }
+    // Only match strictly Claude-specific signatures (never generic terms like 'thought for' or 'bypass permissions')
+    return /claude\s+code\b|anthropics?\/claude\b|welcome to claude\b|@anthropic-ai\/claude|\bauto mode on\b|shift\+tab to cycle\b|api usage billing\b/i.test(text);
   }
 
 

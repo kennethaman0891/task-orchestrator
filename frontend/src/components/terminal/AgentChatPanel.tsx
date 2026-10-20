@@ -867,7 +867,9 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
   const detected = detectCLI(recentLines, entry.cli, entry.agent);
 
   const effectiveCli =
-    entry.claude_running
+    entry.antigravity_running || entry.cli === 'antigravity' || entry.agent === 'antigravity'
+      ? 'antigravity'
+      : entry.claude_running
       ? 'claude'
       : entry.opencode_running
       ? 'opencode'

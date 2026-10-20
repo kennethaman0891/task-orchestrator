@@ -1,7 +1,7 @@
 import { createServer } from 'node:https';
 import { createServer as createHttpServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { join, extname } from 'node:path';
+import { join, extname, resolve, sep } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { GatewayConfig } from './config.js';
 import type { Store } from './store.js';
@@ -486,9 +486,10 @@ function serveStatic(
   res: import('node:http').ServerResponse,
 ) {
   let rel = url === '/' ? '/index.html' : url;
-  // Basic traversal guard.
-  const target = join(root, rel);
-  if (!target.startsWith(root)) {
+  // Strict traversal guard against directory traversal and sibling directory access.
+  const resolvedRoot = resolve(root);
+  const target = resolve(root, '.' + rel);
+  if (target !== resolvedRoot && !target.startsWith(resolvedRoot + sep)) {
     res.writeHead(403, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'forbidden' }));
     return;

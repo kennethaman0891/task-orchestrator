@@ -12,6 +12,7 @@ import shlex
 import socket
 import struct
 import subprocess
+import logging
 import sys
 import time
 import shutil
@@ -70,22 +71,28 @@ _ensure_path_environment()
 
 
 def _load_dotenv_file() -> None:
-    """Minimal .env loader (no dependency): reads KEY=VALUE lines from a .env
-    next to this file and fills any env vars that aren't already set."""
-    try:
-        env_path = Path(__file__).resolve().parent / ".env"
-        if not env_path.exists():
-            return
-        for line in env_path.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
+    """Minimal .env loader: reads KEY=VALUE lines from .env files and fills any env vars."""
+    candidates = [
+        Path(__file__).resolve().parent / ".env",
+        Path.cwd() / "backend" / ".env",
+        Path.cwd() / ".env",
+        Path.home() / "VoiceFlow" / ".env",
+        Path.home() / ".tto" / ".env",
+    ]
+    for env_path in candidates:
+        try:
+            if not env_path.exists():
                 continue
-            key, _, val = line.partition("=")
-            key = key.strip()
-            if key and key not in os.environ:
-                os.environ[key] = val.strip().strip('"').strip("'")
-    except Exception:
-        pass
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                if key and key not in os.environ:
+                    os.environ[key] = val.strip().strip('"').strip("'")
+        except Exception:
+            pass
 
 
 _load_dotenv_file()
@@ -212,6 +219,33 @@ def _origin_allowed(origin: Optional[str]) -> bool:
     return False
 
 
+def _is_valid_host(host_header: Optional[str]) -> bool:
+    """Validate Host header to prevent DNS rebinding attacks.
+
+    Rejects requests where the Host header resolves to external or rebinding domains.
+    Allows localhost, 127.0.0.1, ::1, testserver, and *.localhost.
+    When LAN access is enabled in collab settings, numeric IP addresses are also permitted.
+    """
+    if not host_header:
+        return False
+    host = host_header.split(":")[0].strip().lower()
+    allowed_default = {"localhost", "127.0.0.1", "::1", "testserver"}
+    if host in allowed_default or host.endswith(".localhost"):
+        return True
+    try:
+        store = get_collab_store()
+        if store.is_lan_allowed():
+            import ipaddress
+            try:
+                ipaddress.ip_address(host)
+                return True
+            except ValueError:
+                pass
+    except Exception:
+        pass
+    return False
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if _cors_wildcard else _cors_origins,
@@ -219,6 +253,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _trusted_host_guard(request: Request, call_next):
+    """Enforce trusted host header to defend against DNS rebinding."""
+    host = request.headers.get("host")
+    if not _is_valid_host(host):
+        return JSONResponse({"detail": "invalid host header"}, status_code=400)
+    return await call_next(request)
 # Security headers middleware
 @app.middleware("http")
 async def _security_headers_middleware(request: Request, call_next):
@@ -303,12 +346,20 @@ async def _collab_auth_middleware(request: Request, call_next):
 
 
 async def _ws_origin_ok(websocket: WebSocket) -> bool:
-    """Reject a WebSocket handshake from a disallowed browser Origin.
+    """Reject a WebSocket handshake from a disallowed Host or browser Origin.
 
     WebSockets are NOT covered by CORS, so without this any web page could open
     ws://localhost:8765/... and drive terminals.  Same policy as the HTTP guard:
     a present-but-disallowed Origin is refused; a missing Origin (native Rust
     relay / Python agent clients) is allowed."""
+    host = websocket.headers.get("host")
+    if not _is_valid_host(host):
+        print(f"[ws] REJECTED invalid host={host!r} path={websocket.url.path}", flush=True)
+        try:
+            await websocket.close(code=1008, reason="invalid host header")
+        except Exception:
+            pass
+        return False
     origin = websocket.headers.get("origin")
     if _origin_allowed(origin):
         return True
@@ -874,14 +925,7 @@ def _stt_error(status_code: int, model: str, provider: str = "voice provider", e
 
 @app.post("/api/voice/transcribe")
 async def voice_transcribe(request: Request):
-    """Transcribe an audio blob (webm/ogg/wav) to text for the mic button."""
-    prov = _stt_provider()
-    if not prov:
-        raise HTTPException(
-            503,
-            "No speech-to-text provider configured. Add an OpenRouter key in "
-            "opencode (opencode auth login) or set TTO_STT_URL/TTO_STT_KEY.",
-        )
+    """Transcribe an audio blob (webm/ogg/wav/mp4) to text."""
     ctype = request.headers.get("content-type", "application/octet-stream")
     audio = await request.body()
     if not audio:
@@ -889,78 +933,409 @@ async def voice_transcribe(request: Request):
     if len(audio) > 25 * 1024 * 1024:
         raise HTTPException(413, "Audio too large (25 MB max)")
 
-    # Normalize to WAV so provider format hangs disappear; fall back to the
-    # original content type when normalization isn't possible.
+    # Normalize to WAV so provider format hangs disappear
     wav = _stt_to_wav(audio)
     b64 = base64.b64encode(wav).decode("ascii")
     fmt = "wav" if wav is not audio else _stt_format(ctype)
 
-    candidates = _stt_model_candidates(prov)
-    if not candidates:
-        raise HTTPException(502, "Voice provider has no STT model configured.")
-
+    prov = _stt_provider()
     errors: list = []
-    if prov.get("provider") in ("groq", "openai"):
-        # ── VoiceFlow / OpenAI path: multipart WAV upload to Whisper ──────────
-        for model in candidates:
-            try:
-                endpoint = prov.get("url") or "https://api.groq.com/openai/v1/audio/transcriptions"
-                text = _stt_transcribe_multipart(endpoint, prov["key"], wav, model)
-                if text:
-                    return {"ok": True, "text": text, "provider": prov["provider"], "model": model}
-                errors.append(f"{model}: provider returned no text")
-            except urllib.error.HTTPError as he:
-                extra = ""
+
+    if prov:
+        candidates = _stt_model_candidates(prov)
+        if prov.get("provider") in ("groq", "openai"):
+            for model in candidates:
                 try:
-                    err_json = json.loads(he.read().decode("utf-8", "replace"))
-                    msg = (err_json.get("error") or {}).get("message") or ""
-                    if msg:
-                        extra = msg[:220]
+                    endpoint = prov.get("url") or "https://api.groq.com/openai/v1/audio/transcriptions"
+                    text = _stt_transcribe_multipart(endpoint, prov["key"], wav, model)
+                    if text:
+                        return {"ok": True, "text": text, "provider": prov["provider"], "model": model}
+                    errors.append(f"{model}: provider returned no text")
+                except urllib.error.HTTPError as he:
+                    extra = ""
+                    try:
+                        err_json = json.loads(he.read().decode("utf-8", "replace"))
+                        msg = (err_json.get("error") or {}).get("message") or ""
+                        if msg:
+                            extra = msg[:220]
+                    except Exception:
+                        pass
+                    errors.append(_stt_error(he.code, model, prov["provider"], extra))
+                except Exception as exc:
+                    errors.append(f"{model}: {exc}")
+        elif prov.get("provider") == "openrouter":
+            for model in candidates:
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Transcribe this audio. Reply with ONLY the exact words spoken, no commentary."},
+                                {"type": "input_audio", "input_audio": {"data": b64, "format": fmt}},
+                            ],
+                        }
+                    ],
+                    "max_tokens": 800,
+                }
+                req = urllib.request.Request(
+                    prov["url"],
+                    data=json.dumps(payload).encode(),
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {prov['key']}"},
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=60) as resp:
+                        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                    text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "").strip()
+                    if text:
+                        return {"ok": True, "text": text, "provider": prov["provider"], "model": model}
+                    errors.append(f"{model}: provider returned no text")
+                except urllib.error.HTTPError as he:
+                    errors.append(_stt_error(he.code, model, prov.get("provider", "")))
+                except Exception as exc:
+                    errors.append(f"{model}: {exc}")
+
+    # Fallback to local faster-whisper if cloud providers failed or aren't configured
+    try:
+        import tempfile
+        from remote.whisper_local import _transcribe_audio
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+            tf.write(wav)
+            tf.flush()
+            tmp_path = tf.name
+        try:
+            local_text = _transcribe_audio(tmp_path)
+            if local_text and local_text.strip():
+                return {"ok": True, "text": local_text.strip(), "provider": "local_whisper", "model": "faster-whisper"}
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
                 except Exception:
                     pass
-                if he.code in (401, 402, 403, 429):
-                    raise HTTPException(502, _stt_error(he.code, model, prov["provider"], extra))
-                errors.append(_stt_error(he.code, model, prov["provider"], extra))
-            except Exception as exc:  # network / timeout / parse
-                errors.append(f"{model}: {exc}")
-        raise HTTPException(502, "Voice transcription failed: " + " | ".join(errors))
+    except Exception as exc:
+        errors.append(f"local_whisper: {exc}")
 
-    for model in candidates:
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Transcribe this audio. Reply with ONLY the exact words spoken, no commentary."},
-                        {"type": "input_audio", "input_audio": {"data": b64, "format": fmt}},
-                    ],
-                }
-            ],
-            "max_tokens": 800,
-        }
-        req = urllib.request.Request(
-            prov["url"],
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {prov['key']}"},
+    if not prov and not errors:
+        raise HTTPException(
+            503,
+            "No speech-to-text provider configured. Add an OpenRouter/Groq key in .env or set TTO_STT_URL.",
         )
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="replace"))
-            text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "").strip()
-            if text:
-                return {"ok": True, "text": text, "provider": prov["provider"], "model": model}
-            errors.append(f"{model}: provider returned no text")
-        except urllib.error.HTTPError as he:
-            # Hard stops: retrying other models won't fix bad keys or missing
-            # credits. Soft stops (404 model / 400 format) try the next model.
-            if he.code in (401, 402, 403, 429):
-                raise HTTPException(502, _stt_error(he.code, model, prov.get("provider", "")))
-            errors.append(_stt_error(he.code, model, prov.get("provider", "")))
-        except Exception as exc:  # network / timeout / parse
-            errors.append(f"{model}: {exc}")
-
     raise HTTPException(502, "Voice transcription failed: " + " | ".join(errors))
+
+
+# ── Native Speech Synthesis (TTS) ──────────────────────────────────────────
+_current_say_process = None
+
+@app.post("/api/voice/speak")
+async def voice_speak(request: Request):
+    """Synthesize text to speech using macOS native voice for 100% reliable desktop audio with volume control."""
+    global _current_say_process
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    text = (body.get("text") or "").strip()
+    if not text:
+        return {"ok": False, "error": "Empty text"}
+    
+    # Volume control (0 - 100)
+    volume = body.get("volume", 80)
+    try:
+        volume = int(volume)
+    except Exception:
+        volume = 80
+    if volume <= 0:
+        return {"ok": True, "muted": True, "volume": 0}
+    
+    vol_float = max(0.05, min(1.0, float(volume) / 100.0))
+    voice = body.get("voice") or "Daniel"
+    
+    import platform
+    if platform.system() == "Darwin":
+        if _current_say_process and _current_say_process.poll() is None:
+            try:
+                _current_say_process.terminate()
+            except Exception:
+                pass
+        
+        # Clean text of quotes and special characters
+        clean_text = text.replace('"', '').replace('`', '').replace('$', '').strip()
+        # Embed native macOS speech volume tag [[volm 0.XX]]
+        safe_text = f"[[volm {vol_float:.2f}]] {clean_text}"
+        try:
+            _current_say_process = subprocess.Popen(["/usr/bin/say", "-v", voice, safe_text])
+            return {"ok": True, "method": "say", "voice": voice, "volume": volume}
+        except Exception as e:
+            try:
+                _current_say_process = subprocess.Popen(["/usr/bin/say", safe_text])
+                return {"ok": True, "method": "say_default", "error": str(e), "volume": volume}
+            except Exception as e2:
+                return {"ok": False, "error": str(e2)}
+
+    return {"ok": False, "error": "Native TTS not available on this platform"}
+
+
+@app.post("/api/voice/stop_speak")
+async def voice_stop_speak():
+    """Stop any currently playing speech."""
+    global _current_say_process
+    if _current_say_process and _current_say_process.poll() is None:
+        try:
+            _current_say_process.terminate()
+        except Exception:
+            pass
+    import platform
+    if platform.system() == "Darwin":
+        try:
+            subprocess.run(["pkill", "-f", "/usr/bin/say"], stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+# ── Jarvis Autonomous Agentic Coding Reasoner ──────────────────────────────
+@app.post("/api/jarvis/reason")
+async def jarvis_reason(request: Request):
+    """
+    Intelligent Agentic Reasoning for Jarvis per-terminal developer agent.
+    Deeply analyzes live terminal buffer, active CLI (e.g. Antigravity), working memory,
+    and user speech to determine:
+    1. Conversational advice / error explanation / code guidance (spoken, no terminal spam)
+    2. Permission decision / safety evaluation
+    3. Orchestrated coding tasks for Antigravity CLI
+    4. Direct shell command execution
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    terminal_id = body.get("terminal_id", "")
+    user_message = (body.get("user_message") or "").strip()
+    cli_name = body.get("cli_name") or "Antigravity"
+    project = body.get("project") or "this project"
+    cwd = body.get("cwd") or ""
+    buffer = (body.get("buffer") or "").strip()
+    working_memory = body.get("working_memory") or {}
+    pending_prompt = body.get("pending_prompt") or None
+    recent_errors = working_memory.get("errors") or []
+    recent_actions = working_memory.get("recent_actions") or []
+
+    if not user_message:
+        return {
+            "intent": "advice",
+            "spoken_response": "I'm listening. Ask a question, give a task, or ask about permissions.",
+            "action_command": "",
+            "should_execute": False,
+            "analysis": "Empty speech",
+        }
+
+    # 1. Quick Local Rule Check for Pending Permissions (Bypass LLM for instant 5ms latency)
+    msg_lower = user_message.lower().strip()
+    if pending_prompt:
+        # Check direct confirmation words
+        if re.match(r"^(yes|yep|yeah|sure|allow|approve|run|go ahead|proceed|confirm|ok|okay|1|one)\b", msg_lower):
+            return {
+                "intent": "permission_decision",
+                "spoken_response": "Approved option 1. Running the command now.",
+                "action_command": "1",
+                "should_execute": True,
+                "analysis": "User approved option 1",
+            }
+        if re.match(r"^(always|always allow|2|two)\b", msg_lower):
+            return {
+                "intent": "permission_decision",
+                "spoken_response": "Approved and saved to always allow. Continuing.",
+                "action_command": "2",
+                "should_execute": True,
+                "analysis": "User approved always allow (option 2)",
+            }
+        if re.match(r"^(no|nope|cancel|deny|reject|abort|stop|don't|dont|4|four)\b", msg_lower):
+            return {
+                "intent": "permission_decision",
+                "spoken_response": "Cancelled the requested command.",
+                "action_command": "cancel",
+                "should_execute": True,
+                "analysis": "User cancelled the command",
+            }
+
+    # 2. System Prompt for Autonomous Agentic Developer Intelligence
+    system_prompt = f"""You are Jarvis, an elite autonomous AI developer and pair programming agent operating inside Task Orchestrator.
+You are directly observing terminal {terminal_id} running {cli_name} in project "{project}" (working directory: {cwd}).
+
+YOUR MISSION:
+You are NOT a simple text conduit or dumb pipe. You possess deep software engineering intelligence and autonomous agency.
+You evaluate the user's voice query against the live terminal buffer, recent errors, and active tool calls.
+You decide whether to:
+1. Answer a question, explain an error, or advise the user (intent="advice", should_execute=false). DO NOT send this to the terminal!
+2. Advise on a pending permission/tool execution (intent="permission_decision").
+3. Orchestrate a coding task for {cli_name} (intent="orchestrate_cli", should_execute=true). Formulate a clear, specific, expert prompt for {cli_name}.
+4. Run an explicit shell command (intent="execute_shell", should_execute=true).
+
+CURRENT TERMINAL CONTEXT:
+- Active CLI: {cli_name}
+- Pending Permission/Prompt: {json.dumps(pending_prompt) if pending_prompt else "None"}
+- Recent Detected Errors: {json.dumps(recent_errors[:3]) if recent_errors else "None"}
+- Recent Actions: {json.dumps(recent_actions[:3]) if recent_actions else "None"}
+- Live Terminal Buffer (recent lines):
+\"\"\"{buffer[-2500:] if buffer else "No active output"}\"\"\"
+
+RESPONSE REQUIREMENTS:
+Output ONLY valid JSON matching this schema:
+{{
+  "intent": "advice" | "permission_decision" | "orchestrate_cli" | "execute_shell",
+  "spoken_response": "1-2 concise, natural sentences spoken aloud by Jarvis. Professional, direct, developer-focused. NO markdown, NO asterisks.",
+  "action_command": "Refined prompt for {cli_name} (if orchestrate_cli) or shell command (if execute_shell), or empty string",
+  "should_execute": true or false,
+  "analysis": "Brief 1-sentence technical reasoning of why you took this action"
+}}"""
+
+    user_prompt = f"User Voice Input: \"{user_message}\""
+
+    # 3. Call LLM (Groq -> Gemini -> OpenAI -> Local Fallback)
+    groq_api_key = os.getenv("TTO_GROQ_API_KEY", "").strip()
+    if not groq_api_key and os.path.exists("backend/.env"):
+        try:
+            with open("backend/.env", "r") as f:
+                for line in f:
+                    if line.startswith("TTO_GROQ_API_KEY="):
+                        groq_api_key = line.split("=", 1)[1].strip()
+        except Exception:
+            pass
+
+    # Try Groq API (ultra-fast 200ms inference)
+    if groq_api_key:
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                res = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {groq_api_key}",
+                        "Content-Type": "application/json",
+                        "User-Agent": "TaskOrchestrator/2.3 (Macintosh; Apple Silicon)",
+                    },
+                    json={
+                        "model": "qwen/qwen3.8-27b",
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        "response_format": {"type": "json_object"},
+                        "temperature": 0.2,
+                        "max_tokens": 250,
+                    },
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    content = data["choices"][0]["message"]["content"]
+                    parsed = json.loads(content)
+                    return {
+                        "intent": parsed.get("intent", "advice"),
+                        "spoken_response": parsed.get("spoken_response", f"Understood: {user_message}"),
+                        "action_command": parsed.get("action_command", ""),
+                        "should_execute": bool(parsed.get("should_execute", False)),
+                        "analysis": parsed.get("analysis", "Groq Qwen reasoning"),
+                        "provider": "groq",
+                    }
+        except Exception as e:
+            logging.warning(f"[jarvis_reason] Groq call failed: {e}")
+
+    # Try Gemini API if available
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if gemini_key:
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
+                res = await client.post(
+                    url,
+                    headers={"User-Agent": "TaskOrchestrator/2.3 (Macintosh; Apple Silicon)"},
+                    json={
+                        "contents": [
+                            {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}
+                        ],
+                        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2},
+                    },
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    raw = data["candidates"][0]["content"]["parts"][0]["text"]
+                    parsed = json.loads(raw)
+                    return {
+                        "intent": parsed.get("intent", "advice"),
+                        "spoken_response": parsed.get("spoken_response", f"Understood: {user_message}"),
+                        "action_command": parsed.get("action_command", ""),
+                        "should_execute": bool(parsed.get("should_execute", False)),
+                        "analysis": parsed.get("analysis", "Gemini Flash reasoning"),
+                        "provider": "gemini",
+                    }
+        except Exception as e:
+            logging.warning(f"[jarvis_reason] Gemini call failed: {e}")
+
+    # 4. Intelligent Offline Agentic Reasoner Fallback
+    # If no LLM available or network offline, use rich contextual reasoning
+    if pending_prompt:
+        cmd = pending_prompt.get("command") or ""
+        q = pending_prompt.get("question") or ""
+        if "safe" in msg_lower or "should" in msg_lower or "what is" in msg_lower:
+            is_safe = not any(w in cmd.lower() for w in ["rm -rf", "drop", "--force", "delete"])
+            advice = "The command is safe to run in this workspace." if is_safe else "Caution: this command may delete or overwrite files."
+            return {
+                "intent": "advice",
+                "spoken_response": f"{cli_name} wants to run: {cmd[:60]}. {advice} Say 'yes' to allow or 'no' to cancel.",
+                "action_command": "",
+                "should_execute": False,
+                "analysis": "Permission safety evaluation",
+            }
+
+    if any(q in msg_lower for q in ["what are you doing", "what's running", "what is running", "status", "how is it going"]):
+        act = working_memory.get("current_activity") or "idle"
+        state = working_memory.get("current_state") or "observing"
+        return {
+            "intent": "advice",
+            "spoken_response": f"{cli_name} is in {state} state on {project}. Current activity: {act}.",
+            "action_command": "",
+            "should_execute": False,
+            "analysis": "Status inquiry",
+        }
+
+    if any(q in msg_lower for q in ["why did it fail", "why did that fail", "explain error", "what error", "check why"]):
+        if recent_errors:
+            err = recent_errors[0]
+            return {
+                "intent": "advice",
+                "spoken_response": f"The error is: {err[:120]}. Let me know if you want me to tell {cli_name} to fix it.",
+                "action_command": "",
+                "should_execute": False,
+                "analysis": "Error explanation",
+            }
+        return {
+            "intent": "advice",
+            "spoken_response": f"I don't see any active errors in the terminal buffer right now.",
+            "action_command": "",
+            "should_execute": False,
+            "analysis": "No errors found",
+        }
+
+    # If user gave a task to build, fix, refactor, or test
+    is_cli = any(w in cli_name.lower() for w in ["antigravity", "agy", "claude", "codex", "opencode"])
+    if is_cli:
+        return {
+            "intent": "orchestrate_cli",
+            "spoken_response": f"Instructing {cli_name} to {user_message}.",
+            "action_command": user_message,
+            "should_execute": True,
+            "analysis": f"Orchestrating task for {cli_name}",
+        }
+
+    # Shell command execution
+    return {
+        "intent": "execute_shell",
+        "spoken_response": f"Running: {user_message}",
+        "action_command": user_message,
+        "should_execute": True,
+        "analysis": "Shell execution",
+    }
 
 
 @app.get("/api/browse")
@@ -1074,6 +1449,15 @@ async def browse_proxy(url: str = ""):
             body = html.encode(charset, errors="replace")
         except Exception:
             pass  # Non-decodable HTML — serve as-is
+
+    # SEC-FIX SEC-07: add frame-ancestors so the proxied page can only be
+    # embedded inside this app (not by a third-party page for clickjacking).
+    # Override the global X-Frame-Options: DENY from _security_headers_middleware —
+    # the browse endpoint is intentionally rendered inside an <iframe> in the UI.
+    resp_headers["Content-Security-Policy"] = (
+        "frame-ancestors 'self' tauri://localhost https://tauri.localhost"
+    )
+    resp_headers["X-Frame-Options"] = "SAMEORIGIN"
 
     return StreamingResponse(
         io.BytesIO(body),
@@ -1702,6 +2086,8 @@ opencode_pids: Dict[str, int] = {}
 # frontend to show ASKING when the CLI pauses for a permission/question
 # inside its TUI (Claude Code stores sessions separately from opencode).
 claude_pids: Dict[str, int] = {}
+# tty -> pid of Antigravity running on that tty (0 = none).
+antigravity_pids: Dict[str, int] = {}
 
 # Native Rust sessions pushed by the desktop app: session_id -> {tty, cwd, agent}.
 # Lets API calls that arrive with a Rust session id (e.g. from the mobile web
@@ -1742,6 +2128,8 @@ def terminal_payload(tty: str, t: TerminalState) -> dict:
         "opencode_pid": opencode_pids.get(tty, 0),
         "claude_running": tty in claude_pids,
         "claude_pid": claude_pids.get(tty, 0),
+        "antigravity_running": tty in antigravity_pids,
+        "antigravity_pid": antigravity_pids.get(tty, 0),
         "opencode_status": _opencode_live_status(tty),
         "current_task": t.current_task.model_dump() if t.current_task else None,
         "next_task": t.next_task.model_dump() if t.next_task else None,
@@ -2174,6 +2562,7 @@ async def scan_terminals():
     opencode_models.clear()
     opencode_pids.clear()
     claude_pids.clear()
+    antigravity_pids.clear()
     for tty, procs in by_tty.items():
         for p in procs:
             args = p["cmd"].split()
@@ -2181,11 +2570,22 @@ async def scan_terminals():
                 continue
             # Match the opencode binary itself (argv[0]) OR a runner like
             # `npx opencode` / `bunx opencode` (argv[1]).
-            base0 = args[0].split("/")[-1]
-            arg1 = args[1].split("/")[-1] if len(args) >= 2 else ""
-            is_claude = base0 == "claude" or (
-                base0 in ("npx", "bunx", "npm", "yarn", "pnpm", "node", "bun", "deno")
-                and arg1 == "claude"
+            base0 = args[0].split("/")[-1].lower()
+            arg1 = args[1].split("/")[-1].lower() if len(args) >= 2 else ""
+
+            is_antigravity = (
+                base0 in ("agy", "antigravity", "jetski")
+                or "antigravity" in base0
+                or (base0 in ("npx", "bunx", "npm", "yarn", "pnpm", "node", "bun", "deno", "python", "python3") and ("antigravity" in arg1 or "agy" in arg1))
+            )
+            if is_antigravity:
+                antigravity_pids[tty] = p["pid"]
+
+            is_claude = not is_antigravity and (
+                base0 == "claude" or (
+                    base0 in ("npx", "bunx", "npm", "yarn", "pnpm", "node", "bun", "deno")
+                    and arg1 == "claude"
+                )
             )
             if is_claude:
                 claude_pids[tty] = p["pid"]
@@ -2563,13 +2963,26 @@ class CommandRequest(BaseModel):
 @app.post("/api/terminals/{tty}/send-file")
 async def send_file_to_terminal(tty: str, payload: SendFileRequest):
     """Send a file's contents into the terminal's PTY."""
+    # SEC-FIX NEW-02: validate the tty identifier before looking it up,
+    # mirroring the _valid_tty guard used on /ws/terminal/{tty}.
+    if not _valid_tty(tty):
+        raise HTTPException(400, "Invalid tty identifier")
     if tty not in terminals:
         raise HTTPException(404, "Terminal not found")
     file_path = payload.file_path.strip()
     if not file_path:
         raise HTTPException(400, "file_path is required")
+    # SEC-FIX SEC-06: resolve the path and block sensitive files before reading.
+    # Previously this endpoint read any path supplied with no restriction at all,
+    # allowing exfiltration of ~/.ssh/id_rsa, .env, AWS credentials, etc.
     try:
-        content = Path(file_path).read_bytes()
+        p = _safe_path(file_path)
+    except HTTPException:
+        raise
+    if _is_blocked_path(p):
+        raise HTTPException(403, "Access denied: sensitive file")
+    try:
+        content = p.read_bytes()
     except FileNotFoundError:
         raise HTTPException(404, f"File not found: {file_path}")
     except PermissionError:
@@ -5427,11 +5840,29 @@ async def search_project_files(path: str = "", query: str = "", limit: int = 100
                 if d not in _DJANGO_SKIP_DIRS and not d.startswith(".")
             ]
 
+            for d in list(dirnames):
+                if q in d.lower():
+                    full_d = Path(dirpath) / d
+                    if _is_blocked_path(full_d):
+                        continue
+                    try:
+                        rel = os.path.relpath(str(full_d), str(root))
+                    except ValueError:
+                        rel = d
+                    matches.append({
+                        "name": d,
+                        "path": str(full_d),
+                        "rel_path": rel,
+                        "is_dir": True,
+                    })
+                    if len(matches) >= limit:
+                        break
+
             for fname in filenames:
                 scanned += 1
                 if scanned > max_scan:
                     break
-                if fname.startswith("."):
+                if fname in {".DS_Store", "Thumbs.db"} or fname.endswith(".tmp") or fname.endswith(".swp"):
                     continue
 
                 if q in fname.lower():
@@ -5757,7 +6188,7 @@ def _run_git(git_root: Path, args: list) -> tuple[int, str, str]:
 def _repo_root(workspace: str = "") -> Optional[Path]:
     """Locate the git repo the given workspace path belongs to.
 
-    Git operations must run against the OPEN WORKSPACE repo, not \$HOME.  Falls
+    Git operations must run against the OPEN WORKSPACE repo, not $HOME.  Falls
     back to the home directory only when no workspace path is supplied.
     """
     target = _safe_path(workspace) if (workspace or "").strip() else Path.home()
@@ -6172,6 +6603,9 @@ async def commit_changes(payload: dict = Body(default={})):
 
 import zipfile as _zipfile
 
+MAX_PROJECT_UPLOAD_BYTES = 500 * 1024 * 1024        # 500 MB compressed
+MAX_PROJECT_DECOMPRESS_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB uncompressed
+
 @app.post("/api/project/upload")
 async def upload_project(file: UploadFile = File(...)):
     """Accept a .zip project archive, extract it under ~/tto-projects/<uuid>/,
@@ -6183,13 +6617,32 @@ async def upload_project(file: UploadFile = File(...)):
     dest = base / uuid.uuid4().hex[:12]
     dest.mkdir(parents=True, exist_ok=True)
     zip_path = dest / file.filename
+
+    # SEC-FIX SEC-09 (part 1): stream upload chunks to disk instead of buffering
+    # the entire body in RAM before the size check.  This prevents a ~500 MB
+    # memory spike from a large upload and enforces the cap incrementally.
+    received = 0
     try:
-        content = await file.read()
-        if len(content) > 500 * 1024 * 1024:  # 500 MB safety cap
-            raise HTTPException(413, "Archive too large (max 500 MB)")
-        zip_path.write_bytes(content)
-        dest_resolved = dest.resolve()
+        with zip_path.open("wb") as fout:
+            async for chunk in file:
+                received += len(chunk)
+                if received > MAX_PROJECT_UPLOAD_BYTES:
+                    raise HTTPException(413, "Archive too large (max 500 MB)")
+                fout.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Failed to save archive: {e}")
+
+    dest_resolved = dest.resolve()
+    try:
         with _zipfile.ZipFile(zip_path) as zf:
+            # SEC-FIX SEC-09 (part 2): zip-bomb guard — validate total
+            # uncompressed size BEFORE extracting so a 1 KB zip that expands
+            # to hundreds of GB cannot fill the disk.
+            total_uncompressed = sum(m.file_size for m in zf.infolist())
+            if total_uncompressed > MAX_PROJECT_DECOMPRESS_BYTES:
+                raise HTTPException(413, "Archive expands beyond 2 GB limit (zip bomb protection)")
             # Zip-slip guard: never write outside the destination root. Uses
             # path-component containment (relative_to), not a string prefix, so
             # a sibling dir like "<dest>-x" can't slip through a startswith().
@@ -7729,11 +8182,28 @@ async def serve_start(payload: dict):
     if not project_path:
         raise HTTPException(400, "path is required")
 
-    p = Path(project_path).resolve()
+    # SEC-FIX SEC-05: resolve path and block sensitive directories.
+    # Previously any filesystem path could be served with no restriction.
+    try:
+        p = _safe_path(project_path)
+    except HTTPException:
+        raise
+    if _is_blocked_path(p):
+        raise HTTPException(403, "Access denied: sensitive directory")
     if not p.exists() or not p.is_dir():
         raise HTTPException(400, f"Not a directory: {project_path}")
 
-    port = int(requested_port)
+    # SEC-FIX NEW-03: validate port range to prevent conflicts and SSRF-via-port.
+    # Previously int() was called with no range check — ports like 80 or 8765 were accepted.
+    try:
+        port = int(requested_port)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "port must be an integer")
+    if port < 1024 or port > 65535:
+        raise HTTPException(400, "port must be in range 1024–65535")
+    sidecar_port = int(os.environ.get("TTO_PORT", "8765"))
+    if port == sidecar_port:
+        raise HTTPException(400, f"port {port} conflicts with the sidecar port")
 
     # Kill any existing server on this port
     with _serve_lock:

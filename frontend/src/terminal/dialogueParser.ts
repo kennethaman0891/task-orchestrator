@@ -66,7 +66,7 @@ function createMessage(role: 'user' | 'assistant', index: number): UnifiedChatMe
  */
 export function parseTerminalDialogue(
   rawLines: string[],
-  _cliType: string = 'claude',
+  _cliType: string = 'antigravity',
 ): UnifiedChatMessage[] {
   if (!rawLines || rawLines.length === 0) return [];
 

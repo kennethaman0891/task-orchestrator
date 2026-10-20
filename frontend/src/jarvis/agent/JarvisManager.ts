@@ -15,6 +15,8 @@ class JarvisManager {
   private agents: Map<string, JarvisAgent> = new Map();
   private listeners: Set<AgentUpdateListener> = new Set();
   private initialized = false;
+  private activeCallTerminalIds: Set<string> = new Set();
+  private focusedCallTerminalId: string | null = null;
 
   constructor() {
     // Listen to session context updates and sync active agents
@@ -65,10 +67,92 @@ class JarvisManager {
   unassignAgent(terminalId: string): void {
     const agent = this.agents.get(terminalId);
     if (agent) {
+      if (this.activeCallTerminalIds.has(terminalId)) {
+        this.endCall(terminalId);
+      }
       agent.unassign();
       this.saveToStorage();
       this.notify();
     }
+  }
+
+  /** Voice Call: Start an interactive call with a terminal's Jarvis agent without killing other active calls */
+  startCall(terminalId: string): JarvisAgent {
+    const agent = this.getAgent(terminalId);
+    if (agent.status === 'UNASSIGNED') {
+      const ctx = sessionContextStore.get(terminalId);
+      agent.assign(['OBSERVE', 'READ', 'EXECUTE', 'CONTROL'], ctx);
+    }
+    this.activeCallTerminalIds.add(terminalId);
+    this.focusedCallTerminalId = terminalId;
+    agent.startCall();
+    this.saveToStorage();
+    this.notify();
+    return agent;
+  }
+
+  /** Voice Call: End a specific call or the currently focused call */
+  endCall(terminalId?: string): void {
+    const targetId = terminalId || this.focusedCallTerminalId;
+    if (!targetId) return;
+
+    const agent = this.agents.get(targetId);
+    if (agent) {
+      agent.endCall();
+    }
+    this.activeCallTerminalIds.delete(targetId);
+
+    if (this.focusedCallTerminalId === targetId) {
+      // Switch focus to another active call if one exists
+      const remaining = Array.from(this.activeCallTerminalIds);
+      this.focusedCallTerminalId = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+    }
+
+    this.saveToStorage();
+    this.notify();
+  }
+
+  /** Voice Call: End all active voice calls */
+  endAllCalls(): void {
+    for (const tId of this.activeCallTerminalIds) {
+      const agent = this.agents.get(tId);
+      if (agent) {
+        agent.endCall();
+      }
+    }
+    this.activeCallTerminalIds.clear();
+    this.focusedCallTerminalId = null;
+    this.saveToStorage();
+    this.notify();
+  }
+
+  /** Switch focused call to another terminal that is currently in an active call */
+  switchCall(terminalId: string): void {
+    if (this.activeCallTerminalIds.has(terminalId)) {
+      this.focusedCallTerminalId = terminalId;
+      this.notify();
+    }
+  }
+
+  isCallActive(terminalId: string): boolean {
+    return this.activeCallTerminalIds.has(terminalId);
+  }
+
+  getActiveCallTerminalIds(): string[] {
+    return Array.from(this.activeCallTerminalIds);
+  }
+
+  getFocusedCallTerminalId(): string | null {
+    return this.focusedCallTerminalId;
+  }
+
+  /** Backwards compatibility getter */
+  getActiveCallTerminalId(): string | null {
+    return this.focusedCallTerminalId;
+  }
+
+  getActiveCallAgent(): JarvisAgent | null {
+    return this.focusedCallTerminalId ? this.getAgent(this.focusedCallTerminalId) : null;
   }
 
   async assignTask(terminalId: string, taskDescription: string): Promise<boolean> {

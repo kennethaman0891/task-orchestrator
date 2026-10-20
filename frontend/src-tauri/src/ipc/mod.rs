@@ -471,18 +471,27 @@ pub async fn open_url(url: String) -> Result<(), String> {
     if url.is_empty() {
         return Err("URL cannot be empty".to_string());
     }
+    let trimmed = url.trim();
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        return Err("Only http:// and https:// URLs are allowed".to_string());
+    }
+    // Strict validation: disallow control characters, quotes, and command separators
+    if trimmed.chars().any(|c| c.is_control() || "&|;`\"'<>^% \t\r\n".contains(c)) {
+        return Err("URL contains illegal characters".to_string());
+    }
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
-            .arg(&url)
+            .arg(trimmed)
             .spawn()
             .map_err(|e| format!("Failed to open URL: {}", e))?;
         return Ok(());
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", &url])
+        // Avoid cmd.exe command injection by using rundll32 FileProtocolHandler
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", trimmed])
             .spawn()
             .map_err(|e| format!("Failed to open URL: {}", e))?;
         return Ok(());
@@ -490,7 +499,7 @@ pub async fn open_url(url: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
-            .arg(&url)
+            .arg(trimmed)
             .spawn()
             .map_err(|e| format!("Failed to open URL: {}", e))?;
         return Ok(());

@@ -81,6 +81,7 @@ _closed_ttys: Set[str] = set()         # ttys the user closed — scanner must n
 opencode_models: Dict[str, str] = {}   # tty -> model the running opencode was launched with
 opencode_pids: Dict[str, int] = {}     # tty -> pid of the running opencode
 claude_pids: Dict[str, int] = {}       # tty -> pid of Claude Code running on that tty
+antigravity_pids: Dict[str, int] = {}  # tty -> pid of Antigravity running on that tty
 
 # Native Rust session links (desktop app <-> sidecar)
 session_links: Dict[str, dict] = {}    # session_id -> {tty, cwd, agent}

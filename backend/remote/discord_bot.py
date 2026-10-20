@@ -703,6 +703,11 @@ def create_bot() -> commands.Bot:
         # ── PLAIN-TEXT LANE: typing ANYWHERE = the voice lane (no mic, no panel, no slash, no email) ──
         if message.author == bot.user or message.author.bot:
             return
+        from .config import load_config
+        cfg = load_config()
+        allowed = cfg.discord_allowed_user_ids
+        if not allowed or str(message.author.id) not in allowed:
+            return
         if not message.content or not message.content.strip():
             return
         if message.content.startswith("/"):
@@ -724,6 +729,20 @@ def create_bot() -> commands.Bot:
                 print("[discord] ✅ plain-text → service dispatcher", flush=True)
         except Exception as e:
             print(f"[discord] ⚠️ plain-text lane error: {e}", flush=True)
+
+    @bot.tree.interaction_check
+    async def _check_authorized_discord_user(interaction: discord.Interaction) -> bool:
+        from .config import load_config
+        cfg = load_config()
+        allowed = cfg.discord_allowed_user_ids
+        if not allowed or str(interaction.user.id) not in allowed:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ **Unauthorized**: Your Discord user ID is not in `DISCORD_ALLOWED_USER_IDS`.",
+                    ephemeral=True,
+                )
+            return False
+        return True
 
     @bot.event
     async def on_ready():

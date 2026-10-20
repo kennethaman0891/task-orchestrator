@@ -4,12 +4,13 @@ import {
   Mic,
   MicOff,
   PhoneOff,
+  Volume1,
   Volume2,
   VolumeX,
   Maximize2,
 } from 'lucide-react';
 import { Mascot } from './Mascot';
-import type { Dot } from '../shared/types';
+import type { Dot } from '../types/types';
 import type { useVoice } from './useVoice';
 
 export function CallView({
@@ -68,6 +69,35 @@ export function CallView({
         </span>
         <p role="status">{label}</p>
       </div>
+      {!minimized && voice.pendingPrompt && (
+        <div className="call-prompt-banner" role="dialog" aria-label="Terminal Permission Required">
+          <div className="call-prompt-header">
+            <span className="call-prompt-badge">Action Required</span>
+            <span className="call-prompt-title">{voice.pendingPrompt.question}</span>
+          </div>
+          {voice.pendingPrompt.command && (
+            <div className="call-prompt-command">
+              <code>{voice.pendingPrompt.command}</code>
+            </div>
+          )}
+          <div className="call-prompt-options">
+            {voice.pendingPrompt.options.map((opt) => (
+              <button
+                key={opt.key}
+                type="button"
+                className={`call-option-chip ${opt.selected ? 'selected' : ''}`}
+                onClick={() => voice.selectPromptOption?.(opt.key)}
+              >
+                <span className="call-option-num">{opt.key}</span>
+                <span className="call-option-label">{opt.label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="call-prompt-voice-hint">
+            🎙️ Speak <em>&quot;Yes&quot;</em>, <em>&quot;Always allow&quot;</em>, or <em>&quot;Cancel&quot;</em> — or tap an option
+          </div>
+        </div>
+      )}
       {!minimized && (
         <div className="call-caption" aria-live="polite">
           {voice.userCaption && (
@@ -87,6 +117,46 @@ export function CallView({
           {voice.error}
         </p>
       )}
+
+      {/* Volume Control Strip */}
+      {!minimized && (
+        <div className="call-volume-strip">
+          <button
+            className="call-vol-btn"
+            aria-label="Volume Down"
+            title="Volume Down (-10%)"
+            onClick={() => (voice as any).volumeDown?.(10)}
+            disabled={voice.status !== 'active'}
+          >
+            <Volume1 size={15} />
+          </button>
+          <div className="call-vol-slider-wrap">
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              value={voice.speakerMuted ? 0 : ((voice as any).volume ?? 80)}
+              onChange={(e) => (voice as any).setVolume?.(parseInt(e.target.value, 10))}
+              aria-label="Call Volume"
+              className="call-vol-slider"
+            />
+          </div>
+          <button
+            className="call-vol-btn"
+            aria-label="Volume Up"
+            title="Volume Up (+10%)"
+            onClick={() => (voice as any).volumeUp?.(10)}
+            disabled={voice.status !== 'active'}
+          >
+            <Volume2 size={15} />
+          </button>
+          <span className="call-vol-val">
+            {voice.speakerMuted ? 'Muted' : `${(voice as any).volume ?? 80}%`}
+          </span>
+        </div>
+      )}
+
       <div className="call-controls">
         <button
           aria-label={

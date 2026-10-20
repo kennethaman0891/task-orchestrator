@@ -64,3 +64,8 @@ dmg_temp/
 .vscode/
 *.pyc
 .editorconfig-history/
+
+# --- Root-level design prototypes / scratch mocks ---
+/*.html
+!/ARCHITECTURE.html
+/login.mp4

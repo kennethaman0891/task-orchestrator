@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './components/App';
 import { BrowserShell } from './components/BrowserShell';
 import { ThemeProvider } from './contexts/ThemeContext';
+import { IntroVideo } from './components/IntroVideo';
 // xterm.js's own stylesheet. CRITICAL and easy to miss: Vite does not honour
 // the package's `"style": "css/xterm.css"` field, so it must be imported
 // explicitly. Without it the `.xterm-helpers` layer stays `position:static`
@@ -15,6 +16,8 @@ import './styles.css';
 // imported SEPARATELY from styles.css (per requirement: never touch styles.css
 // for OpenCode fixes).
 import './opencode.css';
+// OpenDots CallView styles — scoped to .call-view only
+import '@/opendots/styles/call-view.css';
 
 // ---- Diagnostic: capture errors so we can see why the page is blank ----
 // NOTE: diagnostic posts go to the sidecar's default port; they are
@@ -112,12 +115,26 @@ if ('serviceWorker' in navigator) {
 
 // The "real browser" pop-out window loads this same bundle with
 // ?tto-shell=1&url=… — render the branded browser shell instead of the app.
-const isBrowserShell = new URLSearchParams(window.location.search).get('tto-shell') === '1';
+function Root() {
+  const isBrowserShell = new URLSearchParams(window.location.search).get('tto-shell') === '1';
+  // Show intro video on first launch (unless reduced motion or browser shell)
+  const [showIntro, setShowIntro] = useState(!isBrowserShell);
+
+  return (
+    <ThemeProvider>
+      {showIntro ? (
+        <IntroVideo onComplete={() => setShowIntro(false)} />
+      ) : isBrowserShell ? (
+        <BrowserShell />
+      ) : (
+        <App />
+      )}
+    </ThemeProvider>
+  );
+}
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <ThemeProvider>
-      {isBrowserShell ? <BrowserShell /> : <App />}
-    </ThemeProvider>
+    <Root />
   </React.StrictMode>,
 );

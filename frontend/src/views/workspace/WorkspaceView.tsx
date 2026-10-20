@@ -8,7 +8,7 @@ import type { Workspace } from '@/lib/workspace';
 import { TerminalAnchor } from '@/components/terminal/TerminalPool';
 import { isClosed, termName, formatUptime } from '@/lib/format';
 import { deriveTaskStatus, statusLabel, minTerminal } from '@/lib/status';
-import { TerminalSquare, Plus, X, Pencil, MessageSquare } from 'lucide-react';
+import { TerminalSquare, Terminal, Plus, X, Pencil, MessageSquare } from 'lucide-react';
 import { DropChipStrip, type DropChip } from '@/components/DroppedFileChip';
 import { extractDropPaths } from '@/terminal/dropPaths';
 import { CliLogo } from '@/lib/cliLogos';
@@ -191,9 +191,12 @@ export function WorkspaceView({
                   {shortcutKey && (
                     <span
                       style={{
-                        fontSize: '8px',
+                        fontSize: '9px',
                         color: isActive ? t.colors.accent.primary : t.colors.text.muted,
-                        opacity: 0.75,
+                        background: isActive ? `${t.colors.accent.primary}18` : t.colors.bg.elevated,
+                        border: `1px solid ${isActive ? `${t.colors.accent.primary}35` : t.colors.border.subtle}`,
+                        padding: '1px 4px',
+                        borderRadius: '3px',
                         fontFamily: t.fontFamily.mono,
                         fontWeight: 600,
                         flexShrink: 0,
@@ -202,7 +205,11 @@ export function WorkspaceView({
                       {shortcutKey}
                     </span>
                   )}
-                  {cliVal && <CliLogo cli={cliVal} size={11} />}
+                  {cliVal && (['zsh', 'bash', 'sh'].includes(cliVal) ? (
+                    <Terminal size={11} style={{ opacity: 0.75, color: isActive ? t.colors.accent.primary : t.colors.text.muted, flexShrink: 0 }} />
+                  ) : (
+                    <CliLogo cli={cliVal} size={11} />
+                  ))}
                   {isEditing ? (
                     <input
                       autoFocus
@@ -330,29 +337,55 @@ export function WorkspaceView({
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '4px',
+              gap: '5px',
               height: '24px',
               flexShrink: 0,
               margin: '5px 8px',
               padding: '0 8px',
-              background: 'rgba(255, 255, 255, 0.04)',
+              background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.02) 100%)',
               border: `1px solid ${t.colors.border.subtle}`,
-              borderRadius: '4px',
-              color: t.colors.text.muted,
+              borderRadius: '5px',
+              color: t.colors.text.secondary,
               cursor: 'pointer',
               fontSize: '10px',
+              boxShadow: '0 1px 2px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.06)',
+              transition: 'all 0.14s cubic-bezier(0.16, 1, 0.3, 1)',
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = t.colors.bg.elevated;
-              e.currentTarget.style.color = t.colors.accent.primary;
+              e.currentTarget.style.background = 'linear-gradient(180deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.04) 100%)';
+              e.currentTarget.style.borderColor = t.colors.border.primary;
+              e.currentTarget.style.color = t.colors.text.primary;
+              e.currentTarget.style.boxShadow = '0 2px 6px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
-              e.currentTarget.style.color = t.colors.text.muted;
+              e.currentTarget.style.background = 'linear-gradient(180deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.02) 100%)';
+              e.currentTarget.style.borderColor = t.colors.border.subtle;
+              e.currentTarget.style.color = t.colors.text.secondary;
+              e.currentTarget.style.boxShadow = '0 1px 2px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.06)';
+              e.currentTarget.style.transform = 'scale(1)';
+            }}
+            onMouseDown={(e) => {
+              e.currentTarget.style.transform = 'scale(0.96)';
+            }}
+            onMouseUp={(e) => {
+              e.currentTarget.style.transform = 'scale(1)';
             }}
           >
             <Plus size={12} />
-            <span style={{ fontSize: '9px', fontWeight: 600, opacity: 0.85 }}>⌘T</span>
+            <span
+              style={{
+                fontSize: '9px',
+                fontWeight: 600,
+                fontFamily: t.fontFamily.mono,
+                background: t.colors.bg.elevated,
+                padding: '1px 4px',
+                borderRadius: '3px',
+                border: `1px solid ${t.colors.border.subtle}`,
+                color: t.colors.text.muted,
+              }}
+            >
+              ⌘T
+            </span>
           </button>
         </div>
 
@@ -378,14 +411,29 @@ export function WorkspaceView({
                 gap: '5px',
                 height: '24px',
                 padding: '0 8px',
-                borderRadius: '4px',
-                background: chatOpen ? `${t.colors.accent.primary}25` : 'transparent',
-                border: `1px solid ${chatOpen ? t.colors.accent.primary : t.colors.border.subtle}`,
-                color: chatOpen ? t.colors.accent.primary : t.colors.text.secondary,
+                borderRadius: '5px',
+                background: chatOpen
+                  ? 'linear-gradient(180deg, rgba(56, 189, 248, 0.22) 0%, rgba(56, 189, 248, 0.12) 100%)'
+                  : 'linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.02) 100%)',
+                border: `1px solid ${chatOpen ? 'rgba(56, 189, 248, 0.4)' : t.colors.border.subtle}`,
+                color: chatOpen ? '#38bdf8' : t.colors.text.secondary,
                 cursor: 'pointer',
                 fontSize: '10.5px',
                 fontWeight: 600,
-                transition: 'all 0.12s ease',
+                boxShadow: chatOpen ? '0 0 8px rgba(56, 189, 248, 0.25)' : 'none',
+                transition: 'all 0.14s cubic-bezier(0.16, 1, 0.3, 1)',
+              }}
+              onMouseEnter={(e) => {
+                if (!chatOpen) {
+                  e.currentTarget.style.color = t.colors.text.primary;
+                  e.currentTarget.style.borderColor = t.colors.border.primary;
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!chatOpen) {
+                  e.currentTarget.style.color = t.colors.text.secondary;
+                  e.currentTarget.style.borderColor = t.colors.border.subtle;
+                }
               }}
             >
               <MessageSquare size={12} />

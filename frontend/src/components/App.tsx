@@ -52,6 +52,7 @@ import { CollaboratorLoginGate } from '@/components/auth/CollaboratorLoginGate';
 import { getCollabSession, type CollabUser, type OwnerProfile } from '@/lib/collab';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { SettingsView } from '@/views/settings/SettingsView';
+import { CallOverlay } from '@/opendots/components/CallOverlay';
 
 const INITIAL_TERMINAL_COLS = 120;
 const INITIAL_TERMINAL_ROWS = 40;
@@ -677,14 +678,76 @@ export default function App() {
 
   const handleSetProjectPath = useCallback((id: string, path: string) => {
     const cleanPath = path.trim().replace(/^["']|["']$/g, '');
-    setWorkspaces((prev) => prev.map((w) => {
-      if (w.id !== id) return w;
-      // Auto-rename workspace to match the project directory basename so the
-      // sidebar label stays in sync with what the user actually opened.
+    const basename = cleanPath.split(/[/\\]/).filter(Boolean).pop() || cleanPath;
+
+    // 1. Immediately activate this workspace and switch to workspace view
+    setActiveWsId(id);
+    setView('workspace');
+
+    // 2. Update workspace metadata and persist
+    setWorkspaces((prev) => {
+      const next = prev.map((w) => {
+        if (w.id !== id) return w;
+        return { ...w, projectPath: cleanPath, name: basename };
+      });
+      saveWorkspaces(next);
+      return next;
+    });
+
+    // 3. Persist to recent projects
+    try {
+      const saved = localStorage.getItem('tto-recent-paths');
+      const recents: string[] = saved ? JSON.parse(saved) : [];
+      const updated = [cleanPath, ...recents.filter((p) => p !== cleanPath)].slice(0, 8);
+      localStorage.setItem('tto-recent-paths', JSON.stringify(updated));
+    } catch {}
+
+    // 4. Directly synchronize directory for all running terminals in this workspace
+    const ws = workspaces.find((w) => w.id === id);
+    if (ws) {
+      const liveTtys = [
+        ...ws.panes.map((p) => p.tty),
+        ...(ws.idePanes || []).map((p) => p.tty),
+      ].filter((t): t is string => Boolean(t));
+
+      if (liveTtys.length > 0) {
+        for (const tty of liveTtys) {
+          try {
+            TerminalManager.write(tty, `cd "${cleanPath}"\r`);
+          } catch (e) {
+            console.error('[App] Failed to auto-cd terminal:', e);
+          }
+        }
+        // Focus the first live terminal so user is immediately in terminal
+        setFocusedTerminal(liveTtys[0]);
+      }
+    }
+
+    showToast(`Opened project: ${basename}`);
+  }, [workspaces, showToast]);
+
+  const handleOpenProjectFolder = useCallback(async () => {
+    if (!isTauri()) return;
+    try {
+      const path = await tauri.pickFolder();
+      if (!path) return;
+      const cleanPath = path.trim().replace(/^["']|["']$/g, '');
       const basename = cleanPath.split(/[/\\]/).filter(Boolean).pop() || cleanPath;
-      return { ...w, projectPath: cleanPath, name: basename };
-    }));
-  }, []);
+
+      const existing = workspaces.find((w) => w.projectPath === cleanPath);
+      if (existing) {
+        handleSetProjectPath(existing.id, cleanPath);
+      } else {
+        handleCreateWorkspace({
+          projectPath: cleanPath,
+          template: 4,
+        });
+        showToast(`Opened project: ${basename}`);
+      }
+    } catch (err) {
+      console.error('[App] pickFolder failed:', err);
+    }
+  }, [workspaces, handleSetProjectPath, handleCreateWorkspace, showToast]);
 
   // ── Close a terminal card (grid tile / pane tab) ───────────────────
   const handleRemovePane = useCallback((paneId: string) => {
@@ -1201,6 +1264,7 @@ export default function App() {
             onSelectWorkspace={setActiveWsId}
             onRenameWorkspace={handleRenameWorkspace}
             onSetProjectPath={handleSetProjectPath}
+            onOpenProjectFolder={handleOpenProjectFolder}
             onSetWorkspaceLogo={handleSetWorkspaceLogo}
             onCloseWorkspace={handleCloseWorkspace}
             onNewWorkspace={handleNewWorkspace}
@@ -1403,6 +1467,8 @@ export default function App() {
         onClose={() => setEditorPopupOpen(false)}
         onToast={showToast}
       />
+
+      <CallOverlay />
 
       {toast && (
         <div

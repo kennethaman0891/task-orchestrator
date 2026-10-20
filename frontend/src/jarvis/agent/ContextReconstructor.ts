@@ -16,7 +16,7 @@ export class ContextReconstructor {
     const project = ctx.workspaceName || ctx.cwd ? ctx.cwd.split('/').pop() || 'Unknown Project' : 'Unknown Project';
 
     // 2. CLI
-    const cli = ctx.cliName || 'Shell';
+    const cli = ctx.cliName || (ctx.detectedCli ? ctx.detectedCli.charAt(0).toUpperCase() + ctx.detectedCli.slice(1) : 'Antigravity');
 
     // 3. Task
     const task = ctx.currentTaskTitle || (

@@ -21,16 +21,44 @@ APP="/Applications/Task Orchestrator.app"
 DIAG="$HOME/.local/share/tto/diag.log"
 step() { echo ""; echo "── $1 ──"; }
 
-step "1/7 typecheck"
-( cd "$FRONT" && npx tsc --noEmit )
+step "1/9 asset check: login.mp4 video"
+if [ ! -f "$FRONT/public/videos/login.mp4" ] || [ "$(wc -c < "$FRONT/public/videos/login.mp4" 2>/dev/null || echo 0)" -lt 1000000 ]; then
+  echo "✗ GATE FAILED: frontend/public/videos/login.mp4 is missing or empty." >&2
+  exit 1
+fi
+echo "✓ login.mp4 verified in frontend/public/videos/ ($(du -h "$FRONT/public/videos/login.mp4" | cut -f1))"
 
-step "2/7 vite build (embedded UI)"
+step "2/9 typecheck & lint"
+( cd "$FRONT" && npx tsc --noEmit )
+( cd "$FRONT" && npx eslint src/main.tsx src/components/IntroVideo.tsx )
+echo "✓ typecheck & hook rules verified"
+
+step "3/9 vite build (embedded UI)"
 ( cd "$FRONT" && npm run build )
 
-step "3/7 cargo release build (custom-protocol default)"
+step "4/9 gate: verify login.mp4 in build output"
+if [ ! -f "$FRONT/dist/videos/login.mp4" ] || [ "$(wc -c < "$FRONT/dist/videos/login.mp4" 2>/dev/null || echo 0)" -lt 1000000 ]; then
+  echo "✗ GATE FAILED: dist/videos/login.mp4 is missing or empty after build." >&2
+  exit 1
+fi
+echo "✓ login.mp4 verified in frontend/dist/videos/"
+
+# Sync backend resources fresh before cargo build so Tauri embeds them cleanly
+mkdir -p "$TAURI/resources/backend"
+rsync -av --delete \
+  --exclude "__pycache__" \
+  --exclude "*.pyc" \
+  --exclude ".DS_Store" \
+  --exclude "data" \
+  --exclude "frontend" \
+  --exclude "node_modules" \
+  --exclude "voice/models" \
+  "$ROOT/backend/" "$TAURI/resources/backend/"
+
+step "5/9 cargo release build (custom-protocol default)"
 ( cd "$TAURI" && cargo build --release )
 
-step "4/7 gate: binary must NOT be a dev-mode binary"
+step "6/9 gate: binary must NOT be a dev-mode binary"
 # A custom-protocol build embeds the UI and never references the dev URL.
 # A dev-mode binary carries "http://localhost:1421" as its load target.
 if strings "$BIN" 2>/dev/null | grep -q "localhost:1421"; then
@@ -41,9 +69,9 @@ if strings "$BIN" 2>/dev/null | grep -q "localhost:1421"; then
 fi
 echo "✓ binary is an embedded-UI (custom-protocol) build"
 
-step "5/7 assemble + ad-hoc sign bundle"
+step "7/9 assemble + ad-hoc sign bundle"
 STAGE="/tmp/tto-stage-$$.app"
-rm -rf "$STAGE" "$APP"
+rm -rf "$STAGE"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 if [ -f "$TAURI/target/release/bundle/macos/Task Orchestrator.app/Contents/Info.plist" ]; then
   cp "$TAURI/target/release/bundle/macos/Task Orchestrator.app/Contents/Info.plist" "$STAGE/Contents/Info.plist"
@@ -68,11 +96,17 @@ fi
 cp "$BIN" "$STAGE/Contents/MacOS/tto"
 chmod 755 "$STAGE/Contents/MacOS/tto"
 if [ -f "$TAURI/icons/icon.icns" ]; then cp "$TAURI/icons/icon.icns" "$STAGE/Contents/Resources/icon.icns"; fi
-# Include full backend resources (always synced fresh from repository root)
-mkdir -p "$TAURI/resources/backend"
-rsync -av --delete --exclude "__pycache__" --exclude "*.pyc" --exclude ".DS_Store" --exclude "data" --exclude "frontend" "$ROOT/backend/" "$TAURI/resources/backend/"
+# Include full backend resources into staging bundle
 mkdir -p "$STAGE/Contents/Resources/backend"
-rsync -av --delete --exclude "__pycache__" --exclude "*.pyc" --exclude ".DS_Store" --exclude "data" --exclude "frontend" "$ROOT/backend/" "$STAGE/Contents/Resources/backend/"
+rsync -av --delete \
+  --exclude "__pycache__" \
+  --exclude "*.pyc" \
+  --exclude ".DS_Store" \
+  --exclude "data" \
+  --exclude "frontend" \
+  --exclude "node_modules" \
+  --exclude "voice/models" \
+  "$ROOT/backend/" "$STAGE/Contents/Resources/backend/"
 
 # Include top-level resources (downloads.html, etc.)
 for item in "$TAURI/resources/"*; do
@@ -85,7 +119,7 @@ printf 'APPL????' > "$STAGE/Contents/PkgInfo"
 codesign --force --deep --sign - "$STAGE"
 codesign -vv "$STAGE"
 
-step "6/7 install into macOS bundle and /Applications"
+step "8/9 install into macOS bundle and /Applications"
 pkill -f "Task Orchestrator.app/Contents/MacOS/tto" 2>/dev/null || true
 pkill -x tto 2>/dev/null || true
 pkill -f "backend/main.py" 2>/dev/null || true
@@ -108,7 +142,7 @@ codesign --force --deep --sign - "$APP"
 codesign --force --deep --sign - "$APP_TTO"
 rm -rf "$STAGE"
 
-step "7/7 gate: fresh JS boot line within 20s"
+step "9/9 gate: fresh JS boot line within 20s"
 BEFORE=$(wc -l < "$DIAG" 2>/dev/null || echo 0)
 open -a "$APP"
 OK=0
@@ -124,6 +158,13 @@ if [ "$OK" != "1" ]; then
 fi
 echo "✓ fresh boot line detected — webview rendered"
 
+# Check for hook or syntax crashes in the newly appended lines
+if tail -n +"$((BEFORE + 1))" "$DIAG" 2>/dev/null | grep -iE "Invalid hook call|useState"; then
+  echo "✗ GATE FAILED: detected React Hook error in newly booted app log." >&2
+  exit 1
+fi
+echo "✓ zero runtime hook errors detected"
+
 echo ""
-echo "✅ BUILD VERIFIED: installed and booting with the embedded UI."
+echo "✅ BUILD VERIFIED: installed and booting with the embedded UI & intro video."
 echo "   App PID: $(pgrep -x tto | head -1)"

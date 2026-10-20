@@ -19,6 +19,8 @@ import {
   CheckCircle,
   Sparkles,
   Bot,
+  Phone,
+  PhoneCall,
 } from 'lucide-react';
 
 interface Props {
@@ -39,14 +41,26 @@ export function JarvisPanel({ terminalId, context, onClose, onToast }: Props) {
   const [memory, setMemory] = useState(agent.workingMemory);
   const [busy, setBusy] = useState(false);
   const [taskDraft, setTaskDraft] = useState('');
+  const [isCalling, setIsCalling] = useState(() => jarvisManager.getActiveCallTerminalId() === terminalId);
 
   useEffect(() => {
     return jarvisManager.subscribe(() => {
       setStatus(agent.status);
       setPermissions(Array.from(agent.permissions));
       setMemory(agent.workingMemory);
+      setIsCalling(jarvisManager.getActiveCallTerminalId() === terminalId);
     });
-  }, [agent]);
+  }, [agent, terminalId]);
+
+  const handleToggleCall = () => {
+    if (isCalling) {
+      jarvisManager.endCall();
+      onToast('Ended voice call');
+    } else {
+      jarvisManager.startCall(terminalId);
+      onToast(`Starting voice call with ${context?.terminalName || terminalId}...`);
+    }
+  };
 
   const togglePermission = (perm: JarvisPermission) => {
     const next = permissions.includes(perm)
@@ -183,19 +197,43 @@ export function JarvisPanel({ terminalId, context, onClose, onToast }: Props) {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={onClose}
-          style={{
-            ...buttonBase(t),
-            ...buttonSize(t, 'sm'),
-            ...buttonVariant(t, 'ghost'),
-            padding: 4,
-            height: 'auto',
-          }}
-        >
-          <X size={16} />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button
+            type="button"
+            onClick={handleToggleCall}
+            style={{
+              ...buttonBase(t),
+              ...buttonSize(t, 'sm'),
+              ...buttonVariant(t, isCalling ? 'primary' : 'secondary'),
+              height: '28px',
+              padding: '0 10px',
+              fontSize: '11px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              backgroundColor: isCalling ? '#10b981' : undefined,
+              color: isCalling ? '#fff' : undefined,
+            }}
+            title={isCalling ? "End Voice Call" : "Start Voice Call with Jarvis"}
+          >
+            {isCalling ? <PhoneCall size={12} className="animate-pulse" /> : <Phone size={12} />}
+            <span>{isCalling ? 'In Call' : 'Call'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              ...buttonBase(t),
+              ...buttonSize(t, 'sm'),
+              ...buttonVariant(t, 'ghost'),
+              padding: 4,
+              height: 'auto',
+            }}
+          >
+            <X size={16} />
+          </button>
+        </div>
       </div>
 
       {/* ── Scrollable Body ── */}
