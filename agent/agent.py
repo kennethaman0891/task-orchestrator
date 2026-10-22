@@ -17,6 +17,17 @@ from pathlib import Path
 
 SERVER_URL = os.environ.get("TTO_SERVER", "ws://localhost:8765/ws/terminal")
 
+
+def _agent_url(tty: str) -> str:
+    """WebSocket URL for this tty, including the loopback session token."""
+    url = SERVER_URL.rstrip("/") + "/" + tty
+    token = (os.environ.get("TTO_SESSION_TOKEN") or "").strip()
+    if not token:
+        return url
+    from urllib.parse import quote
+    join = "&" if "?" in url else "?"
+    return url + join + "session_token=" + quote(token, safe="")
+
 try:
     import websockets
 except ImportError:
@@ -73,7 +84,7 @@ async def main():
     retry = 0
     while True:
         try:
-            async with websockets.connect(SERVER_URL + "/" + tty) as ws:
+            async with websockets.connect(_agent_url(tty)) as ws:
                 print(f"▶ tto-agent: connected to server", flush=True)
                 retry = 0
                 async for raw in ws:

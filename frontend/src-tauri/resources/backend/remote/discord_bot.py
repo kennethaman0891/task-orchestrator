@@ -24,6 +24,46 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)-8s] 
 _bridge: Dict[str, Any] = {}
 
 
+def _deny_unauthorized(interaction: discord.Interaction):
+    """Reply once and tell the dispatcher to drop the interaction."""
+    async def _send() -> bool:
+        if interaction.response.is_done():
+            return False
+        try:
+            await interaction.response.send_message("❌ Unauthorized", ephemeral=True)
+        except Exception:
+            pass
+        return False
+    return _send()
+
+
+_allowlist_installed = False
+
+
+def _install_component_allowlist() -> None:
+    """Gate every button and modal, not only slash commands.
+
+    ``tree.interaction_check`` does not run for component interactions.
+    ``View.interaction_check`` does, and Modal subclasses View. No view in
+    this module overrides the method, so one wrapper covers the panel.
+    """
+    global _allowlist_installed
+    if _allowlist_installed:
+        return
+    _allowlist_installed = True
+    from .config import discord_user_allowed
+
+    original = discord.ui.View.interaction_check
+
+    async def _checked(self, interaction: discord.Interaction) -> bool:
+        if not discord_user_allowed(interaction.user.id):
+            await _deny_unauthorized(interaction)
+            return False
+        return await original(self, interaction)
+
+    discord.ui.View.interaction_check = _checked  # type: ignore[method-assign]
+
+
 def register_bridge(bridge: Dict[str, Any]) -> None:
     """Called by main.py to inject the bridge dict before the bot starts."""
     global _bridge
@@ -686,6 +726,7 @@ def create_bot() -> commands.Bot:
     intents = discord.Intents.default()
     intents.message_content = True
     bot = commands.Bot(command_prefix="!", intents=intents)
+    _install_component_allowlist()
     poller = _LivePoller(bot)
     _poller = poller
     bot.add_view(ControlPanelView())  # persistent custom_ids survive restarts
@@ -703,10 +744,8 @@ def create_bot() -> commands.Bot:
         # ── PLAIN-TEXT LANE: typing ANYWHERE = the voice lane (no mic, no panel, no slash, no email) ──
         if message.author == bot.user or message.author.bot:
             return
-        from .config import load_config
-        cfg = load_config()
-        allowed = cfg.discord_allowed_user_ids
-        if not allowed or str(message.author.id) not in allowed:
+        from .config import discord_user_allowed
+        if not discord_user_allowed(message.author.id):
             return
         if not message.content or not message.content.strip():
             return
@@ -732,10 +771,8 @@ def create_bot() -> commands.Bot:
 
     @bot.tree.interaction_check
     async def _check_authorized_discord_user(interaction: discord.Interaction) -> bool:
-        from .config import load_config
-        cfg = load_config()
-        allowed = cfg.discord_allowed_user_ids
-        if not allowed or str(interaction.user.id) not in allowed:
+        from .config import discord_user_allowed
+        if not discord_user_allowed(interaction.user.id):
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "❌ **Unauthorized**: Your Discord user ID is not in `DISCORD_ALLOWED_USER_IDS`.",

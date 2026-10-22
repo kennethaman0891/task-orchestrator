@@ -854,7 +854,7 @@ export const TerminalManager = {
           h.workStartedAt = now;
           h.workEndedAt = 0;
         }
-      } else if (status === 'stopped' || status === 'over') {
+      } else if (status === 'stopped' || status === 'over' || status === 'idle') {
         if (prevStatus === 'running' && h.workStartedAt > 0 && !h.workEndedAt) {
           h.workEndedAt = h.lastOutputAt || now;
         }

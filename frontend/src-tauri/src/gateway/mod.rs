@@ -441,6 +441,10 @@ const GATEWAY_BLOCKED_FRAGMENTS: &[&str] = &[
     ".env",
     "id_rsa",
     "id_ed25519",
+    "id_dsa",
+    ".npmrc",
+    ".bash_history",
+    ".zsh_history",
     ".netrc",
     "key.pem",
     "secret",
@@ -623,5 +627,14 @@ mod tests {
             !is_gateway_blocked(&normal),
             "Documents/notes.txt must not be blocked"
         );
+    }
+
+    #[test]
+    fn test_gateway_blocked_detects_shell_history() {
+        let home = crate::home_dir();
+        assert!(is_gateway_blocked(&home.join(".zsh_history")));
+        assert!(is_gateway_blocked(&home.join(".npmrc")));
+        let notes = home.join("projects").join("notes.txt");
+        assert!(!is_gateway_blocked(&notes));
     }
 }

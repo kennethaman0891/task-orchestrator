@@ -113,6 +113,13 @@ def install_listener(bot, bridge: dict) -> None:
         # Ignore bot's own messages
         if message.author.bot:
             return
+        from .config import discord_user_allowed
+        if not discord_user_allowed(message.author.id):
+            try:
+                await message.channel.send("❌ Unauthorized")
+            except Exception:
+                pass
+            return
         # Only flat audio (Discord voice messages arrive as .ogg attachments)
         att = None
         for a in (message.attachments or []):

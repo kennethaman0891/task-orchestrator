@@ -13,6 +13,7 @@ import socket
 import struct
 import subprocess
 import logging
+import secrets
 import sys
 import time
 import shutil
@@ -96,6 +97,57 @@ def _load_dotenv_file() -> None:
 
 
 _load_dotenv_file()
+
+# Desktop session token. The Tauri parent generates this and passes it in the
+# sidecar environment. A child cannot write the parent's environment, so a
+# direct `python main.py` launch mints a token for this process only.
+# Loopback clients must send it (header or `session_token` query). The value
+# is never returned by an HTTP route.
+def _load_session_token() -> str:
+    token = (os.environ.get("TTO_SESSION_TOKEN") or "").strip()
+    if not token:
+        token = secrets.token_urlsafe(32)
+        os.environ["TTO_SESSION_TOKEN"] = token
+        print(f"[security] Session token generated: {token[:8]}...", flush=True)
+    return token
+
+
+SESSION_TOKEN = _load_session_token()
+
+# Exact paths a loopback client may call without the session token.
+# `/api/health` stays open so the desktop health probe can identify the sidecar.
+_PUBLIC_API_PATHS = frozenset({
+    "/api/health",
+    "/api/version",
+    "/api/collab/login",
+    "/api/token-usage",
+})
+
+
+def _is_loopback_client(host: Optional[str]) -> bool:
+    """True for this machine and for Starlette's TestClient (`testclient`)."""
+    return (host or "") in ("127.0.0.1", "::1", "localhost", "testclient")
+
+
+def _session_token_ok(presented: Optional[str]) -> bool:
+    if not presented or not SESSION_TOKEN:
+        return False
+    try:
+        return secrets.compare_digest(presented, SESSION_TOKEN)
+    except Exception:
+        return False
+
+
+def _presented_session_token(headers, query) -> str:
+    # Header names cannot contain spaces. Uvicorn rejects
+    # "X-Task Orchestrator-Token" before the app runs, so the wire name is
+    # hyphenated. The spaced name is still read for in-process ASGI callers.
+    return (
+        headers.get("x-task-orchestrator-token")
+        or headers.get("x-task orchestrator-token")
+        or query.get("session_token")
+        or ""
+    )
 
 
 def _kill_pid(pid: int, force: bool = False):
@@ -183,7 +235,7 @@ _allowed_origins = set(_cors_origins)
 _cors_wildcard = "*" in _allowed_origins
 
 
-def _origin_allowed(origin: Optional[str]) -> bool:
+def _origin_allowed(origin: Optional[str], request_host: Optional[str] = None) -> bool:
     """Whether a browser Origin may talk to this server.
 
     Missing/empty Origin is allowed on purpose: native clients (the Rust relay,
@@ -191,32 +243,38 @@ def _origin_allowed(origin: Optional[str]) -> bool:
     cross-site requests, so a page on evil.com hitting localhost:8765 is
     rejected.  TTO_CORS_ORIGINS=* disables the check.
 
-    Additionally, when LAN access is enabled via collab settings, we allow
-    same-host origins (i.e., http://<server-ip>:8765 from a browser on the LAN)
-    because those are authenticated via token, not IP.
+    When LAN access is enabled, an origin is allowed only if its port is the
+    sidecar port and its host is the request Host or a literal IP. A name like
+    ``http://evil.example:8765`` is not accepted just because the port matches.
     """
     if _cors_wildcard or not origin:
         return True
     if origin in _allowed_origins:
         return True
-    # LAN mode: allow same-host origins (authenticated via token)
     try:
         store = get_collab_store()
-        if store.is_lan_allowed():
-            # Parse origin and check if host matches this server's bound host
-            from urllib.parse import urlparse
-            parsed = urlparse(origin)
-            if parsed.scheme in ("http", "https"):
-                # Get the port from the origin
-                origin_host = parsed.hostname
-                origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
-                # Check if this matches the port we're bound to
-                if origin_port == int(os.environ.get("TTO_PORT", "8765")):
-                    # Same-host origin in LAN mode - allow (token auth handles the rest)
-                    return True
+        if not store.is_lan_allowed():
+            return False
+        parsed = urlparse(origin)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return False
+        origin_host = parsed.hostname
+        origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        if origin_port != int(os.environ.get("TTO_PORT", "8765")):
+            return False
+        req_host = (request_host or "").split(":")[0].strip().lower()
+        # Bracketed IPv6 in the Host header: "[::1]:8765" → the split above is
+        # wrong; compare the hostname form as well.
+        req_name = (request_host or "").strip().lower()
+        if origin_host.lower() == req_host or f"[{origin_host.lower()}]" in req_name:
+            return True
+        try:
+            ipaddress.ip_address(origin_host)
+            return True
+        except ValueError:
+            return False
     except Exception:
-        pass
-    return False
+        return False
 
 
 def _is_valid_host(host_header: Optional[str]) -> bool:
@@ -288,7 +346,7 @@ async def _origin_guard(request: Request, call_next):
     Requests with no Origin (native clients) always pass.
     """
     if request.method not in ("GET", "HEAD", "OPTIONS"):
-        if not _origin_allowed(request.headers.get("origin")):
+        if not _origin_allowed(request.headers.get("origin"), request.headers.get("host")):
             return JSONResponse({"detail": "origin not allowed"}, status_code=403)
     return await call_next(request)
 
@@ -306,7 +364,7 @@ async def _collab_auth_middleware(request: Request, call_next):
     - Attaches collab_user to request.state if authenticated
     """
     client_host = request.client.host if request.client else "unknown"
-    is_loopback = client_host in ("127.0.0.1", "::1", "localhost")
+    is_loopback = _is_loopback_client(client_host)
     
     # Skip non-API paths
     if not request.url.path.startswith("/api/"):
@@ -345,6 +403,29 @@ async def _collab_auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def _session_token_middleware(request: Request, call_next):
+    """Require the desktop session token on loopback /api calls.
+
+    Non-loopback clients keep the collab bearer check above. Health and the
+    other public paths stay open so the process probe and LAN login work.
+    Starlette HTTP middleware does not cover WebSockets; those check the
+    token in ``_require_session_token``.
+    """
+    # Browsers send a preflight OPTIONS without the session header. Rejecting it
+    # blocks every real call from the webview. CORS answers the preflight.
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    path = request.url.path
+    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
+        client_host = request.client.host if request.client else ""
+        if _is_loopback_client(client_host):
+            presented = _presented_session_token(request.headers, request.query_params)
+            if not _session_token_ok(presented):
+                return JSONResponse({"detail": "Invalid session token"}, status_code=401)
+    return await call_next(request)
+
+
 async def _ws_origin_ok(websocket: WebSocket) -> bool:
     """Reject a WebSocket handshake from a disallowed Host or browser Origin.
 
@@ -361,7 +442,7 @@ async def _ws_origin_ok(websocket: WebSocket) -> bool:
             pass
         return False
     origin = websocket.headers.get("origin")
-    if _origin_allowed(origin):
+    if _origin_allowed(origin, host):
         return True
     print(f"[ws] REJECTED origin={origin!r} allowed={_cors_origins} path={websocket.url.path}", flush=True)
     try:
@@ -379,10 +460,10 @@ async def _ws_collab_auth(websocket: WebSocket) -> Optional[Dict]:
     raises WebSocketDisconnect (closes connection) if auth required but missing/invalid.
     """
     client_host = websocket.client.host if websocket.client else "unknown"
-    is_loopback = client_host in ("127.0.0.1", "::1", "localhost")
+    is_loopback = _is_loopback_client(client_host)
     
     if is_loopback:
-        return None  # Owner - no auth needed
+        return None  # Owner - session token is checked separately
     
     # Non-loopback: require token in query params (WS doesn't have headers easily)
     token = websocket.headers.get("authorization", "").replace("Bearer ", "") or websocket.query_params.get("token")
@@ -415,6 +496,26 @@ async def _ws_collab_auth(websocket: WebSocket) -> Optional[Dict]:
         "permission": user.permission,
         "allowed_workspaces": user.allowed_workspaces,
     }
+
+
+async def _require_session_token(websocket: WebSocket) -> bool:
+    """Close a loopback WebSocket that did not present the session token.
+
+    Call before ``accept``. Non-loopback sockets are left to ``_ws_collab_auth``.
+    """
+    client_host = websocket.client.host if websocket.client else ""
+    if not _is_loopback_client(client_host):
+        return True
+    presented = _presented_session_token(websocket.headers, websocket.query_params)
+    if _session_token_ok(presented):
+        return True
+    print(f"[ws] REJECTED missing session token path={websocket.url.path}", flush=True)
+    try:
+        await websocket.close(code=1008, reason="invalid session token")
+    except Exception:
+        pass
+    return False
+
 
 _SERVER_BOOT_TIME = time.time()
 
@@ -1338,8 +1439,28 @@ Output ONLY valid JSON matching this schema:
     }
 
 
+def _browse_target_is_loopback(target_url: str) -> bool:
+    """True when a browse target is localhost or resolves to a loopback address."""
+    hostname = (urlparse(target_url).hostname or "").lower()
+    if hostname in ("localhost", "127.0.0.1", "::1"):
+        return True
+    if not hostname:
+        return False
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except Exception:
+        return False
+    for *_rest, sockaddr in infos:
+        try:
+            if ipaddress.ip_address(sockaddr[0]).is_loopback:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 @app.get("/api/browse")
-async def browse_proxy(url: str = ""):
+async def browse_proxy(request: Request, url: str = ""):
     """Proxy a URL for embedding in the app iframe.
 
     Strips X-Frame-Options and Content-Security-Policy headers so the page
@@ -1356,6 +1477,14 @@ async def browse_proxy(url: str = ""):
         target_url = _validate_browse_url(url.strip())
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+
+    # Loopback targets are the developer's own services. A missing or foreign
+    # Origin must not be able to ride this proxy into them. Match the allowlist
+    # (do not use startswith — "http://localhost.evil" would pass).
+    if _browse_target_is_loopback(target_url):
+        origin = request.headers.get("origin")
+        if not origin or not _origin_allowed(origin, request.headers.get("host")):
+            raise HTTPException(403, "Loopback proxy requires valid Origin")
 
     # ── Fetch with manual redirect following to prevent SSRF bypass ──
     MAX_REDIRECTS = 10
@@ -6618,6 +6747,9 @@ async def upload_project(file: UploadFile = File(...)):
     dest.mkdir(parents=True, exist_ok=True)
     zip_path = dest / file.filename
 
+    def _discard_upload() -> None:
+        shutil.rmtree(dest, ignore_errors=True)
+
     # SEC-FIX SEC-09 (part 1): stream upload chunks to disk instead of buffering
     # the entire body in RAM before the size check.  This prevents a ~500 MB
     # memory spike from a large upload and enforces the cap incrementally.
@@ -6630,8 +6762,10 @@ async def upload_project(file: UploadFile = File(...)):
                     raise HTTPException(413, "Archive too large (max 500 MB)")
                 fout.write(chunk)
     except HTTPException:
+        _discard_upload()
         raise
     except Exception as e:
+        _discard_upload()
         raise HTTPException(400, f"Failed to save archive: {e}")
 
     dest_resolved = dest.resolve()
@@ -6656,8 +6790,10 @@ async def upload_project(file: UploadFile = File(...)):
             zf.extractall(dest)
         zip_path.unlink(missing_ok=True)
     except HTTPException:
+        _discard_upload()
         raise
     except Exception as e:
+        _discard_upload()
         raise HTTPException(400, f"Failed to extract archive: {e}")
     # If the archive had a single top-level folder, return THAT as the project
     # root so terminals open in the actual project directory.
@@ -6750,8 +6886,10 @@ async def term_websocket(websocket: WebSocket, pane_id: str):
     """Real PTY-based terminal: stream raw bytes between browser and tmux attach."""
     if not await _ws_origin_ok(websocket):
         return
+    if not await _require_session_token(websocket):
+        return
     collab_user = await _ws_collab_auth(websocket)
-    if collab_user is None and websocket.client and websocket.client.host not in ("127.0.0.1", "::1", "localhost"):
+    if collab_user is None and not _is_loopback_client(websocket.client.host if websocket.client else ""):
         # Auth failed, connection already closed by _ws_collab_auth
         return
     # Attach collab_user to websocket state for audit
@@ -6872,8 +7010,10 @@ async def term_websocket(websocket: WebSocket, pane_id: str):
 async def websocket_endpoint(websocket: WebSocket):
     if not await _ws_origin_ok(websocket):
         return
+    if not await _require_session_token(websocket):
+        return
     collab_user = await _ws_collab_auth(websocket)
-    if collab_user is None and websocket.client and websocket.client.host not in ("127.0.0.1", "::1", "localhost"):
+    if collab_user is None and not _is_loopback_client(websocket.client.host if websocket.client else ""):
         return
     websocket.state.collab_user = collab_user
     await manager.connect_dashboard(websocket)
@@ -6903,6 +7043,8 @@ async def command_relay_websocket(websocket: WebSocket):
     """
     if not await _ws_origin_ok(websocket):
         return
+    if not await _require_session_token(websocket):
+        return
     await manager.connect_command_relay(websocket)
     try:
         while True:
@@ -6914,8 +7056,10 @@ async def command_relay_websocket(websocket: WebSocket):
 async def terminal_websocket(websocket: WebSocket, tty: str):
     if not await _ws_origin_ok(websocket):
         return
+    if not await _require_session_token(websocket):
+        return
     collab_user = await _ws_collab_auth(websocket)
-    if collab_user is None and websocket.client and websocket.client.host not in ("127.0.0.1", "::1", "localhost"):
+    if collab_user is None and not _is_loopback_client(websocket.client.host if websocket.client else ""):
         return
     websocket.state.collab_user = collab_user
     await manager.connect_terminal(websocket, tty=tty)
@@ -8190,6 +8334,8 @@ async def serve_start(payload: dict):
         raise
     if _is_blocked_path(p):
         raise HTTPException(403, "Access denied: sensitive directory")
+    if p == Path("/").resolve() or p == Path.home().resolve():
+        raise HTTPException(403, "Cannot serve root or home directory")
     if not p.exists() or not p.is_dir():
         raise HTTPException(400, f"Not a directory: {project_path}")
 

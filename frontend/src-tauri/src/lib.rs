@@ -302,6 +302,7 @@ pub fn run() {
             ipc::workspace_index_get,
             ipc::sidecar_status,
             ipc::sidecar_port,
+            ipc::session_token,
             ipc::open_devtools,
             gateway_ipc::gateway_status,
             gateway_ipc::gateway_enabled,

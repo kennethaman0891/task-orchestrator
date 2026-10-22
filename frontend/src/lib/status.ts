@@ -1,12 +1,12 @@
 // status.ts — Derive terminal task status from ground-truth CLI signals.
-// Accurately differentiates RUNNING vs ASKING vs STOPPED / OVER across Claude Code,
+// Accurately differentiates RUNNING vs ASKING vs IDLE vs STOPPED / OVER across Claude Code,
 // OpenAI Codex, OpenCode, Antigravity CLI, and generic shells.
 
 import type { UnifiedTerminal } from '@/types';
 import { TerminalManager } from '@/terminal/TerminalManager';
 import { formatLiveDuration, formatTimeOfDay } from '@/lib/format';
 
-export type TermStatus = 'empty' | 'closed' | 'running' | 'stopped' | 'over' | 'asking';
+export type TermStatus = 'empty' | 'closed' | 'running' | 'stopped' | 'over' | 'asking' | 'idle';
 
 /** Minimal UnifiedTerminal for entries not yet in the map (all optional fields
  *  defaulted) — avoids repeating giant literal objects at call sites. */
@@ -46,7 +46,7 @@ export function minTerminal(tty: string): UnifiedTerminal {
  * - Agent CLIs: `> [ ]`, `> Try "..."`, `codex>`, `opencode>`, `aider>`, `ollama>`, `claude>`, `antigravity>`, `agy>`
  */
 const UNIVERSAL_PROMPT_ENTRY_RE =
-  /^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.-]+@[^:]+:.*[$#%➜❯→»]\s*|[$#%➜❯→»]\s*|>>>\s*|\.\.\.\s*|In\s*\[\d+\]:\s*|\(Pdb\)\s*|[>❯]\s*(?:\[\s*\]|Try\s+["'].*|type\s+a\s+message.*|ask\s+anything.*|what\s+would\s+you\s+like.*)|(?:sqlite|mysql|mariadb|postgres|psql|redis|mongosh|php|irb|julia|ghci|aider|ollama|claude|codex|opencode|antigravity|agy|gemini)\s*>\s*|[a-zA-Z0-9_.-]+(?:=[#>]|[-#>]|\(#\))\s*|[a-zA-Z0-9_.:-]+>\s*)$/i;
+  /^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.-]+@[^:]+:.*[$#%➜❯→»]\s*|[a-zA-Z0-9_.-]+@\S+\s+\S.*[$#%➜❯→»]\s*|[$#%➜❯→»]\s*|>>>\s*|\.\.\.\s*|In\s*\[\d+\]:\s*|\(Pdb\)\s*|[>❯]\s*(?:\[\s*\]|Try\s+["'].*|type\s+a\s+message.*|ask\s+anything.*|Ask\s+Codex\b.*|what\s+would\s+you\s+like.*)|(?:sqlite|mysql|mariadb|postgres|psql|redis|mongosh|php|irb|julia|ghci|aider|ollama|claude|codex|opencode|antigravity|agy|gemini)\s*>\s*|[a-zA-Z0-9_.-]+(?:=[#>]|[-#>]|\(#\))\s*|[a-zA-Z0-9_.:-]+>\s*|[>❯]\s*)$/i;
 
 /**
  * Universal Accessory / Footer Pattern:
@@ -57,7 +57,7 @@ const UNIVERSAL_PROMPT_ENTRY_RE =
  * - Box borders: `╰───╯`, `─────`, etc.
  */
 const UNIVERSAL_FOOTER_RE =
-  /^(?:>>\s*auto\s+mode\b|shift\+tab\b|\?\s*for\s*shortcuts\b|press\s*\?\s*to\s*see\b|esc\s*to\s*(?:interrupt|cancel)\b|ctrl\+[a-z]\s*(?:commands|to)\b|tab\s*agents\b|\/help\b|bypass\s*permissions\b|compact\s*mode\b|api\s*usage\s*billing\b|cost:\s*\$\d+|context:\s*\d+|tokens?:\s*\d+|[─━═\-_+]{3,}|[╭╮╰╯│┌┐└┘├┤┬┴┼]+.*)$/i;
+  /^(?:>>\s*auto\s+mode\b|shift\+tab\b|\?\s*for\s*shortcuts\b.*|.*\?\s*shortcuts\b.*|.*\benter\/esc\b.*|.*\bdefault\s+[·•]\s+\S+.*|press\s*\?\s*to\s*see\b|esc\s*to\s*(?:interrupt|cancel)\b|ctrl\+[a-z]\s*(?:commands|to)\b|tab\s*agents\b|\/help\b|bypass\s*permissions\b|compact\s*mode\b|api\s*usage\s*billing\b|cost:\s*\$\d+|context:\s*\d+|tokens?:\s*\d+|[─━═\-_+]{3,}|[╭╮╰╯│┌┐└┘├┤┬┴┼]+.*)$/i;
 
 /**
  * Universal Question / Permission Pattern:
@@ -104,7 +104,7 @@ function isUniversalQuestion(tailLines: string[], lastLine: string): boolean {
 /**
  * Check if the terminal buffer is sitting at an idle prompt zone.
  * Scans the last 6 non-blank lines: if a prompt entry line is found and all
- * lines beneath it are recognized accessory footers, the CLI is idle/stopped.
+ * lines beneath it are recognized accessory footers, the CLI is ready.
  */
 function isAtUniversalPrompt(rawLines: string[]): boolean {
   const nonBlankLines = rawLines.map((l) => l.trim()).filter(Boolean);
@@ -186,13 +186,13 @@ export function deriveTaskStatus(
     return 'running';
   }
   if (ocState === 'waiting') {
-    return 'stopped';
+    return 'idle';
   }
 
-  // 5. Universal Prompt Zone Check: Sitting at an idle prompt -> STOPPED
+  // 5. Universal Prompt Zone Check: a live CLI at its prompt is ready, not failed.
   const atPrompt = isAtUniversalPrompt(nonBlankLines);
   if (atPrompt) {
-    return 'stopped';
+    return 'idle';
   }
 
   // 6. App-tracked task in flight
@@ -214,8 +214,9 @@ export function deriveTaskStatus(
     return 'running';
   }
 
-  // Default to STOPPED when idle
-  return 'stopped';
+  // Alive, quiet, and not a failed task. Antigravity's bare ">" welcome
+  // screen lands here when the footer shares a line with the model name.
+  return 'idle';
 }
 
 /** Short label + color for a derived status. */
@@ -227,6 +228,8 @@ export function statusLabel(s: TermStatus): { text: string; color: string } {
       return { text: 'ASKING', color: '#a855f7' };
     case 'stopped':
       return { text: 'STOPPED', color: '#64748b' };
+    case 'idle':
+      return { text: 'IDLE', color: '#94a3b8' };
     case 'over':
       return { text: 'OVER', color: '#3b82f6' };
     case 'closed':
@@ -293,9 +296,9 @@ export function getTerminalWorkDuration(
     };
   }
 
-  if (status === 'stopped') {
-    // When idle / stopped, durationStr MUST be empty string so the UI badge renders "STOPPED".
-    // If a previous task completed, calculate lastTaskDurationStr for tooltips only.
+  if (status === 'stopped' || status === 'idle') {
+    // The pill is the word itself (STOPPED or IDLE). A finished turn still
+    // reports lastTaskDurationStr for the tooltip.
     let lastTaskDurationStr = '';
     let endTs = 0;
     if (start > 0 && ended > start) {

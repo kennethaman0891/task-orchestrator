@@ -3,6 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { TokenUsage, Task } from '@/types';
+import { appendSessionToken } from './sessionAuth';
 
 // ── Base URL resolution ───────────────────────────────────────────────
 
@@ -31,7 +32,7 @@ export function setLivePort(port: number) { livePort = port; }
 
 /** Build the raw-image URL for a given file path — used directly as <img src>. */
 export function imageBlobUrl(path: string): string {
-  return `${apiBase()}/api/file/blob?path=${encodeURIComponent(sanitizePath(path))}`;
+  return appendSessionToken(`${apiBase()}/api/file/blob?path=${encodeURIComponent(sanitizePath(path))}`);
 }
 
 function api(path: string): string { return `${apiBase()}${path}`; }

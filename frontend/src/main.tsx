@@ -18,18 +18,30 @@ import './styles.css';
 import './opencode.css';
 // OpenDots CallView styles — scoped to .call-view only
 import '@/opendots/styles/call-view.css';
+import { installSessionAuth } from '@/lib/sessionAuth';
+
+// Attach the sidecar session token before any diagnostic fetch below.
+// The promise resolves after the Tauri command returns the token. Rendering
+// waits on it so the first API calls are not rejected with 401.
+const sessionAuthReady = installSessionAuth();
 
 // ---- Diagnostic: capture errors so we can see why the page is blank ----
 // NOTE: diagnostic posts go to the sidecar's default port; they are
 // best-effort and never block rendering when the sidecar is on the fallback
 // port or not yet up.
 try {
-  const diagPost = (payload: Record<string, unknown>) => {
+  const diagPost = (payload: Record<string, unknown>, attempt = 0) => {
     fetch('http://127.0.0.1:8765/api/diag-log', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    }).catch(() => {});
+    }).then((res) => {
+      if (!res.ok && attempt < 12) {
+        setTimeout(() => diagPost(payload, attempt + 1), 400 * (attempt + 1));
+      }
+    }).catch(() => {
+      if (attempt < 12) setTimeout(() => diagPost(payload, attempt + 1), 400 * (attempt + 1));
+    });
   };
   const origError = console.error;
   (console as any).error = (...args: any[]) => {
@@ -94,11 +106,15 @@ try {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source: 'boot', message: 'main.tsx loaded, mounting React' }),
+    }).then((res) => {
+      if (!res.ok && attempt < 12) {
+        setTimeout(() => postBoot(attempt + 1), 500 * (attempt + 1));
+      }
     }).catch(() => {
-      if (attempt < 5) setTimeout(() => postBoot(attempt + 1), 800 * (attempt + 1));
+      if (attempt < 12) setTimeout(() => postBoot(attempt + 1), 500 * (attempt + 1));
     });
   };
-  postBoot(0);
+  sessionAuthReady.then(() => postBoot(0));
 
 } catch {}
 
@@ -133,8 +149,10 @@ function Root() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <Root />
-  </React.StrictMode>,
-);
+sessionAuthReady.finally(() => {
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <Root />
+    </React.StrictMode>,
+  );
+});

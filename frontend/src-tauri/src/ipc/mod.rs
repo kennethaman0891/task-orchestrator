@@ -268,6 +268,12 @@ pub async fn sidecar_port() -> u16 {
     crate::sidecar::SIDECAR_PORT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Session token for loopback sidecar calls. Not exposed over HTTP.
+#[tauri::command]
+pub async fn session_token() -> String {
+    crate::sidecar::session_token()
+}
+
 /// Restart the sidecar to pick up new TTO_HOST (e.g. after collab LAN toggle).
 /// Kills existing sidecar, clears cooldown, spawns fresh with updated env.
 #[tauri::command]

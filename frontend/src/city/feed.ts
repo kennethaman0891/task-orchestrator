@@ -5,6 +5,7 @@
 
 import { useEffect } from 'react';
 import { wsBase } from '@/lib/api';
+import { withSessionToken } from '@/lib/sessionAuth';
 import { listProjects } from '@/city/api';
 import { useCityStore } from '@/city/store';
 
@@ -37,8 +38,8 @@ export function useProjectsFeed() {
       if (disposed) return;
       const base = wsBase();
       if (!base) return;
-      const token = typeof window !== 'undefined' ? localStorage.getItem('tto_collab_token') : null;
-      const wsUrl = token ? `${base}/ws?token=${encodeURIComponent(token)}` : `${base}/ws`;
+      const collab = typeof window !== 'undefined' ? localStorage.getItem('tto_collab_token') : null;
+      const wsUrl = withSessionToken(collab ? `${base}/ws?token=${encodeURIComponent(collab)}` : `${base}/ws`);
       try {
         ws = new WebSocket(wsUrl);
       } catch (err) {

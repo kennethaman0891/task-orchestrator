@@ -15,6 +15,7 @@ import { InteriorFloor } from './Interior';
 import { useCityStore } from '@/city/store';
 import { PlazaBots } from './Bots';
 import { BuildingCustomModel } from './BuildingCustomModel';
+import { imageBlobUrl } from '@/lib/api';
 
 export interface ProjectBuildingProps {
   project: Project;
@@ -63,7 +64,7 @@ function useSignTexture(project: Project, themeId: string, signBg?: string | nul
     if (b.logo) {
       const src = b.logo.startsWith('http') || b.logo.startsWith('blob:') || b.logo.startsWith('data:')
         ? b.logo
-        : `http://127.0.0.1:8765/api/file/blob?path=${encodeURIComponent(b.logo)}`;
+        : imageBlobUrl(b.logo);
       const img = new Image();
       img.crossOrigin = 'anonymous';
       img.onload = () => {

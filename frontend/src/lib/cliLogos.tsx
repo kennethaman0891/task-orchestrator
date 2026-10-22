@@ -39,6 +39,18 @@ interface LogoDef {
 
 /** Strip the outer <svg> wrapper and <title> so the inner paths can be inlined
  *  and colored via CSS `fill: currentColor`. Returns { viewBox, inner }. */
+/** Drop active content from inlined SVG. The marks are first-party assets. */
+function sanitizeSvgInner(inner: string): string {
+  return inner
+    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+    .replace(/<\/?script\b[^>]*>/gi, '')
+    .replace(/<foreignObject\b[\s\S]*?<\/foreignObject>/gi, '')
+    .replace(/<iframe\b[\s\S]*?<\/iframe>/gi, '')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/\s(?:href|xlink:href)\s*=\s*("\s*javascript:[^"]*"|'\s*javascript:[^']*')/gi, '');
+}
+
 function parseSvg(raw: string): { viewBox: string; inner: string } {
   const viewBox = raw.match(/viewBox="([^"]+)"/)?.[1] || '0 0 24 24';
   const inner = raw
@@ -46,7 +58,7 @@ function parseSvg(raw: string): { viewBox: string; inner: string } {
     .replace(/<\/svg>[\s\S]*$/, '')
     .replace(/<title>[\s\S]*?<\/title>/g, '')
     .trim();
-  return { viewBox, inner };
+  return { viewBox, inner: sanitizeSvgInner(inner) };
 }
 
 const LOGOS: Record<string, LogoDef> = {

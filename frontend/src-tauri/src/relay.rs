@@ -32,6 +32,19 @@ struct InjectCommand {
     task_id: String,
 }
 
+fn urlencoding_query(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// Spawn the relay loop as a background tokio task.
 pub fn spawn(app: tauri::AppHandle, manager: Arc<TerminalManager>) {
     tauri::async_runtime::spawn(async move {
@@ -53,8 +66,13 @@ async fn run_once(
     app: &tauri::AppHandle,
     manager: &Arc<TerminalManager>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let url = format!("ws://{}/ws/command-relay", crate::sidecar::sidecar_addr());
-    log::info!("[relay] connecting to {url}");
+    let addr = crate::sidecar::sidecar_addr();
+    let token = crate::sidecar::session_token();
+    let url = format!(
+        "ws://{addr}/ws/command-relay?session_token={}",
+        urlencoding_query(&token)
+    );
+    log::info!("[relay] connecting to ws://{addr}/ws/command-relay");
 
     let (ws, _resp) = tokio_tungstenite::connect_async(&url).await?;
     log::info!("[relay] connected");

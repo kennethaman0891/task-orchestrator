@@ -416,7 +416,9 @@ const GridCard = memo(function GridCard({
                 ? `\nWaiting: ${duration?.durationStr || 'N/A'}`
                 : (duration as any)?.lastTaskDurationStr
                 ? `\nLast Task: ${(duration as any).lastTaskDurationStr}${duration?.endTimeFormatted ? ` (ended ${duration.endTimeFormatted})` : ''}`
-                : '\n(Idle)'
+                : status === 'stopped'
+                ? '\n(Idle)'
+                : ''
             }`}
           >
             <span

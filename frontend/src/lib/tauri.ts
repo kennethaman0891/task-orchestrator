@@ -5,12 +5,12 @@
 
 import type { NativeSessionEntry } from '@/types';
 
-function isTauri(): boolean {
+export function isTauri(): boolean {
   if (typeof window === 'undefined') return false;
   return '__TAURI_INTERNALS__' in window;
 }
 
-async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri()) throw new Error('Not in Tauri');
   const mod = await import('@tauri-apps/api/core');
   return mod.invoke(cmd, args);
@@ -145,5 +145,5 @@ export const tauri = {
   },
 };
 
-export { isTauri, listenEvent };
+export { listenEvent };
 

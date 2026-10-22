@@ -4,6 +4,9 @@ Loads settings from environment variables, with a lightweight stdlib `.env`
 parser (no third-party dependency so OpenWA stays a purely optional external
 service).  Secrets are never printed anywhere: `__str__`/`redacted()` mask
 them and the audit log redacts values via `redact_secrets()`.
+
+``DISCORD_ALLOWED_USER_IDS`` is a space-, comma-, or semicolon-separated list
+of numeric Discord user IDs. An empty list rejects every Discord user.
 """
 from __future__ import annotations
 
@@ -31,6 +34,10 @@ BLOCKED_PATH_FRAGMENTS = (
     ".env",
     "id_rsa",
     "id_ed25519",
+    "id_dsa",
+    ".npmrc",
+    ".bash_history",
+    ".zsh_history",
     ".netrc",
     "key.pem",
     "secret",
@@ -191,6 +198,12 @@ def load_config() -> RemoteConfig:
         audit_log_path=os.environ.get("TTO_REMOTE_AUDIT_LOG", ""),
 
     )
+
+
+def discord_user_allowed(user_id: object) -> bool:
+    """Fail closed: an empty allowlist rejects every Discord user."""
+    allowed = load_config().discord_allowed_user_ids
+    return bool(allowed) and str(user_id) in allowed
 
 
 def redact_secrets(text: str, secrets: List[str]) -> str:

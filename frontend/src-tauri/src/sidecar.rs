@@ -12,8 +12,30 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::fs;
+
+/// Desktop session token shared with the Python sidecar.
+///
+/// Generated once in this process and passed to the child via
+/// `TTO_SESSION_TOKEN`. The sidecar cannot push a value back into our
+/// environment. Reuses a token already present in the environment so a
+/// sidecar started from the same shell accepts the webview.
+static SESSION_TOKEN: OnceLock<String> = OnceLock::new();
+
+pub fn session_token() -> String {
+    SESSION_TOKEN
+        .get_or_init(|| match std::env::var("TTO_SESSION_TOKEN") {
+            Ok(value) if !value.trim().is_empty() => value,
+            _ => {
+                let mut bytes = [0u8; 32];
+                rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut bytes);
+                bytes.iter().map(|b| format!("{b:02x}")).collect()
+            }
+        })
+        .clone()
+}
 
 /// The port the sidecar is actually serving on. Normally 8765; when something
 /// else refuses to vacate the port, the sidecar falls back to 8766 and this
@@ -467,7 +489,8 @@ pub fn spawn_if_needed() -> Option<Child> {
         let mut cmd = binding
             .arg(script)
             .current_dir(backend_dir)
-            .env("TTO_PORT", port);
+            .env("TTO_PORT", port)
+            .env("TTO_SESSION_TOKEN", session_token());
         if let Some(host) = tto_host {
             cmd = cmd.env("TTO_HOST", host);
         }

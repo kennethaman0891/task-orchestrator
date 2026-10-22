@@ -200,6 +200,22 @@ pub fn spawn_shell(
     {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // The GUI process can inherit a no-color parent (NO_COLOR=1,
+        // FORCE_COLOR=0, CLICOLOR=0). Claude, Codex, and Antigravity honor
+        // those and draw their logos in the default foreground. Drop them
+        // for the interactive PTY only. Do not env_clear(): HOME and the
+        // rest of the user environment stay.
+        for key in [
+            "NO_COLOR",
+            "FORCE_COLOR",
+            "CLICOLOR_FORCE",
+            "NPM_CONFIG_COLOR",
+            "CARGO_TERM_COLOR",
+            "PIP_NO_COLOR",
+        ] {
+            cmd.env_remove(key);
+        }
+        cmd.env("CLICOLOR", "1");
 
         // Ensure ~/.local/bin and Homebrew bin paths are on PATH for GUI launches
         let home = std::env::var("HOME").unwrap_or_default();

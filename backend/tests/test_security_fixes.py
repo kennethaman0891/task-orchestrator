@@ -127,6 +127,59 @@ class TestSecurityFixes(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 413)
         self.assertIn("zip bomb protection", ctx.exception.detail)
 
+    def test_serve_start_rejects_root_and_home(self):
+        """Static preview must not serve / or the home directory."""
+        import asyncio
+        for path in ("/", str(Path.home())):
+            with self.subTest(path=path):
+                with self.assertRaises(HTTPException) as ctx:
+                    asyncio.run(main.serve_start({"path": path, "port": 18920}))
+                self.assertEqual(ctx.exception.status_code, 403)
+                self.assertIn("Cannot serve root or home", ctx.exception.detail)
+
+    def test_session_token_required_for_run(self):
+        """Loopback command execution requires the desktop session token."""
+        client = TestClient(main.app)
+        denied = client.post("/api/run", json={"command": "echo test"})
+        self.assertEqual(denied.status_code, 401)
+        allowed = client.post(
+            "/api/run",
+            json={"command": "echo test"},
+            headers={"X-Task-Orchestrator-Token": main.SESSION_TOKEN},
+        )
+        self.assertNotEqual(allowed.status_code, 401)
+
+    def test_health_is_public(self):
+        client = TestClient(main.app)
+        res = client.get("/api/health")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json().get("status"), "ok")
+
+    def test_browse_loopback_requires_origin(self):
+        client = TestClient(main.app)
+        headers = {"X-Task-Orchestrator-Token": main.SESSION_TOKEN}
+        denied = client.get("/api/browse", params={"url": "http://127.0.0.1:1/"}, headers=headers)
+        self.assertEqual(denied.status_code, 403)
+        allowed = client.get(
+            "/api/browse",
+            params={"url": "http://127.0.0.1:1/"},
+            headers={**headers, "Origin": "http://localhost:1421"},
+        )
+        self.assertNotEqual(allowed.status_code, 403)
+
+    def test_discord_allowlist_fails_closed(self):
+        from remote.config import RemoteConfig, discord_user_allowed
+        with patch("remote.config.load_config", return_value=RemoteConfig()):
+            self.assertFalse(discord_user_allowed(1))
+        cfg = RemoteConfig(discord_allowed_user_ids=["42"])
+        with patch("remote.config.load_config", return_value=cfg):
+            self.assertFalse(discord_user_allowed(7))
+            self.assertTrue(discord_user_allowed("42"))
+
+    def test_blocked_fragments_include_history(self):
+        for fragment in ("id_dsa", ".npmrc", ".bash_history", ".zsh_history"):
+            self.assertIn(fragment, BLOCKED_PATH_FRAGMENTS)
+
 
 if __name__ == "__main__":
     unittest.main()

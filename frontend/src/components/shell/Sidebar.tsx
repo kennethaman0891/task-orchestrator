@@ -1707,7 +1707,9 @@ export function Sidebar({
                               ? `\nWaiting: ${duration.durationStr}`
                               : (duration as any)?.lastTaskDurationStr
                               ? `\nLast Task: ${(duration as any).lastTaskDurationStr}${duration.endTimeFormatted ? ` (ended ${duration.endTimeFormatted})` : ''}`
-                              : '\n(Idle)'
+                              : status === 'stopped'
+                              ? '\n(Idle)'
+                              : ''
                           }`}
                         >
                           {/* Status dot */}
@@ -1785,12 +1787,16 @@ export function Sidebar({
                                   ? 'rgba(34, 197, 94, 0.12)'
                                   : status === 'asking'
                                   ? 'rgba(245, 158, 11, 0.12)'
+                                  : status === 'idle'
+                                  ? 'rgba(148, 163, 184, 0.12)'
                                   : 'rgba(100, 116, 139, 0.12)',
                                 border: `1px solid ${
                                   status === 'running'
                                     ? 'rgba(34, 197, 94, 0.25)'
                                     : status === 'asking'
                                     ? 'rgba(245, 158, 11, 0.25)'
+                                    : status === 'idle'
+                                    ? 'rgba(148, 163, 184, 0.25)'
                                     : 'rgba(100, 116, 139, 0.25)'
                                 }`,
                                 color: statusLabelInfo.color,

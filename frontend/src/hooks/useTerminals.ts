@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import type { TerminalEntry, TokenUsage } from '@/types';
 import { getTerminals, wsBase } from '@/lib/api';
+import { withSessionToken } from '@/lib/sessionAuth';
 
 export function useTerminals() {
   const [terminals, setTerminals] = useState<Record<string, TerminalEntry>>({});
@@ -22,8 +23,8 @@ export function useTerminals() {
       if (closed) return;
       const base = wsBase();
       if (!base) return; // No WS base available (SSR)
-      const token = typeof window !== 'undefined' ? localStorage.getItem('tto_collab_token') : null;
-      const wsUrl = token ? `${base}/ws?token=${encodeURIComponent(token)}` : `${base}/ws`;
+      const collab = typeof window !== 'undefined' ? localStorage.getItem('tto_collab_token') : null;
+      const wsUrl = withSessionToken(collab ? `${base}/ws?token=${encodeURIComponent(collab)}` : `${base}/ws`);
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
