@@ -12,6 +12,22 @@ import type { Workspace } from '@/lib/workspace';
 
 type ContextListener = (contexts: Record<string, SessionContext>) => void;
 
+const PLACEHOLDER_TASKS = new Set([
+  'Unassigned',
+  'Antigravity Session',
+  'Interactive Development Session',
+  'OpenCode Autonomous Session',
+  'Awaiting prompt',
+  'Executing turn',
+]);
+
+/** Adapter filler titles are not a task the user gave. */
+export function realTaskTitle(value?: string): string | undefined {
+  const text = (value || '').trim();
+  if (!text || PLACEHOLDER_TASKS.has(text)) return undefined;
+  return text;
+}
+
 class SessionContextStore {
   private contexts: Record<string, SessionContext> = {};
   private listeners: Set<ContextListener> = new Set();
@@ -113,6 +129,8 @@ class SessionContextStore {
 
     const pane = activeWorkspace?.panes?.find((p) => p.tty === sessionId);
     const resolvedTerminalName = pane?.label || existing?.terminalName || term?.session_name || sessionId;
+    const parsedTitle = realTaskTitle(parsed.taskTitle);
+    const previousTitle = realTaskTitle(existing?.currentTaskTitle);
 
     const updated: SessionContext = {
       terminalId: sessionId,
@@ -130,7 +148,7 @@ class SessionContextStore {
       lastActivityTimestamp: lastActivity,
       elapsedMs: Math.max(0, now - startTs),
       state: parsed.state || (hasNewOutput ? 'running' : 'idle'),
-      currentTaskTitle: parsed.taskTitle || existing?.currentTaskTitle || term?.current_task?.description,
+      currentTaskTitle: parsedTitle || previousTitle || term?.current_task?.description,
       currentActivity: parsed.currentActivity || (hasNewOutput ? 'Producing output' : 'Idle'),
       recentCommands: existing?.recentCommands || [],
       recentActivity,

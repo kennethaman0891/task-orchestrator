@@ -32,6 +32,8 @@ export function archetypeFor(style: string, _type: string): ArchetypeSpec {
       return { width: 7, height: 4, depth: 7, slabs: 3, feature: 'garden', floorH: 1.4 };
     case 'saas':
       return { width: 5.5, height: 13, depth: 5.5, slabs: 9, feature: 'beacon', floorH: 1.5 };
+    case 'custom':
+      return { width: 9, height: 3.4, depth: 7, slabs: 2, feature: 'parapet', floorH: 1.5 };
     default:
       return { width: 6, height: 7.5, depth: 6, slabs: 5, feature: 'parapet', floorH: 1.5 };
   }

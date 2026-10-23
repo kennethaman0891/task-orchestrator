@@ -4,14 +4,13 @@
 
 import { useMemo } from 'react';
 import { useCityStore, visibleProjectIds } from '@/city/store';
+import { relativeToProject } from '@/city/sync/plotDistrictSync';
 import { moodById } from '@/city/themes';
-import type { AgentBot, Project } from '@/city/types';
+import type { Project } from '@/city/types';
 import { plotWorldPosition } from './CityGrid';
 import { CityGrid } from './CityGrid';
 import { CityRoads } from './CityRoads';
 import { CityNature } from './CityNature';
-import { CityVehicles } from './CityVehicles';
-import { CityBirds } from './CityBirds';
 import { CityAtmosphere } from './CityAtmosphere';
 import { CitySky } from './CitySky';
 
@@ -19,6 +18,12 @@ import { ProjectBuilding } from './ProjectBuilding';
 import { CameraRig, buildingFocusTarget, interiorTarget } from './CameraRig';
 import { UserAvatar } from './UserAvatar';
 import { archetypeFor } from './archetypes';
+import { TerminalCars } from './TerminalCars';
+import { PlotRoads } from './PlotRoads';
+import { RoadObstacles } from './RoadObstacles';
+import { TrafficLights } from './TrafficLights';
+import { TokenTrees } from './TokenTrees';
+import { AgentStation } from './AgentStation';
 
 export function CityScene() {
   const projects = useCityStore((s) => s.projects);
@@ -29,12 +34,12 @@ export function CityScene() {
   const activeWorkspacePath = useCityStore((s) => s.activeWorkspacePath);
   const cityMood = useCityStore((s) => s.cityMood);
   const mood = moodById(cityMood);
-  const showTraffic = useCityStore((s) => s.showTraffic);
   const showNature = useCityStore((s) => s.showNature);
-  const showBirds = useCityStore((s) => s.showBirds);
   const selectProject = useCityStore((s) => s.selectProject);
   const setCameraTarget = useCityStore((s) => s.setCameraTarget);
   const goInterior = useCityStore((s) => s.goInterior);
+  const plotDistricts = useCityStore((s) => s.plotDistricts);
+  const terminalCars = useCityStore((s) => s.terminalCars);
 
   // Projects with at least one live, non-idle agent → beacons pulse.
   const activePaths = useMemo(() => {
@@ -51,17 +56,6 @@ export function CityScene() {
     if (!filters.agentActive) return list;
     return list.filter((p) => activePaths.has(p.path));
   }, [projects, order, filters, activePaths]);
-
-  // Per-project live agent lists (grouped by project path).
-  const agentsByPath = useMemo(() => {
-    const m = new Map<string, AgentBot[]>();
-    for (const a of Object.values(agents)) {
-      const list = m.get(a.projectPath) || [];
-      list.push(a);
-      m.set(a.projectPath, list);
-    }
-    return m;
-  }, [agents]);
 
   const interiorProjectId = nav.mode === 'interior' ? nav.projectId : null;
   const interiorFloorIndex = nav.mode === 'interior' ? nav.floorIndex : null;
@@ -92,10 +86,34 @@ export function CityScene() {
       <CityGrid projects={visible} groundColor={groundColor} />
       <CityRoads />
       {showNature && <CityNature projects={visible} />}
-      {showTraffic && <CityVehicles />}
-      {showBirds && <CityBirds />}
       <CityAtmosphere />
       <UserAvatar />
+
+      {visible.map((p) => {
+        const rootName = p.path.split('/').filter(Boolean).pop() || p.name || 'project';
+        const position = plotWorldPosition(p.plot);
+        const district = plotDistricts[p.id];
+        const activeCar = Object.values(terminalCars).find((car) => car.projectId === p.id && car.moving)
+          ?? Object.values(terminalCars).find((car) => car.projectId === p.id);
+        const activeRelative = activeCar ? relativeToProject(p.path, activeCar.cwd || p.path) : null;
+        return (
+          <group key={`district-${p.id}`}>
+            <PlotRoads
+              projectId={p.id}
+              position={position}
+              rootName={rootName}
+              childNames={district?.dirs ?? []}
+              activeRelative={activeRelative}
+              onSelect={(segmentId, name, relative) => {
+                void segmentId;
+                const path = p.path + (relative ? `/${relative}` : '');
+                window.dispatchEvent(new CustomEvent('tto-road', { detail: { path, name } }));
+              }}
+            />
+            <RoadObstacles position={position} files={district?.files ?? []} />
+          </group>
+        );
+      })}
 
       {visible.map((p) => (
         <ProjectBuilding
@@ -103,13 +121,22 @@ export function CityScene() {
           project={p}
           position={plotWorldPosition(p.plot)}
           interiorFloor={interiorProjectId === p.id ? interiorFloorIndex : null}
-          agents={agentsByPath.get(p.path) || []}
+          agents={[]}
           agentActive={activePaths.has(p.path)}
           workspaceActive={!!activeWorkspacePath && activeWorkspacePath === p.path}
           onPointerDown={(e: any) => { e.stopPropagation(); focusBuilding(p); }}
           onDoubleClick={(e: any) => { e.stopPropagation(); enterBuilding(p); }}
         />
       ))}
+
+      <TerminalCars />
+      <TokenTrees />
+      <AgentStation />
+      <TrafficLights
+        onOpen={(projectId) => {
+          window.dispatchEvent(new CustomEvent('tto-light', { detail: { projectId } }));
+        }}
+      />
 
       <CameraRig />
     </>

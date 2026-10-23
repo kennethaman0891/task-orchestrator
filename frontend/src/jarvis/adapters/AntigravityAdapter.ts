@@ -65,13 +65,16 @@ export class AntigravityAdapter implements ICLIAdapter {
       }
     }
 
+    const activity = currentActivity
+      || (waitingForInput ? 'Awaiting prompt' : (lastLine ? lastLine.slice(0, 180) : 'Idle'));
+
     return {
       detected: true,
       cli: 'antigravity',
       cliName: 'Antigravity',
-      state: error ? 'error' : waitingForInput ? 'waiting_for_input' : 'running',
-      taskTitle: taskTitle || 'Antigravity Session',
-      currentActivity: currentActivity || (waitingForInput ? 'Awaiting prompt' : 'Executing turn'),
+      state: error ? 'error' : waitingForInput ? 'waiting_for_input' : (nonBlank.length ? 'running' : 'idle'),
+      taskTitle,
+      currentActivity: activity,
       recentAction,
       error,
       waitingForInput,

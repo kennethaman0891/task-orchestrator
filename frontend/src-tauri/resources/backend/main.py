@@ -1195,6 +1195,26 @@ async def voice_stop_speak():
     return {"ok": True}
 
 
+def _parse_jarvis_reason(raw: str) -> Optional[dict]:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
+        text = re.sub(r"```$", "", text).strip()
+    try:
+        data = json.loads(text)
+    except Exception:
+        match = re.search(r"\{.*\}", text, re.S)
+        if not match:
+            return None
+        try:
+            data = json.loads(match.group(0))
+        except Exception:
+            return None
+    return data if isinstance(data, dict) else None
+
+
 # ── Jarvis Autonomous Agentic Coding Reasoner ──────────────────────────────
 @app.post("/api/jarvis/reason")
 async def jarvis_reason(request: Request):
@@ -1218,6 +1238,9 @@ async def jarvis_reason(request: Request):
     project = body.get("project") or "this project"
     cwd = body.get("cwd") or ""
     buffer = (body.get("buffer") or "").strip()
+    if len(buffer) > 4000:
+        buffer = buffer[-4000:]
+    current_task = (body.get("current_task") or "").strip()
     working_memory = body.get("working_memory") or {}
     pending_prompt = body.get("pending_prompt") or None
     recent_errors = working_memory.get("errors") or []
@@ -1236,7 +1259,7 @@ async def jarvis_reason(request: Request):
     msg_lower = user_message.lower().strip()
     if pending_prompt:
         # Check direct confirmation words
-        if re.match(r"^(yes|yep|yeah|sure|allow|approve|run|go ahead|proceed|confirm|ok|okay|1|one)\b", msg_lower):
+        if re.match(r"^(yes|yep|yeah|sure|allow|approve|run|go ahead|proceed|confirm|ok|okay|1|one)$", msg_lower):
             return {
                 "intent": "permission_decision",
                 "spoken_response": "Approved option 1. Running the command now.",
@@ -1244,7 +1267,7 @@ async def jarvis_reason(request: Request):
                 "should_execute": True,
                 "analysis": "User approved option 1",
             }
-        if re.match(r"^(always|always allow|2|two)\b", msg_lower):
+        if re.match(r"^(always|always allow|2|two)$", msg_lower):
             return {
                 "intent": "permission_decision",
                 "spoken_response": "Approved and saved to always allow. Continuing.",
@@ -1252,7 +1275,7 @@ async def jarvis_reason(request: Request):
                 "should_execute": True,
                 "analysis": "User approved always allow (option 2)",
             }
-        if re.match(r"^(no|nope|cancel|deny|reject|abort|stop|don't|dont|4|four)\b", msg_lower):
+        if re.match(r"^(no|nope|cancel|deny|reject|abort|stop|don't|dont|4|four)$", msg_lower):
             return {
                 "intent": "permission_decision",
                 "spoken_response": "Cancelled the requested command.",
@@ -1279,8 +1302,13 @@ CURRENT TERMINAL CONTEXT:
 - Pending Permission/Prompt: {json.dumps(pending_prompt) if pending_prompt else "None"}
 - Recent Detected Errors: {json.dumps(recent_errors[:3]) if recent_errors else "None"}
 - Recent Actions: {json.dumps(recent_actions[:3]) if recent_actions else "None"}
+- Current task: {current_task or "none"}
 - Live Terminal Buffer (recent lines):
-\"\"\"{buffer[-2500:] if buffer else "No active output"}\"\"\"
+\"\"\"{buffer if buffer else ""}\"\"\"
+
+An empty buffer means the screen has no text. Do not invent a prompt, a task, or an error.
+Questions, explanations, and status answers use intent "advice" and should_execute false.
+Set should_execute true only when the user asked you to act on the terminal.
 
 RESPONSE REQUIREMENTS:
 Output ONLY valid JSON matching this schema:
@@ -1294,148 +1322,29 @@ Output ONLY valid JSON matching this schema:
 
     user_prompt = f"User Voice Input: \"{user_message}\""
 
-    # 3. Call LLM (Groq -> Gemini -> OpenAI -> Local Fallback)
-    groq_api_key = os.getenv("TTO_GROQ_API_KEY", "").strip()
-    if not groq_api_key and os.path.exists("backend/.env"):
-        try:
-            with open("backend/.env", "r") as f:
-                for line in f:
-                    if line.startswith("TTO_GROQ_API_KEY="):
-                        groq_api_key = line.split("=", 1)[1].strip()
-        except Exception:
-            pass
-
-    # Try Groq API (ultra-fast 200ms inference)
-    if groq_api_key:
-        try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
-                res = await client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {groq_api_key}",
-                        "Content-Type": "application/json",
-                        "User-Agent": "TaskOrchestrator/2.3 (Macintosh; Apple Silicon)",
-                    },
-                    json={
-                        "model": "qwen/qwen3.8-27b",
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        "response_format": {"type": "json_object"},
-                        "temperature": 0.2,
-                        "max_tokens": 250,
-                    },
-                )
-                if res.status_code == 200:
-                    data = res.json()
-                    content = data["choices"][0]["message"]["content"]
-                    parsed = json.loads(content)
-                    return {
-                        "intent": parsed.get("intent", "advice"),
-                        "spoken_response": parsed.get("spoken_response", f"Understood: {user_message}"),
-                        "action_command": parsed.get("action_command", ""),
-                        "should_execute": bool(parsed.get("should_execute", False)),
-                        "analysis": parsed.get("analysis", "Groq Qwen reasoning"),
-                        "provider": "groq",
-                    }
-        except Exception as e:
-            logging.warning(f"[jarvis_reason] Groq call failed: {e}")
-
-    # Try Gemini API if available
-    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if gemini_key:
-        try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
-                res = await client.post(
-                    url,
-                    headers={"User-Agent": "TaskOrchestrator/2.3 (Macintosh; Apple Silicon)"},
-                    json={
-                        "contents": [
-                            {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}
-                        ],
-                        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2},
-                    },
-                )
-                if res.status_code == 200:
-                    data = res.json()
-                    raw = data["candidates"][0]["content"]["parts"][0]["text"]
-                    parsed = json.loads(raw)
-                    return {
-                        "intent": parsed.get("intent", "advice"),
-                        "spoken_response": parsed.get("spoken_response", f"Understood: {user_message}"),
-                        "action_command": parsed.get("action_command", ""),
-                        "should_execute": bool(parsed.get("should_execute", False)),
-                        "analysis": parsed.get("analysis", "Gemini Flash reasoning"),
-                        "provider": "gemini",
-                    }
-        except Exception as e:
-            logging.warning(f"[jarvis_reason] Gemini call failed: {e}")
-
-    # 4. Intelligent Offline Agentic Reasoner Fallback
-    # If no LLM available or network offline, use rich contextual reasoning
-    if pending_prompt:
-        cmd = pending_prompt.get("command") or ""
-        q = pending_prompt.get("question") or ""
-        if "safe" in msg_lower or "should" in msg_lower or "what is" in msg_lower:
-            is_safe = not any(w in cmd.lower() for w in ["rm -rf", "drop", "--force", "delete"])
-            advice = "The command is safe to run in this workspace." if is_safe else "Caution: this command may delete or overwrite files."
-            return {
-                "intent": "advice",
-                "spoken_response": f"{cli_name} wants to run: {cmd[:60]}. {advice} Say 'yes' to allow or 'no' to cancel.",
-                "action_command": "",
-                "should_execute": False,
-                "analysis": "Permission safety evaluation",
-            }
-
-    if any(q in msg_lower for q in ["what are you doing", "what's running", "what is running", "status", "how is it going"]):
-        act = working_memory.get("current_activity") or "idle"
-        state = working_memory.get("current_state") or "observing"
+    raw = await asyncio.to_thread(call_llm, system_prompt, user_prompt, OMNIROUTE_SUGGEST_MODEL, 400)
+    parsed = _parse_jarvis_reason(raw)
+    if not parsed:
         return {
             "intent": "advice",
-            "spoken_response": f"{cli_name} is in {state} state on {project}. Current activity: {act}.",
+            "spoken_response": "I could not read a model reply.",
             "action_command": "",
             "should_execute": False,
-            "analysis": "Status inquiry",
+            "analysis": "Model unavailable",
         }
-
-    if any(q in msg_lower for q in ["why did it fail", "why did that fail", "explain error", "what error", "check why"]):
-        if recent_errors:
-            err = recent_errors[0]
-            return {
-                "intent": "advice",
-                "spoken_response": f"The error is: {err[:120]}. Let me know if you want me to tell {cli_name} to fix it.",
-                "action_command": "",
-                "should_execute": False,
-                "analysis": "Error explanation",
-            }
-        return {
-            "intent": "advice",
-            "spoken_response": f"I don't see any active errors in the terminal buffer right now.",
-            "action_command": "",
-            "should_execute": False,
-            "analysis": "No errors found",
-        }
-
-    # If user gave a task to build, fix, refactor, or test
-    is_cli = any(w in cli_name.lower() for w in ["antigravity", "agy", "claude", "codex", "opencode"])
-    if is_cli:
-        return {
-            "intent": "orchestrate_cli",
-            "spoken_response": f"Instructing {cli_name} to {user_message}.",
-            "action_command": user_message,
-            "should_execute": True,
-            "analysis": f"Orchestrating task for {cli_name}",
-        }
-
-    # Shell command execution
+    intent = parsed.get("intent") or "advice"
+    if intent not in ("advice", "permission_decision", "orchestrate_cli", "execute_shell"):
+        intent = "advice"
+    should_execute = bool(parsed.get("should_execute", False))
+    if intent == "advice":
+        should_execute = False
+    spoken = (parsed.get("spoken_response") or "").strip() or "I could not read a model reply."
     return {
-        "intent": "execute_shell",
-        "spoken_response": f"Running: {user_message}",
-        "action_command": user_message,
-        "should_execute": True,
-        "analysis": "Shell execution",
+        "intent": intent,
+        "spoken_response": spoken,
+        "action_command": (parsed.get("action_command") or "").strip(),
+        "should_execute": should_execute,
+        "analysis": (parsed.get("analysis") or "").strip(),
     }
 
 
@@ -2004,9 +1913,27 @@ def call_llm(system: str, user: str, model: str = OMNIROUTE_SUGGEST_MODEL, max_t
                 parts.append(content)
     return "".join(parts).strip()
 
-def suggest_next_task(tty: str) -> str:
-    """Generate a next-task suggestion from session context + current task + history."""
-    t = terminals[tty]
+def _split_spoken_task(raw: str) -> tuple[str, str]:
+    spoken = ""
+    task = ""
+    for line in (raw or "").splitlines():
+        upper = line.strip()
+        if upper.upper().startswith("SPOKEN:"):
+            spoken = upper.split(":", 1)[1].strip()
+        elif upper.upper().startswith("TASK:"):
+            task = upper.split(":", 1)[1].strip()
+    if not task:
+        task = _extract_next_task(raw)
+    if not spoken and task:
+        spoken = task
+    return spoken[:280], task[:400]
+
+
+def suggest_next_task_parts(tty: str, screen: str = "", cwd: str = "", cli_name: str = "") -> tuple[str, str]:
+    """Suggest one next task. A non-empty screen is enough; empty context no longer returns blank."""
+    t = terminals.get(tty)
+    if not t:
+        return "", ""
     context = (t.session_context or "").strip()
     cur = t.current_task
     cur_desc = cur.description if cur else ""
@@ -2018,21 +1945,37 @@ def suggest_next_task(tty: str) -> str:
             line += f" (done: {h.summary})"
         history_lines.append(line)
     history = "\n".join(history_lines)
-    if not context and not cur_desc and not history:
-        return ""
+    screen = (screen or "").strip()
+    if len(screen) > 4000:
+        screen = screen[-4000:]
+    if not context and not cur_desc and not history and not screen:
+        return "", ""
     system = (
-        "You are a task planner for an AI coding terminal. Based on the session context, "
-        "the current task, and recent completed work, suggest the single most valuable NEXT task. "
-        "Respond with ONLY the task description: 1-2 sentences, actionable and specific, "
-        "written as a shell-friendly instruction. No preamble, no bullets, no quotes, no code blocks."
+        "You watch a live coding terminal. The user has not given you a task. "
+        "Read the screen and name one next task. "
+        "Reply with exactly two lines:\n"
+        "SPOKEN: one short sentence about what the session is doing and the next step.\n"
+        "TASK: one actionable task sentence.\n"
+        "Do not invent files, errors, or commands that are not on the screen. No markdown."
     )
     user = (
+        f"CLI: {cli_name}\n"
+        f"Folder: {cwd or t.cwd}\n\n"
         f"Session context:\n{context}\n\n"
         f"Current task: {cur_desc} ({cur_status})\n\n"
         f"Recent work:\n{history}\n\n"
-        f"What should the next task be?"
+        f"Live screen:\n{screen}\n"
     )
-    return _extract_next_task(call_llm(system, user))
+    raw = call_llm(system, user, max_tokens=220)
+    if not raw.strip():
+        return "", ""
+    return _split_spoken_task(raw)
+
+
+def suggest_next_task(tty: str, screen: str = "", cwd: str = "", cli_name: str = "") -> str:
+    """Generate a next-task suggestion from session context, history, and an optional screen."""
+    _spoken, task = suggest_next_task_parts(tty, screen, cwd, cli_name)
+    return task
 
 def generate_session_summary(tty: str) -> str:
     """Generate a short 'what was done in this session' label from context + history."""
@@ -2152,6 +2095,14 @@ try:
     print("[projects] registry mounted (/api/projects)")
 except Exception as _e:  # noqa: BLE001
     print(f"[projects] registry init FAILED (city data layer disabled): {_e!r}")
+
+# Developer City: fixed car/street mesh specs. Additive; never breaks core boot.
+try:
+    from routers import city_spec as _city_spec_mod
+    app.include_router(_city_spec_mod.router)
+    print("[city-spec] router mounted (/api/city/car-spec)")
+except Exception as _e:  # noqa: BLE001
+    print(f"[city-spec] router init FAILED: {_e!r}")
 
 # Collab (remote collaboration) — additive, never breaks core boot
 # Ensure backend directory is on sys.path so routers can import collab_store, audit
@@ -5610,16 +5561,29 @@ async def update_token_limits(payload: TokenLimitUpdate):
     return get_token_usage_cached()
 
 @app.post("/api/terminals/{tty}/suggest-task")
-async def suggest_task(tty: str):
+async def suggest_task(tty: str, request: Request):
     tty = _resolve_tty(tty)
-    """Generate an AI-suggested next task from session context + history."""
+    """Generate an AI-suggested next task from session context, history, and optional screen text."""
     if tty not in terminals:
         raise HTTPException(404, "Terminal not found")
-    suggestion = await asyncio.to_thread(suggest_next_task, tty)
-    terminals[tty].suggested_task = suggestion
-    save_state()
-    await broadcast_state()
-    return {"ok": True, "suggestion": suggestion}
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    screen = body.get("buffer") or ""
+    cwd = body.get("cwd") or ""
+    cli_name = body.get("cli_name") or ""
+    spoken, suggestion = await asyncio.to_thread(
+        suggest_next_task_parts, tty, screen, cwd, cli_name
+    )
+    if suggestion:
+        terminals[tty].suggested_task = suggestion
+        save_state()
+        await broadcast_state()
+    return {"ok": True, "suggestion": suggestion, "spoken": spoken}
 
 @app.post("/api/terminals/{tty}/suggest-task/accept")
 async def accept_suggestion(tty: str):

@@ -81,7 +81,7 @@ class JarvisManager {
     const agent = this.getAgent(terminalId);
     if (agent.status === 'UNASSIGNED') {
       const ctx = sessionContextStore.get(terminalId);
-      agent.assign(['OBSERVE', 'READ', 'EXECUTE', 'CONTROL'], ctx);
+      agent.assign(['OBSERVE', 'READ'], ctx);
     }
     this.activeCallTerminalIds.add(terminalId);
     this.focusedCallTerminalId = terminalId;

@@ -18,7 +18,8 @@ import {
   detectTaskCompletion,
   type DetectedTerminalPrompt,
 } from '../terminalPromptDetector';
-import { sessionContextStore } from '../contextStore';
+import { realTaskTitle, sessionContextStore } from '../contextStore';
+import { apiBase } from '@/lib/api';
 
 export class JarvisAgent {
   public terminalId: string;
@@ -34,6 +35,8 @@ export class JarvisAgent {
   public lastSpokenPromptId: string | null = null;
   public hasTaskInFlight: boolean = false;
   public taskStartedAt: number = 0;
+  /** True only after the user typed a task or a voice turn actually ran one. */
+  public userGaveTask: boolean = false;
   public onPromptDetected?: (prompt: DetectedTerminalPrompt) => void;
   public onTaskFinished?: (summary: string) => void;
   public onChange?: () => void;
@@ -99,7 +102,7 @@ export class JarvisAgent {
   /** Voice Call: Start an interactive OpenDots voice call with this terminal agent */
   startCall(): void {
     if (this.status === 'UNASSIGNED') {
-      this.assign(['OBSERVE', 'READ', 'EXECUTE', 'CONTROL']);
+      this.assign(['OBSERVE', 'READ']);
     }
     this.isCallActive = true;
     this.callStartedAt = Date.now();
@@ -195,17 +198,18 @@ export class JarvisAgent {
     }
 
     if (this.status === 'UNASSIGNED') {
-      this.assign(['OBSERVE', 'READ', 'EXECUTE', 'CONTROL']);
+      this.assign(['OBSERVE', 'READ']);
     }
 
-    const lower = text.toLowerCase();
+    const lower = text.toLowerCase().trim();
 
     // ── 0. Priority: Answering Active Permission or Question Prompt ──
+    // Whole utterance only. A question that merely contains "run" must not approve a tool.
     if (this.pendingPrompt) {
       const prompt = this.pendingPrompt;
 
       // Affirmative / Yes / Option 1
-      if (/^(yes|yep|yeah|sure|allow|approve|run|go ahead|proceed|confirm|ok|okay|1|one)\b/i.test(lower)) {
+      if (/^(yes|yep|yeah|sure|allow|approve|run|go ahead|proceed|confirm|ok|okay|1|one)$/i.test(lower)) {
         const opt = prompt.options.find((o) => o.key === '1' || /yes|allow|run/i.test(o.label)) || prompt.options[0];
         const val = opt ? opt.value : '1';
         await TerminalManager.sendMenuSelection(this.terminalId, val);
@@ -222,7 +226,7 @@ export class JarvisAgent {
       }
 
       // Always Allow / Option 2
-      if (/^(always|always allow|2|two)\b/i.test(lower)) {
+      if (/^(always|always allow|2|two)$/i.test(lower)) {
         const opt = prompt.options.find((o) => o.key === '2' || /always/i.test(o.label));
         const val = opt ? opt.value : '2';
         await TerminalManager.sendMenuSelection(this.terminalId, val);
@@ -239,7 +243,7 @@ export class JarvisAgent {
       }
 
       // Negative / Cancel / Reject / Option 4
-      if (/^(no|nope|cancel|deny|reject|abort|stop|don't|dont|4|four)\b/i.test(lower)) {
+      if (/^(no|nope|cancel|deny|reject|abort|stop|don't|dont|4|four)$/i.test(lower)) {
         const opt = prompt.options.find((o) => o.key === '4' || /cancel|no/i.test(o.label));
         const val = opt ? opt.value : '4';
         await TerminalManager.sendMenuSelection(this.terminalId, val);
@@ -254,7 +258,7 @@ export class JarvisAgent {
       }
 
       // Explicit numeric selection: 1, 2, 3, 4, 5
-      const numMatch = lower.match(/\b(1|2|3|4|5|one|two|three|four|five)\b/i);
+      const numMatch = lower.match(/^(?:option\s+)?(1|2|3|4|5|one|two|three|four|five)$/i);
       if (numMatch) {
         const map: Record<string, string> = {
           one: '1', two: '2', three: '3', four: '4', five: '5',
@@ -277,7 +281,10 @@ export class JarvisAgent {
     }
 
     // Direct terminal process control (stop / cancel / kill)
-    if (/^(stop|pause|halt|cancel|kill|abort)\b/i.test(text)) {
+    if (/^(stop|pause|halt|cancel|kill|abort)$/i.test(lower)) {
+      if (!this.can('CONTROL')) {
+        return { response: 'Control is off, so I did not interrupt the terminal.' };
+      }
       this.hasTaskInFlight = false;
       await this.stop();
       return { response: "Interrupted the running process.", executedCommand: "stop" };
@@ -287,11 +294,15 @@ export class JarvisAgent {
     const ctx = sessionContextStore.get(this.terminalId);
     const cliName = ctx?.cliName || this.workingMemory.cli || 'Antigravity';
     const cwd = ctx?.cwd || '';
-    const buffer = TerminalManager.lastLines(this.terminalId, 45).join('\n');
+    const rawScreen = TerminalManager.getBufferText(this.terminalId, 80).join('\n').trim();
+    const buffer = rawScreen.length > 4000 ? rawScreen.slice(-4000) : rawScreen;
+    const currentTask = realTaskTitle(ctx?.currentTaskTitle) || '';
+    const asksToAct = /^(tell|ask|have|instruct|run|execute|fix|implement|build|write|edit|refactor|create|add|remove|delete|send|type|continue|do)\b/i.test(text)
+      || /\b(tell|instruct)\s+(antigravity|the\s+(cli|agent|terminal))\b/i.test(text);
 
+    const fail = { response: 'I could not read a model reply.' };
     try {
-      const apiHost = window.location.hostname || '127.0.0.1';
-      const reasonRes = await fetch(`http://${apiHost}:8765/api/jarvis/reason`, {
+      const reasonRes = await fetch(`${apiBase()}/api/jarvis/reason`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -301,6 +312,7 @@ export class JarvisAgent {
           project: this.workingMemory.project,
           cwd,
           buffer,
+          current_task: currentTask,
           working_memory: {
             current_state: this.workingMemory.currentState,
             current_activity: this.workingMemory.currentActivity,
@@ -312,113 +324,50 @@ export class JarvisAgent {
         }),
       });
 
-      if (reasonRes.ok) {
-        const reasoning = await reasonRes.json();
-        const spoken = reasoning.spoken_response || `Received: ${text}`;
-        const cmd = reasoning.action_command || '';
-        const shouldExec = Boolean(reasoning.should_execute);
-        const intent = reasoning.intent || 'advice';
-
-        // Intent: Advice, Explanation, Status, or Permission Guidance
-        if (intent === 'advice' || !shouldExec) {
-          this.addTimelineItem(`Jarvis: "${spoken}"`, 'action');
-          this.onChange?.();
-          return { response: spoken };
-        }
-
-        // Intent: Orchestrating Antigravity CLI or AI Agent
-        if (intent === 'orchestrate_cli' || intent === 'orchestrate') {
-          const promptToSend = cmd || text;
-          this.addTimelineItem(`Orchestrating ${cliName}: "${promptToSend}"`, 'task');
-          this.workingMemory.task = promptToSend;
-          this.status = 'WORKING';
-          this.hasTaskInFlight = true;
-          this.taskStartedAt = Date.now();
-          this.onChange?.();
-          await TerminalManager.sendPrompt(this.terminalId, promptToSend);
-          return { response: spoken, executedCommand: promptToSend };
-        }
-
-        // Intent: Execute shell command
-        if (intent === 'execute_shell' || intent === 'execute') {
-          const shellCmd = cmd || text;
-          this.addTimelineItem(`Shell: "${shellCmd}"`, 'task');
-          this.status = 'WORKING';
-          this.hasTaskInFlight = true;
-          this.taskStartedAt = Date.now();
-          this.onChange?.();
-          await this.executeCommand(shellCmd);
-          return { response: spoken, executedCommand: shellCmd };
-        }
+      if (!reasonRes.ok) return fail;
+      const reasoning = await reasonRes.json();
+      const spoken = (reasoning.spoken_response || '').trim() || fail.response;
+      const cmd = (reasoning.action_command || '').trim();
+      const intent = reasoning.intent || 'advice';
+      if (intent === 'advice' || intent === 'permission_decision') {
+        this.addTimelineItem(`Jarvis: "${spoken}"`, 'action');
+        this.onChange?.();
+        return { response: spoken };
       }
+      const shouldExec = Boolean(reasoning.should_execute) && asksToAct;
+
+      if (!shouldExec) {
+        this.addTimelineItem(`Jarvis: "${spoken}"`, 'action');
+        this.onChange?.();
+        return { response: spoken };
+      }
+
+      if (!this.can('EXECUTE') && !this.can('CONTROL')) {
+        const held = 'Execution is off. I will not type that into the terminal.';
+        this.addTimelineItem(`Held: "${cmd || text}"`, 'action');
+        this.onChange?.();
+        return { response: held };
+      }
+
+      const promptToSend = cmd || text;
+      this.userGaveTask = true;
+      this.workingMemory.task = promptToSend;
+      this.status = 'WORKING';
+      this.hasTaskInFlight = true;
+      this.taskStartedAt = Date.now();
+      this.addTimelineItem(`Running: "${promptToSend}"`, 'task');
+      this.onChange?.();
+
+      if (intent === 'execute_shell' || intent === 'execute') {
+        await this.executeCommand(promptToSend);
+      } else {
+        await TerminalManager.sendPrompt(this.terminalId, promptToSend);
+      }
+      return { response: spoken, executedCommand: promptToSend };
     } catch (e) {
-      console.warn('[JarvisAgent] Backend reasoning error, using local fallback:', e);
+      console.warn('[JarvisAgent] Backend reasoning error:', e);
+      return fail;
     }
-
-    // ── 2. Local Fallback Heuristics (if backend is unreachable) ──
-    const cliLower = (cliName || '').toLowerCase();
-    const isAiCli = /antigravity|agy|claude|codex|opencode|prime|cursor|gemini|qwen|copilot/.test(cliLower);
-
-    this.addTimelineItem(`Voice: "${text}"`, 'task');
-    this.workingMemory.task = text;
-
-    // Direct Intent: Continue task
-    if (/^(continue|keep going|proceed|next|go on)\b/i.test(text)) {
-      this.status = 'WORKING';
-      this.hasTaskInFlight = true;
-      this.taskStartedAt = Date.now();
-      this.onChange?.();
-      await this.continueTask();
-      return { response: "Continuing the current task.", executedCommand: "continue" };
-    }
-
-    // Direct Intent: Run test suite
-    if (/^(run\s+(the\s+)?tests?|test\s+suite|check\s+tests)\b/i.test(text)) {
-      this.status = 'WORKING';
-      this.hasTaskInFlight = true;
-      this.taskStartedAt = Date.now();
-      this.onChange?.();
-      await this.runTests();
-      return { response: "Starting the test suite now.", executedCommand: "test" };
-    }
-
-    // Direct Intent: Investigate error
-    if (/^(check\s+why|why\s+did\s+it\s+fail|investigate|debug|fix\s+error)\b/i.test(text)) {
-      const expl = await this.investigateError();
-      return { response: expl, executedCommand: "investigate" };
-    }
-
-    // Status queries
-    if (/\b(status|what('s|\s+is)\s+running|how('s|\s+is)\s+it\s+going|any\s+errors?)\b/i.test(text)) {
-      const err = this.workingMemory.errors[0];
-      const state = this.workingMemory.currentState.toLowerCase();
-      const proj = this.workingMemory.project !== 'Unknown' ? this.workingMemory.project : 'this project';
-      if (err) {
-        return { response: `${cliName} is in ${state} state on ${proj}. Notice error: ${err.slice(0, 100)}.` };
-      }
-      return { response: `${cliName} is in ${state} state on ${proj}. Activity: ${this.workingMemory.currentActivity}.` };
-    }
-
-    // If running an AI CLI (Antigravity CLI, etc.), deliver prompt directly
-    if (isAiCli) {
-      this.status = 'WORKING';
-      this.hasTaskInFlight = true;
-      this.taskStartedAt = Date.now();
-      this.onChange?.();
-      await TerminalManager.sendPrompt(this.terminalId, text);
-      return {
-        response: `Sent instruction to ${cliName}: "${text}". Watching for output.`,
-        executedCommand: text,
-      };
-    }
-
-    // General developer instruction: execute in shell
-    this.status = 'WORKING';
-    this.hasTaskInFlight = true;
-    this.taskStartedAt = Date.now();
-    this.onChange?.();
-    await this.executeCommand(text);
-    return { response: `Executing: ${text}`, executedCommand: text };
   }
 
   /** Assign a specific developer task or prompt directly to this agent */
@@ -428,6 +377,7 @@ export class JarvisAgent {
     if (this.status === 'UNASSIGNED') {
       this.assign(['OBSERVE', 'READ', 'EXECUTE', 'CONTROL']);
     }
+    this.userGaveTask = true;
     this.workingMemory.task = desc;
     this.status = 'WORKING';
     this.addTimelineItem(`Assigned task: ${desc}`, 'task');
@@ -467,7 +417,7 @@ export class JarvisAgent {
     // Refresh memory while preserving explicit user task
     const prevTask = this.workingMemory?.task;
     this.workingMemory = ContextReconstructor.reconstruct(ctx);
-    if (prevTask && prevTask !== 'Unassigned' && prevTask !== 'Interactive Development Session') {
+    if (this.userGaveTask && prevTask) {
       this.workingMemory.task = prevTask;
     }
   }

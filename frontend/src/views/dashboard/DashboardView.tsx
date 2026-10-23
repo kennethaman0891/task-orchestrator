@@ -9,7 +9,8 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
 import type { UnifiedTerminal } from '@/types';
 import type { Workspace, View } from '@/lib/workspace';
-import { sessionContextStore } from '@/jarvis/contextStore';
+import { realTaskTitle, sessionContextStore } from '@/jarvis/contextStore';
+import { requestSessionSuggestion, sessionIsWorking } from '@/jarvis/sessionSuggest';
 import { jarvisManager } from '@/jarvis/agent/JarvisManager';
 import { VoiceRouter } from '@/jarvis/voice/VoiceRouter';
 import { JarvisPanel } from '@/jarvis/ui/JarvisPanel';
@@ -38,6 +39,8 @@ import {
   Check,
   Phone,
   PhoneCall,
+  GripVertical,
+  Maximize2,
 } from 'lucide-react';
 
 interface Props {
@@ -77,6 +80,8 @@ export function DashboardView({
 
   // ── Per-terminal task input draft ──
   const [taskDrafts, setTaskDrafts] = useState<Record<string, string>>({});
+  const [cardOrder, setCardOrder] = useState<string[]>([]);
+  const [wideIds, setWideIds] = useState<Record<string, boolean>>({});
 
   // ── Selected terminal for Jarvis Panel drawer ──
   const [inspectTerminalId, setInspectTerminalId] = useState<string | null>(null);
@@ -184,6 +189,33 @@ export function DashboardView({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, activeWorkspaceSessionIds, allWorkspaceSessionIds, terminals, contexts, activeWorkspace, tick]);
 
+  const orderedSessions = useMemo(() => {
+    const ids = filteredSessionList.map((s) => s.id);
+    const known = cardOrder.filter((id) => ids.includes(id));
+    const rest = ids.filter((id) => !known.includes(id));
+    const byId = new Map(filteredSessionList.map((s) => [s.id, s]));
+    return [...known, ...rest].map((id) => byId.get(id)!).filter(Boolean);
+  }, [filteredSessionList, cardOrder]);
+
+  const sessionsRef = useRef(orderedSessions);
+  sessionsRef.current = orderedSessions;
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (jarvisManager.getActiveCallTerminalIds().length > 0) return;
+      const list = sessionsRef.current;
+      const hit = list.find((s) => sessionIsWorking(s.id, s.term) && !jarvisManager.getAgent(s.id).userGaveTask);
+      if (!hit) return;
+      void requestSessionSuggestion({
+        terminalId: hit.id,
+        entry: hit.term,
+        cwd: hit.ctx.cwd,
+        cliName: hit.ctx.cliName,
+      });
+    }, 20000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   // Workstation Live Summary Metrics
   const stats = useMemo(() => {
     const total = filteredSessionList.length;
@@ -215,8 +247,8 @@ export function DashboardView({
 
     if (agent.status !== 'UNASSIGNED') {
       try {
-        await jarvisManager.assignTask(terminalId, draft);
-        onToast(`Assigned task to ${termName}: "${draft}"`);
+        const reasoned = await agent.processVoiceTurn(draft);
+        onToast(reasoned.response);
         setTaskDrafts((prev) => ({ ...prev, [terminalId]: '' }));
       } catch (err: any) {
         onToast(`Failed to assign task: ${err?.message || err}`, true);
@@ -244,8 +276,8 @@ export function DashboardView({
     jarvisManager.assignAgent(terminalId, ['OBSERVE', 'READ', 'EXECUTE', 'CONTROL']);
     const termName = contexts[terminalId]?.terminalName || terminalId;
     if (draft) {
-      await jarvisManager.assignTask(terminalId, draft);
-      onToast(`Assigned Jarvis & task to ${termName}: "${draft}"`);
+      const reasoned = await jarvisManager.getAgent(terminalId).processVoiceTurn(draft);
+      onToast(reasoned.response);
       setTaskDrafts((prev) => ({ ...prev, [terminalId]: '' }));
     } else {
       onToast(`Assigned Jarvis to ${termName}`);
@@ -612,17 +644,33 @@ export function DashboardView({
               gap: 16,
             }}
           >
-            {filteredSessionList.map(({ id, ctx, agent }) => {
+            {orderedSessions.map(({ id, term, ctx, agent }) => {
               const isAssigned = agent.status !== 'UNASSIGNED';
               const isWorking = agent.status === 'WORKING';
+              const isWide = Boolean(wideIds[id]);
               const startTimeStr = new Date(ctx.sessionStartTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              const currentTask = agent.workingMemory.task && agent.workingMemory.task !== 'Unassigned'
-                ? agent.workingMemory.task
-                : ctx.currentTaskTitle;
+              const memoryTask = realTaskTitle(agent.userGaveTask ? agent.workingMemory.task : '');
+              const currentTask = memoryTask || realTaskTitle(ctx.currentTaskTitle);
+              const suggestion = (term?.suggested_task || '').trim();
 
               return (
                 <div
                   key={id}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const from = e.dataTransfer.getData('text/plain');
+                    if (!from || from === id) return;
+                    setCardOrder(() => {
+                      const ids = orderedSessions.map((s) => s.id).filter((x) => x !== from);
+                      const at = ids.indexOf(id);
+                      ids.splice(at < 0 ? ids.length : at, 0, from);
+                      return ids;
+                    });
+                  }}
                   style={{
                     backgroundColor: t.colors.bg.secondary,
                     border: `1px solid ${focusedTerminal === id ? t.colors.accent.primary : t.colors.border.subtle}`,
@@ -633,11 +681,24 @@ export function DashboardView({
                     gap: 12,
                     boxShadow: t.shadow.sm,
                     transition: `border-color ${t.transition.fast}`,
+                    gridColumn: isWide ? 'span 2' : undefined,
+                    minWidth: 0,
                   }}
                 >
                   {/* Card Header: Terminal Name, Workspace, CLI & Jarvis Status */}
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
+                      <div
+                        draggable={editingCardId !== id}
+                        title="Drag to reorder"
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('text/plain', id);
+                          e.dataTransfer.effectAllowed = 'move';
+                        }}
+                        style={{ cursor: 'grab', color: t.colors.text.muted, display: 'flex', flexShrink: 0 }}
+                      >
+                        <GripVertical size={14} />
+                      </div>
                       <CliLogo cli={ctx.detectedCli} size={20} />
                       <div style={{ minWidth: 0, flex: 1 }}>
                         {editingCardId === id ? (
@@ -747,6 +808,22 @@ export function DashboardView({
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <button
+                        type="button"
+                        title={isWide ? 'Normal width' : 'Wide card'}
+                        onClick={() => setWideIds((prev) => ({ ...prev, [id]: !prev[id] }))}
+                        style={{
+                          ...buttonBase(t),
+                          ...buttonSize(t, 'sm'),
+                          ...buttonVariant(t, 'ghost'),
+                          height: 22,
+                          padding: '0 6px',
+                          fontSize: 10,
+                        }}
+                      >
+                        <Maximize2 size={11} />
+                        <span>{isWide ? 'Normal' : 'Wide'}</span>
+                      </button>
                       {/* Jarvis Status Pill */}
                       <span
                         style={{
@@ -828,6 +905,21 @@ export function DashboardView({
                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {currentTask}
                         </span>
+                      </div>
+                    )}
+                    {suggestion && (
+                      <div
+                        style={{
+                          marginTop: 4,
+                          color: t.colors.text.secondary,
+                          fontWeight: 500,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                        title={suggestion}
+                      >
+                        Suggested: {suggestion}
                       </div>
                     )}
                   </div>

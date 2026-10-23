@@ -61,5 +61,14 @@ export function getCityMeta(): Promise<CityMeta> {
   return req('/api/projects/__meta');
 }
 
+/** Fixed sample mesh. The sentence is accepted by the server and ignored. */
+export function requestCityCarSpec(kind: 'car' | 'street', sentence: string): Promise<unknown> {
+  return req('/api/city/car-spec', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind, sentence }),
+  });
+}
+
 /** URL for rendering a logo/screenshot stored by absolute path. */
 export { imageBlobUrl, putFile };

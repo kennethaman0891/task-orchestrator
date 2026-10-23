@@ -1468,7 +1468,7 @@ export default function App() {
         onToast={showToast}
       />
 
-      <CallOverlay />
+      <CallOverlay terminals={unifiedTerminals} />
 
       {toast && (
         <div

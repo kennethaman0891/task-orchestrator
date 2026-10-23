@@ -80,8 +80,8 @@ export function JarvisPanel({ terminalId, context, onClose, onToast }: Props) {
     if (!taskDraft.trim()) return;
     setBusy(true);
     try {
-      await jarvisManager.assignTask(terminalId, taskDraft.trim());
-      onToast(`Assigned task: "${taskDraft.trim()}"`);
+      const reasoned = await jarvisManager.getAgent(terminalId).processVoiceTurn(taskDraft.trim());
+      onToast(reasoned.response);
       setTaskDraft('');
     } finally {
       setBusy(false);

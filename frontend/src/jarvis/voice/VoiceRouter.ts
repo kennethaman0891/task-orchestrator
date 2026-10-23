@@ -25,9 +25,8 @@ export class VoiceRouter {
     const agent = jarvisManager.getAgent(terminalId);
     const ctx = sessionContextStore.get(terminalId);
 
-    // Auto-assign Jarvis with full permissions if unassigned so voice instruction succeeds
     if (agent.status === 'UNASSIGNED') {
-      agent.assign(['OBSERVE', 'READ', 'EXECUTE', 'CONTROL']);
+      agent.assign(['OBSERVE', 'READ']);
     }
 
     eventBus.emit(
@@ -59,9 +58,8 @@ export class VoiceRouter {
       return { success: true, message: `Interrupted process in ${ctx?.terminalName || terminalId}`, targetTerminalId: terminalId, intent: 'stop' };
     }
 
-    // Default: assign task to Jarvis & route into PTY
-    await agent.assignTask(text);
-    return { success: true, message: `Assigned task to ${ctx?.terminalName || terminalId}: "${text}"`, targetTerminalId: terminalId, intent: 'custom' };
+    const reasoned = await agent.processVoiceTurn(text);
+    return { success: true, message: reasoned.response, targetTerminalId: terminalId, intent: 'custom' };
   }
 
   /** Mode 2: Global Workstation Voice Command */

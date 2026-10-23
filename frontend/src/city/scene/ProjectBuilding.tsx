@@ -4,9 +4,9 @@
 // status beacon. Externally it also hosts the plaza bots; internally it
 // renders the active floor when entered. Never empty: defaults cascade.
 
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { Detailed, Html } from '@react-three/drei';
 import { archetypeFor, useBuildingMaterials, windowGrid, type ArchetypeSpec } from './archetypes';
 import { themeById } from '@/city/themes';
@@ -16,6 +16,8 @@ import { useCityStore } from '@/city/store';
 import { PlazaBots } from './Bots';
 import { BuildingCustomModel } from './BuildingCustomModel';
 import { imageBlobUrl } from '@/lib/api';
+import { patchProject } from '@/city/api';
+import { GRID_SIZE, GRID_SPACING, plotWorldPosition } from './CityGrid';
 
 export interface ProjectBuildingProps {
   project: Project;
@@ -40,6 +42,54 @@ function healthColor(p: Project): string {
   if (p.status === 'paused') return '#94a3b8';
   return '#22c55e';
 }
+
+/** Screen pixels of movement required before a press becomes a plot drag. */
+const DRAG_THRESHOLD_PX = 6;
+
+type SubBuildingSpec = { name?: string; dx: number; dz: number };
+
+/** Absent, undefined, or non-array → nothing. Bad entries are skipped. */
+function readSubBuildings(building: Project['building']): SubBuildingSpec[] {
+  const raw = (building as { subBuildings?: unknown }).subBuildings;
+  if (!Array.isArray(raw)) return [];
+  const out: SubBuildingSpec[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as { name?: unknown; dx?: unknown; dz?: unknown };
+    const dx = typeof rec.dx === 'number' ? rec.dx : Number(rec.dx);
+    const dz = typeof rec.dz === 'number' ? rec.dz : Number(rec.dz);
+    out.push({
+      name: typeof rec.name === 'string' ? rec.name : undefined,
+      dx: Number.isFinite(dx) ? dx : 0,
+      dz: Number.isFinite(dz) ? dz : 0,
+    });
+  }
+  return out;
+}
+
+function nearestPlot(wx: number, wz: number): { x: number; y: number } {
+  const half = ((GRID_SIZE - 1) * GRID_SPACING) / 2;
+  const x = Math.round((wx + half) / GRID_SPACING);
+  const y = Math.round((wz + half) / GRID_SPACING);
+  return {
+    x: Math.min(GRID_SIZE - 1, Math.max(0, x)),
+    y: Math.min(GRID_SIZE - 1, Math.max(0, y)),
+  };
+}
+
+function plotTakenByOther(
+  projects: Record<string, Project>,
+  selfId: string,
+  cell: { x: number; y: number },
+): boolean {
+  for (const p of Object.values(projects)) {
+    if (!p || p.id === selfId || !p.plot) continue;
+    if (p.plot.x === cell.x && p.plot.y === cell.y) return true;
+  }
+  return false;
+}
+
+type OrbitLike = { enabled?: boolean };
 
 /** Canvas texture: logo image if available, else brand-color initials. */
 function useSignTexture(project: Project, themeId: string, signBg?: string | null): THREE.CanvasTexture {
@@ -193,6 +243,46 @@ export function ProjectBuilding({
 }: ProjectBuildingProps) {
   const openContextMenu = useCityStore((s) => s.openContextMenu);
   const cityMood = useCityStore((s) => s.cityMood);
+  const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
+  const controls = useThree((s) => s.controls) as OrbitLike | null;
+
+  // Live override while dragging / until patchProject settles. null = plot prop.
+  const [dragWorld, setDragWorld] = useState<[number, number, number] | null>(null);
+  const dragWorldRef = useRef<[number, number, number] | null>(null);
+  const controlsRef = useRef(controls);
+  controlsRef.current = controls;
+  const gesture = useRef({
+    down: false,
+    dragging: false,
+    sx: 0,
+    sy: 0,
+    restoreControls: undefined as boolean | undefined,
+  });
+  const grabOffset = useRef({ x: 0, z: 0 });
+  const moveToken = useRef(0);
+  const detachListeners = useRef<(() => void) | null>(null);
+  const raycaster = useRef(new THREE.Raycaster());
+  const ndc = useRef(new THREE.Vector2());
+  const groundPlane = useRef(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0));
+  const hitPoint = useRef(new THREE.Vector3());
+
+  const restoreOrbit = () => {
+    const ctl = controlsRef.current;
+    const prev = gesture.current.restoreControls;
+    gesture.current.restoreControls = undefined;
+    if (ctl && prev !== undefined) ctl.enabled = prev;
+  };
+
+  useEffect(() => () => {
+    detachListeners.current?.();
+    detachListeners.current = null;
+    if (gesture.current.down) {
+      gesture.current.down = false;
+      gesture.current.dragging = false;
+      restoreOrbit();
+    }
+  }, []);
 
   const handleContextMenu = (e: any) => {
     const ne = e.nativeEvent ?? e;
@@ -200,7 +290,163 @@ export function ProjectBuilding({
     e.stopPropagation();
     openContextMenu(project.id, ne.clientX, ne.clientY);
   };
+
+  const groundHit = (clientX: number, clientY: number): THREE.Vector3 | null => {
+    const rect = gl.domElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    ndc.current.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    raycaster.current.setFromCamera(ndc.current, camera);
+    return raycaster.current.ray.intersectPlane(groundPlane.current, hitPoint.current);
+  };
+
+  // Press stays a click until the pointer moves past 6px, so double-click
+  // still enters. Past that, the building follows the ground-plane hit and
+  // orbit is stopped so the camera doesn't steal the gesture.
+  const handlePointerDown = (e: any) => {
+    const button = e.button ?? e.nativeEvent?.button ?? 0;
+    if (button !== 0) {
+      onPointerDown?.(e);
+      return;
+    }
+    // Synthetic only — native pointerdown must still bubble so double-click
+    // can enter. Orbit is paused via controls.enabled for this press.
+    e.stopPropagation?.();
+    const native = e.nativeEvent as PointerEvent | undefined;
+    const sx = native?.clientX ?? e.clientX ?? 0;
+    const sy = native?.clientY ?? e.clientY ?? 0;
+    const ctl = controlsRef.current;
+    gesture.current.down = true;
+    gesture.current.dragging = false;
+    gesture.current.sx = sx;
+    gesture.current.sy = sy;
+    gesture.current.restoreControls = ctl?.enabled;
+    if (ctl) ctl.enabled = false;
+    grabOffset.current.x = 0;
+    grabOffset.current.z = 0;
+
+    const el = gl.domElement;
+    const pointerId = native?.pointerId;
+    if (pointerId !== undefined) {
+      try { el.setPointerCapture(pointerId); } catch { /* canvas already released */ }
+    }
+    const stopIfDragging = (ev: PointerEvent) => {
+      if (!gesture.current.dragging) return;
+      ev.stopPropagation();
+    };
+    const onMove = (ev: PointerEvent) => {
+      if (!gesture.current.down) return;
+      if (ev.pointerId !== undefined && native?.pointerId !== undefined && ev.pointerId !== native.pointerId) return;
+      const dist = Math.hypot(ev.clientX - gesture.current.sx, ev.clientY - gesture.current.sy);
+      if (!gesture.current.dragging) {
+        if (dist <= DRAG_THRESHOLD_PX) return;
+        gesture.current.dragging = true;
+        const origin = dragWorldRef.current ?? position;
+        const hit0 = groundHit(ev.clientX, ev.clientY);
+        if (hit0) {
+          grabOffset.current.x = origin[0] - hit0.x;
+          grabOffset.current.z = origin[2] - hit0.z;
+        }
+      }
+      stopIfDragging(ev);
+      const hit = groundHit(ev.clientX, ev.clientY);
+      if (!hit) return;
+      const next: [number, number, number] = [
+        hit.x + grabOffset.current.x,
+        0,
+        hit.z + grabOffset.current.z,
+      ];
+      dragWorldRef.current = next;
+      setDragWorld(next);
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== undefined && native?.pointerId !== undefined && ev.pointerId !== native.pointerId) return;
+      el.removeEventListener('pointermove', onMove, true);
+      el.removeEventListener('pointerup', onUp, true);
+      el.removeEventListener('pointercancel', onCancel, true);
+      detachListeners.current = null;
+      if (!gesture.current.down) return;
+      const wasDrag = gesture.current.dragging;
+      gesture.current.down = false;
+      gesture.current.dragging = false;
+      restoreOrbit();
+      if (pointerId !== undefined) {
+        try { el.releasePointerCapture(pointerId); } catch { /* already released */ }
+      }
+      if (!wasDrag) {
+        onPointerDown?.(e);
+        return;
+      }
+      const live = dragWorldRef.current;
+      if (!live) {
+        setDragWorld(null);
+        return;
+      }
+      const cell = nearestPlot(live[0], live[2]);
+      const projects = useCityStore.getState().projects;
+      const cur = projects[project.id]?.plot ?? project.plot;
+      if (cur && cur.x === cell.x && cur.y === cell.y) {
+        dragWorldRef.current = null;
+        setDragWorld(null);
+        return;
+      }
+      if (plotTakenByOther(projects, project.id, cell)) {
+        dragWorldRef.current = null;
+        setDragWorld(null);
+        return;
+      }
+      const snapped = plotWorldPosition(cell);
+      dragWorldRef.current = snapped;
+      setDragWorld(snapped);
+      const token = ++moveToken.current;
+      const projectId = project.id;
+      void patchProject(projectId, { plot: { x: cell.x, y: cell.y } })
+        .then((updated) => {
+          if (moveToken.current !== token) return;
+          useCityStore.getState().upsertProject(updated);
+          if (dragWorldRef.current === snapped) {
+            dragWorldRef.current = null;
+            setDragWorld(null);
+          }
+        })
+        .catch(() => {
+          if (moveToken.current !== token) return;
+          if (dragWorldRef.current === snapped) {
+            dragWorldRef.current = null;
+            setDragWorld(null);
+          }
+        });
+    };
+    const onCancel = (ev: PointerEvent) => {
+      if (ev.pointerId !== undefined && native?.pointerId !== undefined && ev.pointerId !== native.pointerId) return;
+      el.removeEventListener('pointermove', onMove, true);
+      el.removeEventListener('pointerup', onUp, true);
+      el.removeEventListener('pointercancel', onCancel, true);
+      detachListeners.current = null;
+      gesture.current.down = false;
+      gesture.current.dragging = false;
+      restoreOrbit();
+      if (pointerId !== undefined) {
+        try { el.releasePointerCapture(pointerId); } catch { /* already released */ }
+      }
+      dragWorldRef.current = null;
+      setDragWorld(null);
+    };
+    detachListeners.current?.();
+    el.addEventListener('pointermove', onMove, true);
+    el.addEventListener('pointerup', onUp, true);
+    el.addEventListener('pointercancel', onCancel, true);
+    detachListeners.current = () => {
+      el.removeEventListener('pointermove', onMove, true);
+      el.removeEventListener('pointerup', onUp, true);
+      el.removeEventListener('pointercancel', onCancel, true);
+    };
+  };
+
   const b = project.building;
+  const subBuildings = readSubBuildings(b);
   const theme = themeById(b.theme);
   // Palette: 8 user color slots (see BuildingConfig.palette), empty slot = inherit.
   const pal = (i: number): string => b.palette?.[i] || '';
@@ -240,7 +486,7 @@ export function ProjectBuilding({
   const tower = exterior ? (
     <group rotation={[0, rot, 0]}>
       <mesh position={[0, spec.height / 2, 0]} material={mats.wall} castShadow receiveShadow
-        onPointerDown={onPointerDown} onDoubleClick={onDoubleClick}
+        onPointerDown={handlePointerDown} onDoubleClick={onDoubleClick}
         onContextMenu={handleContextMenu}
         frustumCulled={false}>
         <boxGeometry args={[spec.width, spec.height, spec.depth]} />
@@ -307,11 +553,39 @@ export function ProjectBuilding({
       )}
       {/* plaza bots stand around the building */}
       {exterior && activeBots.length > 0 && <PlazaBots bots={activeBots} offset={selected ? 4 : 0} />}
+      {subBuildings.map((sb, i) => (
+        <group key={`${sb.name ?? 'sub'}-${i}`} position={[sb.dx, 0, sb.dz]}>
+          <mesh
+            position={[0, 1, 0]}
+            material={mats.wall}
+            castShadow
+            receiveShadow
+            frustumCulled={false}
+            raycast={() => undefined}
+          >
+            <boxGeometry args={[1.4, 2, 1.4]} />
+          </mesh>
+          <Html position={[0, 2.45, 0]} center distanceFactor={40} pointerEvents="none" zIndexRange={[10, 0]}>
+            <div
+              style={{
+                pointerEvents: 'none',
+                whiteSpace: 'nowrap',
+                fontSize: 10,
+                fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+                color: '#fff',
+                textShadow: '0 1px 3px rgba(0,0,0,0.9)',
+              }}
+            >
+              {sb.name ?? ''}
+            </div>
+          </Html>
+        </group>
+      ))}
     </>
   );
 
   return (
-    <group position={position}>
+    <group position={dragWorld ?? position}>
         <Detailed distances={[0, 200]}>
           {detailed}
           {/* far LOD: single box, zero detail */}

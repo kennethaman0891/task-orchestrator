@@ -1,12 +1,48 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 import { jarvisManager } from '@/jarvis/agent/JarvisManager';
 import { sessionContextStore } from '@/jarvis/contextStore';
 import { CallView } from './CallView';
 import { terminalToDot } from '../adapters/terminal-to-dot';
 import { useTerminalCall } from '../hooks/useTerminalCall';
+import type { UnifiedTerminal } from '@/types';
 import { Phone, Plus, X } from 'lucide-react';
+
+const CALL_RECT_KEY = 'tto-call-window-rect';
+
+type CallRect = { left: number; top: number; width: number; height: number };
+
+function clampCallRect(r: CallRect): CallRect {
+  const vw = window.innerWidth || 1200;
+  const vh = window.innerHeight || 800;
+  const width = Math.min(Math.max(360, r.width), Math.max(360, vw - 16));
+  const height = Math.min(Math.max(240, r.height), Math.max(240, vh - 16));
+  const left = Math.min(Math.max(8, r.left), Math.max(8, vw - 80));
+  const top = Math.min(Math.max(8, r.top), Math.max(8, vh - 64));
+  return { left, top, width, height };
+}
+
+function loadCallRect(): CallRect {
+  const vw = window.innerWidth || 1200;
+  const vh = window.innerHeight || 800;
+  const left = Math.max(290, (vw - 840) / 2);
+  const fallback = clampCallRect({
+    left,
+    top: 16,
+    width: Math.max(360, vw - left - 20),
+    height: Math.max(280, vh - 36),
+  });
+  try {
+    const raw = localStorage.getItem(CALL_RECT_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as CallRect;
+    if (typeof parsed.left !== 'number' || typeof parsed.width !== 'number') return fallback;
+    return clampCallRect(parsed);
+  } catch {
+    return fallback;
+  }
+}
 
 /** Foreground visible active call session */
 function ActiveCallSession({
@@ -16,6 +52,10 @@ function ActiveCallSession({
   onEnd,
   onEndAll,
   onStartCall,
+  entry,
+  rect,
+  onMove,
+  onResize,
 }: {
   terminalId: string;
   activeIds: string[];
@@ -23,6 +63,10 @@ function ActiveCallSession({
   onEnd: (id: string) => void;
   onEndAll: () => void;
   onStartCall: (id: string) => void;
+  entry?: UnifiedTerminal;
+  rect: CallRect;
+  onMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onResize: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
   const [context, setContext] = useState(() => sessionContextStore.get(terminalId));
   const [showAddMenu, setShowAddMenu] = useState(false);
@@ -53,6 +97,8 @@ function ActiveCallSession({
   const dot = terminalToDot(terminalId, context);
   const voice = useTerminalCall({
     terminalId,
+    suggest: true,
+    entry,
     onSaved: () => {
       jarvisManager.endCall(terminalId);
     },
@@ -62,9 +108,12 @@ function ActiveCallSession({
   const availableToAdd = Object.keys(allContexts).filter((id) => !activeIds.includes(id));
 
   return (
-    <div className="call-overlay-container">
+    <div
+      className="call-overlay-container"
+      style={{ left: rect.left, top: rect.top, width: rect.width, height: rect.height }}
+    >
       {/* Multi-Call Navigation & Switcher Header */}
-      <div className="call-multi-bar">
+      <div className="call-multi-bar" onPointerDown={onMove}>
         <div className="call-multi-tabs">
           {activeIds.map((tId) => {
             const ctx = allContexts[tId] || sessionContextStore.get(tId);
@@ -160,15 +209,18 @@ function ActiveCallSession({
         </div>
       </div>
 
-      <CallView dot={dot} voice={voice} />
+      <CallView dot={dot} voice={voice} onHeadingPointerDown={onMove} />
+      <div className="call-resize-handle" onPointerDown={onResize} title="Resize call" />
     </div>
   );
 }
 
 /** Background active call session to maintain terminal observation and prompt alerts */
-function BackgroundCallSession({ terminalId }: { terminalId: string }) {
+function BackgroundCallSession({ terminalId, entry }: { terminalId: string; entry?: UnifiedTerminal }) {
   useTerminalCall({
     terminalId,
+    suggest: false,
+    entry,
     onSaved: () => {
       jarvisManager.endCall(terminalId);
     },
@@ -176,13 +228,44 @@ function BackgroundCallSession({ terminalId }: { terminalId: string }) {
   return null;
 }
 
-export function CallOverlay() {
+export function CallOverlay({ terminals }: { terminals: Record<string, UnifiedTerminal> }) {
   const [activeIds, setActiveIds] = useState<string[]>(() =>
     jarvisManager.getActiveCallTerminalIds()
   );
   const [focusedId, setFocusedId] = useState<string | null>(() =>
     jarvisManager.getFocusedCallTerminalId()
   );
+  const [rect, setRect] = useState<CallRect>(() => loadCallRect());
+  const rectRef = useRef(rect);
+  rectRef.current = rect;
+
+  const beginDrag = (kind: 'move' | 'resize') => (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as Element | null;
+    if (kind === 'move' && target?.closest('button, input, textarea, a, select')) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const origin = rectRef.current;
+    let latest = origin;
+    const move = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      latest = kind === 'move'
+        ? clampCallRect({ ...origin, left: origin.left + dx, top: origin.top + dy })
+        : clampCallRect({ ...origin, width: origin.width + dx, height: origin.height + dy });
+      setRect(latest);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      try {
+        localStorage.setItem(CALL_RECT_KEY, JSON.stringify(latest));
+      } catch { /* ignore quota */ }
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
 
   useEffect(() => {
     return jarvisManager.subscribe(() => {
@@ -199,7 +282,7 @@ export function CallOverlay() {
     <>
       {/* Background sessions maintain live observation for all active calls */}
       {backgroundIds.map((bgId) => (
-        <BackgroundCallSession key={bgId} terminalId={bgId} />
+        <BackgroundCallSession key={bgId} terminalId={bgId} entry={terminals[bgId]} />
       ))}
 
       {/* Foreground focused call session */}
@@ -207,6 +290,10 @@ export function CallOverlay() {
         key={focusedId}
         terminalId={focusedId}
         activeIds={activeIds}
+        entry={terminals[focusedId]}
+        rect={rect}
+        onMove={beginDrag('move')}
+        onResize={beginDrag('resize')}
         onSwitch={(id) => jarvisManager.switchCall(id)}
         onEnd={(id) => jarvisManager.endCall(id)}
         onEndAll={() => jarvisManager.endAllCalls()}

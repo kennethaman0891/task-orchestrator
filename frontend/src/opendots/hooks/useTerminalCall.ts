@@ -4,11 +4,16 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { jarvisManager } from '@/jarvis/agent/JarvisManager';
 import { sessionContextStore } from '@/jarvis/contextStore';
 import { apiBase } from '@/lib/api';
+import { requestSessionSuggestion } from '@/jarvis/sessionSuggest';
 import type { DetectedTerminalPrompt } from '@/jarvis/terminalPromptDetector';
+import type { UnifiedTerminal } from '@/types';
 
 export interface UseTerminalCallOptions {
   terminalId: string;
   onSaved?: () => void;
+  /** Foreground call may ask for one task while the session is working. */
+  suggest?: boolean;
+  entry?: UnifiedTerminal;
 }
 
 export type CallStatus = 'idle' | 'connecting' | 'active' | 'ending';
@@ -37,6 +42,8 @@ export interface UseTerminalCallReturn {
 export function useTerminalCall({
   terminalId,
   onSaved,
+  suggest = false,
+  entry,
 }: UseTerminalCallOptions): UseTerminalCallReturn {
   const [status, setStatus] = useState<CallStatus>('connecting');
   const [phase, setPhase] = useState<CallPhase>('listening');
@@ -64,6 +71,13 @@ export function useTerminalCall({
   const audioChunksRef = useRef<Blob[]>([]);
   const isRecordingRef = useRef(false);
   const activeRef = useRef(true);
+  const phaseRef = useRef<CallPhase>('listening');
+  const suggestRef = useRef(suggest);
+  const entryRef = useRef(entry);
+  const suggestFailOnceRef = useRef(false);
+  phaseRef.current = phase;
+  suggestRef.current = suggest;
+  entryRef.current = entry;
   const isBotSpeakingRef = useRef(false);
   const mutedRef = useRef(false);
   const speakerMutedRef = useRef(false);
@@ -240,8 +254,8 @@ export function useTerminalCall({
 
         // Initial Greeting: Jarvis speaks aloud to confirm voice connection
         const ctx = sessionContextStore.get(terminalId);
-        const cliName = ctx?.cliName || 'Antigravity';
-        const greeting = `Connected to Jarvis for ${cliName}. How can I assist you?`;
+        const terminalName = (ctx?.terminalName || '').trim() || `Terminal ${terminalId.slice(0, 6)}`;
+        const greeting = `${terminalName} is awake.`;
         setCaption(greeting);
         speakResponse(greeting);
 
@@ -442,14 +456,43 @@ export function useTerminalCall({
 
           if (obs.isCompleted) {
             const summary = obs.completedSummary || 'Task execution completed.';
-            const completionMsg = `The task in ${cliName} has finished.`;
+            const nameNow = (sessionContextStore.get(terminalId)?.terminalName || terminalName).trim();
+            const completionMsg = `The task in ${nameNow} has finished.`;
             setCaption(`✓ ${completionMsg} (${summary})`);
             speakResponse(completionMsg);
           }
         }, 600);
 
+        const suggestInterval = setInterval(() => {
+          if (!activeRef.current || !suggestRef.current) return;
+          const ph = phaseRef.current;
+          if (ph === 'thinking' || ph === 'speaking') return;
+          const live = sessionContextStore.get(terminalId);
+          void requestSessionSuggestion({
+            terminalId,
+            entry: entryRef.current,
+            cwd: live?.cwd,
+            cliName: live?.cliName,
+          }).then((outcome) => {
+            if (!activeRef.current || !suggestRef.current) return;
+            if (outcome.kind === 'fail') {
+              if (suggestFailOnceRef.current) return;
+              suggestFailOnceRef.current = true;
+              const line = "I couldn't read a next task from this session.";
+              setCaption(line);
+              speakResponse(line);
+              return;
+            }
+            if (outcome.kind === 'ok' && outcome.spoken) {
+              setCaption(outcome.spoken);
+              speakResponse(outcome.spoken);
+            }
+          });
+        }, 20000);
+
         cleanupObservation = () => {
           clearInterval(observationInterval);
+          clearInterval(suggestInterval);
         };
       } catch (err: any) {
         if (activeRef.current) {

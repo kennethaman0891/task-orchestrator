@@ -7,7 +7,8 @@
 //   filters  — city-wide search/filter
 
 import { create } from 'zustand';
-import type { AgentBot, CityNavMode, Project, ProjectStatus, ProjectType } from '@/city/types';
+import type { AgentBot, CarSpec, CityNavMode, Project, ProjectStatus, ProjectType, TerminalCar } from '@/city/types';
+import { parseCarSpec } from '@/city/scene/carSpec';
 
 export interface CityFilters {
   query: string;
@@ -39,6 +40,7 @@ interface CityStore {
   navHistory: CityNavMode[];
   goExterior: (projectId: string) => void;
   goInterior: (projectId: string, floorIndex: number, room?: string | null) => void;
+  goCar: (projectId: string, paneId: string, terminalId: string) => void;
   exitOneLevel: () => void;
   exitToCity: () => void;
 
@@ -47,6 +49,19 @@ interface CityStore {
   selectedAgentId: string | null;
   selectProject: (id: string | null) => void;
   selectAgent: (id: string | null) => void;
+
+  // ── terminal cars (live, keyed by car.id) ──
+  terminalCars: Record<string, TerminalCar>;
+  setTerminalCars: (list: TerminalCar[]) => void;
+  selectedTerminalCarId: string | null;
+  selectTerminalCar: (id: string | null) => void;
+  /** Checked parts list per pane. Missing key means the built-in sedan. */
+  carSpecs: Record<string, CarSpec>;
+  setCarSpec: (paneId: string, spec: CarSpec | null) => void;
+
+  /** First-level folders and temp files for each project plot. */
+  plotDistricts: Record<string, { dirs: string[]; files: { name: string }[] }>;
+  setPlotDistricts: (map: Record<string, { dirs: string[]; files: { name: string }[] }>) => void;
 
   // ── camera ──
   cameraTarget: CameraTarget | null;
@@ -88,6 +103,24 @@ interface CityStore {
 }
 
 const initialNav: CityNavMode = { mode: 'city' };
+const CAR_SPECS_KEY = 'tto-city-car-specs';
+
+function loadCarSpecs(): Record<string, CarSpec> {
+  try {
+    const raw = localStorage.getItem(CAR_SPECS_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const specs: Record<string, CarSpec> = {};
+    for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const result = parseCarSpec(value);
+      if (result.spec) specs[id] = result.spec;
+    }
+    return specs;
+  } catch {
+    return {};
+  }
+}
 
 export const useCityStore = create<CityStore>((set, get) => ({
   projects: {},
@@ -132,6 +165,10 @@ export const useCityStore = create<CityStore>((set, get) => ({
     navHistory: [...s.navHistory, s.nav],
     selectedProjectId: projectId,
   })),
+  goCar: (projectId, paneId, terminalId) => set((s) => ({
+    nav: { mode: 'car', projectId, paneId, terminalId },
+    navHistory: [...s.navHistory, s.nav],
+  })),
   exitOneLevel: () => set((s) => {
     const history = [...s.navHistory];
     const prev = history.pop();
@@ -144,6 +181,23 @@ export const useCityStore = create<CityStore>((set, get) => ({
   selectedAgentId: null,
   selectProject: (id) => set({ selectedProjectId: id }),
   selectAgent: (id) => set({ selectedAgentId: id }),
+
+  terminalCars: {},
+  setTerminalCars: (list) => set({
+    terminalCars: Object.fromEntries(list.map((c) => [c.id, c])),
+  }),
+  selectedTerminalCarId: null,
+  selectTerminalCar: (id) => set({ selectedTerminalCarId: id }),
+  carSpecs: loadCarSpecs(),
+  setCarSpec: (paneId, spec) => set((s) => {
+    const carSpecs = { ...s.carSpecs };
+    if (spec) carSpecs[paneId] = spec;
+    else delete carSpecs[paneId];
+    try { localStorage.setItem(CAR_SPECS_KEY, JSON.stringify(carSpecs)); } catch { /* ignore */ }
+    return { carSpecs };
+  }),
+  plotDistricts: {},
+  setPlotDistricts: (map) => set({ plotDistricts: map }),
 
   cameraTarget: null,
   setCameraTarget: (t) => set((s) => ({

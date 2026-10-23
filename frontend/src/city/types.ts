@@ -52,6 +52,15 @@ export interface BuildingConfig {
   palette?: (string | null)[];
   /** Custom 3D model generated automatically from a user-uploaded image */
   customModel3d?: CustomModel3dConfig | null;
+  /** Optional outbuildings, offsets in plot units from the main footprint. */
+  subBuildings?: SubBuilding[];
+}
+
+export interface SubBuilding {
+  id: string;
+  name: string;
+  dx: number;
+  dz: number;
 }
 
 export interface CustomModel3dConfig {
@@ -117,6 +126,45 @@ export interface AgentBot {
   recentActions: string[];
 }
 
+/** One primitive of a terminal car mesh. */
+export interface CarPart {
+  shape: 'box' | 'cylinder';
+  size: [number, number, number];
+  color: string;
+  position: [number, number, number];
+}
+
+export interface CarSpec {
+  kind: 'car';
+  parts: CarPart[];
+}
+
+/** Live terminal rendered as a city vehicle. Not persisted. */
+export interface TerminalCar {
+  id: string;
+  terminalId: string;
+  workspaceId: string;
+  projectId: string;
+  projectPath: string;
+  slotIndex: number;
+  name: string;
+  color: string;
+  live: boolean;
+  moving: boolean;
+  agentName: string;
+  modelName: string;
+  cli: string;
+  cwd: string;
+  currentTask: { id: string; description: string; status: string; started_at: number | null } | null;
+  history: { id: string; description: string; status: string; completed_at: number | null }[];
+  queueCount: number;
+  nextTask: boolean;
+  paused: boolean;
+  batchDispatched: boolean;
+  tokensInput: number;
+  tokensOutput: number;
+}
+
 export interface CityMeta {
   grid_size: number;
   grid_spacing: number;
@@ -129,7 +177,8 @@ export interface CityMeta {
 export type CityNavMode =
   | { mode: 'city' }
   | { mode: 'exterior'; projectId: string }
-  | { mode: 'interior'; projectId: string; floorIndex: number; room: string | null };
+  | { mode: 'interior'; projectId: string; floorIndex: number; room: string | null }
+  | { mode: 'car'; projectId: string; paneId: string; terminalId: string };
 
 /** The 2D fallback map uses the same records. */
 export function projectDisplayName(p: Project): string {

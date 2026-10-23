@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   ChevronDown,
   Mic,
@@ -16,9 +16,11 @@ import type { useVoice } from './useVoice';
 export function CallView({
   dot,
   voice,
+  onHeadingPointerDown,
 }: {
   dot: Dot;
   voice: ReturnType<typeof useVoice>;
+  onHeadingPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
   const [minimized, setMinimized] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -49,7 +51,7 @@ export function CallView({
       className={`call-view ${minimized ? 'minimized' : ''}`}
       aria-label={`Voice call with ${dot.name}`}
     >
-      <div className="call-heading">
+      <div className="call-heading" onPointerDown={onHeadingPointerDown}>
         <span>
           <span className="call-live-dot" /> Voice call
         </span>

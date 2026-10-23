@@ -9,22 +9,28 @@ import { Canvas } from '@react-three/fiber';
 import { useProjectsFeed } from '@/city/feed';
 import { useCityStore } from '@/city/store';
 import { useAgentSync } from '@/city/sync/agentSync';
+import { useTerminalCarSync } from '@/city/sync/terminalCarSync';
+import { usePlotDistrictSync } from '@/city/sync/plotDistrictSync';
 import { CityScene } from '@/city/scene/CityScene';
 import { TopBar } from '@/city/ui/TopBar';
 import { ProjectPanel } from '@/city/ui/ProjectPanel';
 import { BuildingEditor } from '@/city/ui/BuildingEditor';
 import { AgentPanel } from '@/city/ui/AgentPanel';
 import { FloorNav } from '@/city/ui/FloorNav';
+import { TerminalCarPanel } from '@/city/ui/TerminalCarPanel';
+import { CarNav } from '@/city/ui/CarNav';
+import { RoadGraphPanel } from '@/city/ui/RoadGraphPanel';
 import { FallbackMap } from '@/city/ui/FallbackMap';
 import { CreateProjectModal } from '@/city/ui/CreateProjectModal';
 import { BuildingContextMenu } from '@/city/ui/BuildingContextMenu';
 import { interiorTarget, buildingFocusTarget } from '@/city/scene/CameraRig';
+import { plotWorldPosition } from '@/city/scene/CityGrid';
 import { archetypeFor } from '@/city/scene/archetypes';
 import { useWorkspaceSync } from '@/city/sync/workspaceSync';
 import { useTheme } from '@/contexts/ThemeContext';
 import type { TerminalEntry } from '@/types';
 import type { Workspace } from '@/lib/workspace';
-import type { Project } from '@/city/types';
+import type { Project, TerminalCar } from '@/city/types';
 
 function hasWebGL(): boolean {
   try {
@@ -48,11 +54,14 @@ export interface CityViewProps {
   /** The workspace currently open in the sidebar */
   activeWorkspaceId?: string | null;
   onToast?: (msg: string, error?: boolean) => void;
+  onRenameCar?: (carId: string, name: string) => void;
 }
 
-export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, onToggleSidebar, workspaces = [], activeWorkspaceId = null, onToast }: CityViewProps) {
+export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, onToggleSidebar, workspaces = [], activeWorkspaceId = null, onToast, onRenameCar }: CityViewProps) {
   useProjectsFeed();
   useAgentSync(terminals);
+  useTerminalCarSync(workspaces, terminals);
+  usePlotDistrictSync();
   useWorkspaceSync(workspaces, activeWorkspaceId, onToast);
 
   // When the current workspace changes (or its building appears after
@@ -76,6 +85,44 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
     }
   }, [activePath, projects, selectProject, setCameraTarget]);
 
+  const goCar = useCityStore((s) => s.goCar);
+  const nav = useCityStore((s) => s.nav);
+  const terminalCars = useCityStore((s) => s.terminalCars);
+  const [roadGraph, setRoadGraph] = useState<{ path: string; name: string } | null>(null);
+  const [lightProjectId, setLightProjectId] = useState<string | null>(null);
+  const carProjectRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (nav.mode === 'car') {
+      carProjectRef.current = nav.projectId;
+      return;
+    }
+    const left = carProjectRef.current;
+    if (!left) return;
+    carProjectRef.current = null;
+    const rec = projects[left];
+    if (rec) setCameraTarget(buildingFocusTarget(rec.plot));
+  }, [nav, projects, setCameraTarget]);
+
+  useEffect(() => {
+    const onRoad = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ path?: string; name?: string }>).detail;
+      if (!detail?.path) return;
+      setRoadGraph({ path: detail.path, name: detail.name ?? '' });
+    };
+    const onLight = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ projectId?: string }>).detail;
+      if (!detail?.projectId) return;
+      setLightProjectId(detail.projectId);
+    };
+    window.addEventListener('tto-road', onRoad);
+    window.addEventListener('tto-light', onLight);
+    return () => {
+      window.removeEventListener('tto-road', onRoad);
+      window.removeEventListener('tto-light', onLight);
+    };
+  }, []);
+
   const webgl = useMemo(hasWebGL, []);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Project | null>(null);
@@ -97,6 +144,34 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
     goInterior(p.id, 0, null);
     setCameraTarget(interiorTarget(p.plot, 0, base.floorH * k, base.depth * k));
   };
+
+  const enterCar = (carId: string) => {
+    const car = terminalCars[carId];
+    if (!car) return;
+    goCar(car.projectId, car.id, car.terminalId);
+    const project = projects[car.projectId];
+    if (!project) return;
+    const [x, y, z] = plotWorldPosition(project.plot);
+    setCameraTarget({ x: x + 6, y: y + 4, z: z + 8, lookX: x, lookY: y, lookZ: z });
+  };
+
+  const renameCar = (carId: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    // Grid label is applied when a parent passes a rename.
+    if (onRenameCar) onRenameCar(carId, trimmed);
+    else writeCarName(carId, trimmed);
+    const cars = useCityStore.getState().terminalCars;
+    const car = cars[carId];
+    if (!car || car.name === trimmed) return;
+    useCityStore.getState().setTerminalCars(Object.values({ ...cars, [carId]: { ...car, name: trimmed } }));
+  };
+
+  const lightCars = lightProjectId
+    ? Object.values(terminalCars).filter((car) => car.projectId === lightProjectId)
+    : [];
+  const lightWords = statementWords(lightCars);
+  const lightQueue = lightCars.reduce((sum, car) => sum + (Number.isFinite(car.queueCount) ? car.queueCount : 0), 0);
 
   const rootStyle: CSSProperties = { position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden' };
 
@@ -139,6 +214,18 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
           />
           <FloorNav onExitToWorkspace={exitOneLevel} />
           <AgentPanel terminals={terminals} onOpenTerminal={onOpenTerminal} />
+          <TerminalCarPanel onOpenTerminal={onOpenTerminal} onEnter={enterCar} onRename={renameCar} />
+          <CarNav />
+          {roadGraph && (
+            <RoadGraphPanel
+              folderPath={roadGraph.path}
+              folderName={roadGraph.name}
+              onClose={() => setRoadGraph(null)}
+            />
+          )}
+          {lightProjectId && (
+            <LightSoonCard words={lightWords} queueCount={lightQueue} onClose={() => setLightProjectId(null)} />
+          )}
         </>
       )}
 
@@ -170,6 +257,66 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
           City data unavailable ({loadError}). Retrying…
         </div>
       )}
+    </div>
+  );
+}
+
+function statementWords(cars: TerminalCar[]): string[] {
+  const lines: string[] = [];
+  if (cars.some((c) => c.batchDispatched)) lines.push('Batch dispatched');
+  if (cars.some((c) => c.moving)) lines.push('Task running');
+  if (cars.some((c) => c.queueCount > 0 || c.nextTask)) lines.push('Waiting in queue');
+  if (lines.length === 0) lines.push('Stopped');
+  return lines;
+}
+
+function writeCarName(paneId: string, name: string) {
+  try {
+    const raw = localStorage.getItem('tto-city-car-names');
+    const parsed: unknown = raw ? JSON.parse(raw) : {};
+    const map: Record<string, string> = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? { ...(parsed as Record<string, string>) }
+      : {};
+    map[paneId] = name;
+    localStorage.setItem('tto-city-car-names', JSON.stringify(map));
+  } catch {
+    /* ignore */
+  }
+}
+
+function LightSoonCard({ words, queueCount, onClose }: { words: string[]; queueCount: number; onClose: () => void }) {
+  const { theme: t } = useTheme();
+  return (
+    <div style={{
+      position: 'absolute', top: 72, right: 12, zIndex: 32, width: 240,
+      background: 'rgba(10,12,20,0.94)', color: t.colors.text.primary,
+      border: `1px solid ${t.colors.border.primary}`, borderRadius: 10,
+      padding: '10px 12px', fontSize: 12,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontWeight: 600 }}>Coming soon</span>
+        <button type="button" onClick={onClose} style={{ background: 'transparent', border: 'none', color: t.colors.text.muted, cursor: 'pointer', fontSize: 16 }}>×</button>
+      </div>
+      <ul style={{ margin: '8px 0', paddingLeft: 16 }}>
+        {words.map((word) => <li key={word}>{word}</li>)}
+      </ul>
+      <div style={{ color: t.colors.text.secondary, marginBottom: 8 }}>Queue {queueCount}</div>
+      <button
+        type="button"
+        disabled
+        style={{
+          width: '100%',
+          background: t.colors.bg.tertiary,
+          color: t.colors.text.muted,
+          border: `1px solid ${t.colors.border.primary}`,
+          borderRadius: 8,
+          padding: '7px 0',
+          fontSize: 12,
+          cursor: 'not-allowed',
+        }}
+      >
+        Send batch — Coming soon
+      </button>
     </div>
   );
 }

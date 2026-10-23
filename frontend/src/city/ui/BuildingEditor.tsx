@@ -48,7 +48,7 @@ export function BuildingEditor({
   const { theme: t } = useTheme();
   const [b, setB] = useState(() => ({ ...project.building }));
   const [name, setName] = useState(() => projectDisplayName(project));
-  const [buildingStyle, _setBuildingStyle] = useState(() => project.building.buildingStyle || project.type);
+  const [subName, setSubName] = useState('');
   const [palette, setPalette] = useState<(string | null)[]>(() => {
     const cur = project.building.palette;
     if (cur && cur.length === 8) return [...cur];
@@ -69,7 +69,12 @@ export function BuildingEditor({
     try {
       await patchProject(project.id, {
         name: name.trim() || projectDisplayName(project),
-        building: { ...b, palette, buildingStyle },
+        building: {
+          ...b,
+          palette,
+          buildingStyle: b.buildingStyle || project.type,
+          subBuildings: b.subBuildings ?? [],
+        },
         floors,
       });
       onToast?.(`Building config saved for “${project.name}”`);
@@ -184,6 +189,28 @@ export function BuildingEditor({
   const addFloor = () => setFloors((f) => [...f, `Floor ${f.length + 1}`]);
   const removeFloor = (i: number) => setFloors((f) => f.filter((_, j) => j !== i));
 
+  const subBuildings = b.subBuildings ?? [];
+  const addSubBuilding = () => {
+    const label = subName.trim();
+    if (!label || subBuildings.length >= 6) return;
+    const id = Math.random().toString(36).slice(2, 8);
+    setB((prev) => {
+      const cur = prev.subBuildings ?? [];
+      if (cur.length >= 6) return prev;
+      const n = cur.length;
+      return {
+        ...prev,
+        subBuildings: [...cur, { id, name: label, dx: (n % 3 - 1) * 2, dz: 2 }],
+      };
+    });
+    setSubName('');
+  };
+  const removeSubBuilding = (id: string) =>
+    setB((prev) => ({
+      ...prev,
+      subBuildings: (prev.subBuildings ?? []).filter((s) => s.id !== id),
+    }));
+
   const panel: CSSProperties = {
     position: 'absolute',
     top: 64,
@@ -236,8 +263,8 @@ export function BuildingEditor({
 
       <div style={{ ...label, marginTop: 12 }}>BUILDING TYPE</div>
       <select
-        value={buildingStyle}
-        onChange={(e) => setB((prev) => ({ ...prev, buildingStyle: e.target.value }))}
+        value={b.buildingStyle || project.type}
+        onChange={(e) => set('buildingStyle', e.target.value)}
         style={{
           width: '100%', marginTop: 4, background: t.colors.bg.tertiary,
           border: `1px solid ${t.colors.border.primary}`, borderRadius: 6,
@@ -509,6 +536,41 @@ export function BuildingEditor({
         ))}
         <button onClick={addFloor} style={tinyBtn(t)}>+ add floor</button>
       </div>
+
+      <div style={{ ...label, marginTop: 12 }}>SUB-BUILDINGS</div>
+      <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+        <input
+          value={subName}
+          onChange={(e) => setSubName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') addSubBuilding(); }}
+          placeholder={subBuildings.length >= 6 ? 'Limit reached' : 'Name'}
+          disabled={subBuildings.length >= 6}
+          style={{
+            flex: 1, minWidth: 0, background: t.colors.bg.tertiary,
+            border: `1px solid ${t.colors.border.primary}`, borderRadius: 6,
+            color: t.colors.text.primary, fontSize: 11, padding: '3px 6px',
+          }}
+        />
+        <button
+          onClick={addSubBuilding}
+          disabled={subBuildings.length >= 6 || !subName.trim()}
+          style={{ ...tinyBtn(t), opacity: subBuildings.length >= 6 || !subName.trim() ? 0.45 : 1 }}
+        >
+          Add
+        </button>
+      </div>
+      {subBuildings.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
+          {subBuildings.map((s) => (
+            <div key={s.id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{ flex: 1, minWidth: 0, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {s.name}
+              </span>
+              <button onClick={() => removeSubBuilding(s.id)} style={tinyBtn(t)}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
         <button
