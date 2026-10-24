@@ -358,6 +358,11 @@ export default function App() {
   // workspace, otherwise focus that workspace's first live terminal (or null
   // if it has none). One mechanism covers both the click-switch and reload.
   useEffect(() => {
+    setExpandedPane(null);
+    setSelectedPane(null);
+  }, [activeWsId, view]);
+
+  useEffect(() => {
     const ws = workspaces.find((w) => w.id === activeWsId);
     if (!ws) return;
     const ttySet = new Set(ws.panes.map((p) => p.tty).filter(Boolean));
@@ -751,6 +756,8 @@ export default function App() {
 
   // ── Close a terminal card (grid tile / pane tab) ───────────────────
   const handleRemovePane = useCallback((paneId: string) => {
+    setExpandedPane((ep) => (ep === paneId ? null : ep));
+    setSelectedPane((sp) => (sp === paneId ? null : sp));
     const pane = workspaces
       .flatMap((w) => w.panes)
       .find((p) => p.id === paneId);
@@ -797,7 +804,7 @@ export default function App() {
     workspaceId: string,
     fromPaneOrIndex: string | number,
     toPaneOrIndex: string | number,
-    position: 'before' | 'after' = 'after'
+    position: 'before' | 'after' | 'swap' = 'after'
   ) => {
     setWorkspaces((prev) => {
       const next = prev.map((w) => {
@@ -807,8 +814,30 @@ export default function App() {
         const fromIdx = typeof fromPaneOrIndex === 'string'
           ? newPanes.findIndex((p) => p.id === fromPaneOrIndex)
           : fromPaneOrIndex;
+        const rawToIdx = typeof toPaneOrIndex === 'string'
+          ? newPanes.findIndex((p) => p.id === toPaneOrIndex)
+          : toPaneOrIndex;
 
         if (fromIdx < 0 || fromIdx >= newPanes.length) return w;
+
+        if (position === 'swap') {
+          let dest = rawToIdx;
+          if (typeof toPaneOrIndex === 'number') {
+            while (newPanes.length <= toPaneOrIndex) {
+              // Claim pad ids so the boot effect does not spawn PTYs for
+              // ghost-drop padding. Empty pads stay empty; only + / ⌘T spawn.
+              const id = `p-${w.id}-${newPanes.length}-${Date.now().toString(36)}`;
+              bootCreated.current.add(id);
+              newPanes.push({ id, tty: null });
+            }
+            dest = toPaneOrIndex;
+          }
+          if (dest < 0 || dest >= newPanes.length || dest === fromIdx) return w;
+          const tmp = newPanes[fromIdx];
+          newPanes[fromIdx] = newPanes[dest];
+          newPanes[dest] = tmp;
+          return { ...w, panes: newPanes };
+        }
 
         const [moved] = newPanes.splice(fromIdx, 1);
 
@@ -891,7 +920,9 @@ export default function App() {
             if (w.id !== ws.id) return w;
             const newPanes = [...w.panes];
             while (newPanes.length < slotIdx!) {
-              newPanes.push({ id: `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, tty: null });
+              const padId = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+              bootCreated.current.add(padId);
+              newPanes.push({ id: padId, tty: null });
             }
             if (slotIdx! < newPanes.length) {
               newPanes[slotIdx!] = { id: paneId, tty: null };
@@ -1044,8 +1075,10 @@ export default function App() {
     activeWorkspace,
     focusedTerminal,
     selectedPane,
+    expandedPane,
     onSelectTerminal: setFocusedTerminal,
     onSelectPane: setSelectedPane,
+    onExpandPane: setExpandedPane,
     onAddPane: handleAddPane,
     onRemovePane: handleRemovePane,
     onAddIdeTerminal: handleAddIdeTerminal,

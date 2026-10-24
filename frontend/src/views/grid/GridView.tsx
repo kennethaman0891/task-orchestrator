@@ -4,8 +4,8 @@ import { useMemo, useState, useEffect, useCallback, useRef, memo } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
 import { scrollbarStyle } from '@/lib/theme';
 import type { UnifiedTerminal } from '@/types';
-import type { Workspace, Pane, GridMode, TemplateKey } from '@/lib/workspace';
-import { GRID_GAP, TEMPLATES } from '@/lib/workspace';
+import type { Workspace, Pane, GridMode, TemplateKey, GridDensity } from '@/lib/workspace';
+import { GRID_GAP, TEMPLATES, computeGridLayout, paintedGridSlots } from '@/lib/workspace';
 import { TerminalAnchor } from '@/components/terminal/TerminalPool';
 import { AgentChatPanel, isAgentCli } from '@/components/terminal/AgentChatPanel';
 import { CliLogo } from '@/lib/cliLogos';
@@ -13,10 +13,15 @@ import { isClosed, cleanModel } from '@/lib/format';
 import { deriveTaskStatus, statusLabel, minTerminal, getTerminalWorkDuration, type TermStatus } from '@/lib/status';
 import { TerminalManager } from '@/terminal/TerminalManager';
 import { detectCLI } from '@/jarvis/adapters';
+import { isTauri, tauri } from '@/lib/tauri';
 import {
   Plus,
   GripVertical,
   MessageSquare,
+  Maximize2,
+  Minimize2,
+  X,
+  SquareTerminal,
 } from 'lucide-react';
 import { extractDropPaths } from '@/terminal/dropPaths';
 import { GridNotch } from './GridNotch';
@@ -52,7 +57,7 @@ interface Props {
     workspaceId: string,
     fromPaneOrIndex: string | number,
     toPaneOrIndex: string | number,
-    position?: 'before' | 'after'
+    position?: 'before' | 'after' | 'swap'
   ) => void;
   onDropToTerminal?: (sessionId: string, paths: string[]) => void;
   onRenameTerminal?: (idOrTty: string, newLabel: string) => void;
@@ -62,72 +67,117 @@ interface Props {
   onSetWorkspaceLayoutMode?: (mode: GridMode) => void;
 }
 
-/**
- * Compute balanced columns and rows so all terminals fit cleanly.
- * In 'fit' mode, columns and rows scale with available aspect ratio so that
- * all terminals (including high counts like 36) fit on screen without vertical overflow.
- */
-function computeGridDimensions(
-  paneCount: number,
-  availableWidth: number,
-  availableHeight: number,
-  colOverride: string = 'auto',
-  density: 'fit' | 'scrollable' = 'fit'
-): { cols: number; rows: number } {
-  if (paneCount <= 1) return { cols: 1, rows: 1 };
-
-  // Manual column override
-  if (colOverride !== 'auto') {
-    const parsed = parseInt(colOverride, 10);
-    if (!isNaN(parsed) && parsed >= 1) {
-      return { cols: parsed, rows: Math.max(1, Math.ceil(paneCount / parsed)) };
-    }
-  }
-
-  // Small counts have hand-tuned optimal arrangements
-  if (paneCount === 2) {
-    return availableWidth < 680 && availableHeight > 700 ? { cols: 1, rows: 2 } : { cols: 2, rows: 1 };
-  }
-  if (paneCount === 3) {
-    return availableWidth >= 1050 ? { cols: 3, rows: 1 } : { cols: 2, rows: 2 };
-  }
-  if (paneCount === 4) return { cols: 2, rows: 2 };
-  if (paneCount === 5 || paneCount === 6) return { cols: 3, rows: 2 };
-  if (paneCount === 7 || paneCount === 8) {
-    return availableWidth >= 1200 ? { cols: 4, rows: 2 } : { cols: 3, rows: 3 };
-  }
-  if (paneCount === 9) return { cols: 3, rows: 3 };
-  if (paneCount === 10) {
-    return availableWidth >= 1200 ? { cols: 5, rows: 2 } : { cols: 4, rows: 3 };
-  }
-  if (paneCount <= 12) return { cols: 4, rows: 3 };
-  if (paneCount <= 14) {
-    return availableWidth >= 1350 ? { cols: 5, rows: 3 } : { cols: 4, rows: 4 };
-  }
-  if (paneCount <= 16) return { cols: 4, rows: 4 };
-
-  // For high terminal counts (> 16, e.g. 20, 25, 36, 48):
-  const w = Math.max(availableWidth, 600);
-  const h = Math.max(availableHeight, 400);
-  const aspect = w / h;
-
-  if (density === 'fit') {
-    // In fit mode, cols = sqrt(paneCount * aspect)
-    let bestCols = Math.round(Math.sqrt(paneCount * aspect));
-    // Each column needs at least 110px width
-    const maxCols = Math.max(2, Math.floor(w / 110));
-    bestCols = Math.max(2, Math.min(maxCols, bestCols));
-    const bestRows = Math.max(1, Math.ceil(paneCount / bestCols));
-    return { cols: bestCols, rows: bestRows };
-  } else {
-    // Scrollable mode: keep cards comfortably wide (min ~220px each)
-    const comfortableCols = Math.max(2, Math.min(8, Math.floor(w / 220)));
-    const rows = Math.max(1, Math.ceil(paneCount / comfortableCols));
-    return { cols: comfortableCols, rows };
-  }
+const IDLE_CLI_IDS = ['', 'shell', 'zsh', 'bash', 'sh', 'fish', 'node', 'nodejs'];
+function resolveLogoCli(rawCli: string, agent: string): string {
+  const c = (rawCli || '').toLowerCase();
+  if (!IDLE_CLI_IDS.includes(c)) return c;
+  return agent || c;
 }
 
-// ── Virtualized GridCard Component ─────────────────────────────────────
+/** Ticks once a second only while a terminal is running or asking. */
+const LiveDuration = memo(function LiveDuration({
+  tty,
+  status,
+}: {
+  tty: string;
+  status: TermStatus;
+}) {
+  const live = status === 'running' || status === 'asking';
+  const [durationStr, setDurationStr] = useState(
+    () => getTerminalWorkDuration(tty, status).durationStr,
+  );
+
+  useEffect(() => {
+    const update = () => {
+      setDurationStr(getTerminalWorkDuration(tty, status).durationStr);
+    };
+    update();
+    if (!live) return;
+    const id = window.setInterval(update, 1000);
+    return () => window.clearInterval(id);
+  }, [tty, status, live]);
+
+  if (!durationStr) return null;
+  return <span>{durationStr}</span>;
+});
+
+interface EmptyGridSlotProps {
+  slotIndex: number;
+  paneId: string | null;
+  density: GridDensity;
+  isDragOver: boolean;
+  onDragOver: (e: React.DragEvent, key: string) => void;
+  onDragLeave: (e: React.DragEvent, key: string) => void;
+  onDrop: (e: React.DragEvent, paneId: string | null, slotIndex: number) => void;
+  onAddPane?: (slotIndex: number) => void;
+}
+
+const EmptyGridSlot = memo(function EmptyGridSlot({
+  slotIndex,
+  paneId,
+  density,
+  isDragOver,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+  onAddPane,
+}: EmptyGridSlotProps) {
+  const { theme: t } = useTheme();
+  const dropKey = paneId || `ghost-${slotIndex}`;
+
+  return (
+    <div
+      className={`ws-pane ws-pane-ghost${isDragOver ? ' is-drop-target' : ''}`}
+      data-slot-index={slotIndex}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'move';
+        onDragOver(e, dropKey);
+      }}
+      onDragLeave={(e) => onDragLeave(e, dropKey)}
+      onDrop={(e) => onDrop(e, paneId, slotIndex)}
+      style={{
+        height: '100%',
+        minHeight: density === 'scrollable' ? 180 : 0,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        background: isDragOver ? `${t.colors.accent.primary}14` : 'transparent',
+        border: `1px dashed ${isDragOver ? t.colors.accent.primary : t.colors.border.primary}`,
+        color: isDragOver ? t.colors.accent.primary : t.colors.text.muted,
+        boxShadow: 'none',
+      }}
+    >
+      <span
+        style={{
+          fontSize: 11,
+          fontFamily: t.fontFamily.mono,
+          letterSpacing: '0.02em',
+          opacity: 0.9,
+        }}
+      >
+        {isDragOver ? 'Drop to place terminal here' : `Slot ${slotIndex + 1} · Empty`}
+      </span>
+      {onAddPane && !isDragOver && (
+        <button
+          type="button"
+          className="ws-pane-icon-btn"
+          title={`Create terminal in slot ${slotIndex + 1}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onAddPane(slotIndex);
+          }}
+        >
+          <Plus size={12} />
+        </button>
+      )}
+    </div>
+  );
+});
+
 interface GridCardProps {
   pane: Pane;
   status: TermStatus;
@@ -155,17 +205,8 @@ interface GridCardProps {
   onRenameTerminal?: (idOrTty: string, newLabel: string) => void;
   entry?: UnifiedTerminal;
   cols: number;
-  density?: 'fit' | 'scrollable';
-  workspaceLayoutMode?: GridMode;
-  /** True while a full-screen TUI (opencode/vim/htop) owns the alternate screen. */
+  density?: GridDensity;
   tuiActive?: boolean;
-}
-
-const IDLE_CLI_IDS = ['', 'shell', 'zsh', 'bash', 'sh', 'fish', 'node', 'nodejs'];
-function resolveLogoCli(rawCli: string, agent: string): string {
-  const c = (rawCli || '').toLowerCase();
-  if (!IDLE_CLI_IDS.includes(c)) return c;
-  return agent || c;
 }
 
 const GridCard = memo(function GridCard({
@@ -196,24 +237,23 @@ const GridCard = memo(function GridCard({
   entry,
   cols,
   density = 'fit',
-  workspaceLayoutMode,
   tuiActive = false,
 }: GridCardProps) {
   const { theme: t } = useTheme();
   const cardRef = useRef<HTMLDivElement>(null);
-  const paneMode: GridMode = pane.sizeMode || workspaceLayoutMode || 'auto';
-
   const [isEditing, setIsEditing] = useState(false);
   const [renameDraft, setRenameDraft] = useState(displayName);
 
-  // Responsive thresholds: drop optional chrome so the title and essential controls survive
-  const isUltraCompact = density === 'fit' && (cols >= 5 || totalPanes > 10);
+  const isUltraCompact = !isExpanded && density === 'fit' && (cols >= 5 || totalPanes > 10);
+  const iconBtnSize = isUltraCompact ? 18 : 22;
+  const lucideSize = 12;
 
   const agentName = entry?.agent?.trim() || '';
   const rawModel = entry?.model || entry?.tokens?.model || entry?.opencode_model || '';
   const shortModel = rawModel ? cleanModel(rawModel) : '';
   const logoCli = resolveLogoCli(entry?.cli || cli, agentName);
   const agentDetected = agentName !== '' && isAgentCli(entry);
+  const showStatusDot = isExpanded || isUltraCompact;
 
   const focusTerminal = useCallback(() => {
     onSelectPane(pane.id);
@@ -228,7 +268,6 @@ const GridCard = memo(function GridCard({
     }
   }, [onSelectPane, onSelectTerminal, pane.id, pane.tty]);
 
-  // Per-pane agent chat panel — open state persisted
   const [chatOpen, setChatOpen] = useState<boolean>(() => {
     if (!pane.tty) return false;
     try {
@@ -268,6 +307,26 @@ const GridCard = memo(function GridCard({
 
   const isCardActive = isSelected || (!!pane.tty && focusedTerminal === pane.tty);
 
+  const statusTitle = `Status: ${label.text}${
+    status === 'running'
+      ? `\nStarted: ${duration?.startTimeFormatted || 'N/A'}`
+      : status === 'asking'
+      ? ''
+      : (duration as { lastTaskDurationStr?: string } | null)?.lastTaskDurationStr
+      ? `\nLast Task: ${(duration as { lastTaskDurationStr?: string }).lastTaskDurationStr}${duration?.endTimeFormatted ? ` (ended ${duration.endTimeFormatted})` : ''}`
+      : status === 'stopped'
+      ? '\n(Idle)'
+      : ''
+  }`;
+
+  const refitPane = () => {
+    if (!pane.tty) return;
+    setTimeout(() => {
+      TerminalManager.fitNow(pane.tty!);
+      TerminalManager.focus(pane.tty!);
+    }, 50);
+  };
+
   return (
     <div
       ref={cardRef}
@@ -294,7 +353,7 @@ const GridCard = memo(function GridCard({
         ...(isExpanded
           ? {}
           : {
-              gridColumn: paneMode === 'large' && cols >= 2 ? 'span 2' : 'span 1',
+              gridColumn: pane.sizeMode === 'large' && cols >= 2 ? 'span 2' : 'span 1',
               height: '100%',
             }),
       }}
@@ -315,24 +374,19 @@ const GridCard = memo(function GridCard({
       onDrop={(e) => onDrop(e, pane.id, dropPosition || 'after', pane.tty)}
       title={`${displayName || pane.tty} — ${label.text}`}
     >
-      {/* ── Card head: drag grip · CLI brand mark · agent/model/session · controls ── */}
-      <div
-        className="ws-pane-head"
-        draggable={!isExpanded && !isEditing}
-        onDragStart={(e) => onDragStart(e, pane.id)}
-        onDragEnd={onDragEnd}
-        style={{ cursor: isExpanded ? 'default' : 'grab' }}
-      >
-        {/* Drag grip */}
+      <div className="ws-pane-head">
         {!isExpanded && (
           <span
+            draggable={!isEditing}
+            onDragStart={(e) => onDragStart(e, pane.id)}
+            onDragEnd={onDragEnd}
             title="Drag to reorder terminal"
             style={{
               display: 'flex',
               alignItems: 'center',
               color: t.colors.text.muted,
               opacity: 0.6,
-              cursor: 'grab',
+              cursor: isEditing ? 'default' : 'grab',
               flexShrink: 0,
             }}
           >
@@ -340,10 +394,8 @@ const GridCard = memo(function GridCard({
           </span>
         )}
 
-        {/* CLI brand mark */}
         <CliLogo cli={logoCli} size={isUltraCompact ? 11 : 13} />
 
-        {/* Centred title: agent + model badges, then the (renameable) session label */}
         <span className="ws-pane-title">
           {agentName && <span className="ws-pane-agent">{agentName}</span>}
           {shortModel && <span className="ws-pane-model">{shortModel}</span>}
@@ -388,10 +440,23 @@ const GridCard = memo(function GridCard({
               {displayName || pane.tty}
             </span>
           )}
+          {tuiActive && (
+            <span
+              title="Full-screen TUI"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                color: t.colors.text.muted,
+                flexShrink: 0,
+                opacity: 0.85,
+              }}
+            >
+              <SquareTerminal size={lucideSize} />
+            </span>
+          )}
         </span>
 
-        {/* Live status pill */}
-        {status !== 'empty' && !isUltraCompact && (
+        {status !== 'empty' && !showStatusDot && (
           <span
             style={{
               display: 'inline-flex',
@@ -409,17 +474,7 @@ const GridCard = memo(function GridCard({
               whiteSpace: 'nowrap',
               flexShrink: 0,
             }}
-            title={`Status: ${label.text}${
-              status === 'running'
-                ? `\nStarted: ${duration?.startTimeFormatted || 'N/A'}\nDuration: ${duration?.durationStr || 'N/A'}`
-                : status === 'asking'
-                ? `\nWaiting: ${duration?.durationStr || 'N/A'}`
-                : (duration as any)?.lastTaskDurationStr
-                ? `\nLast Task: ${(duration as any).lastTaskDurationStr}${duration?.endTimeFormatted ? ` (ended ${duration.endTimeFormatted})` : ''}`
-                : status === 'stopped'
-                ? '\n(Idle)'
-                : ''
-            }`}
+            title={statusTitle}
           >
             <span
               style={{
@@ -432,74 +487,87 @@ const GridCard = memo(function GridCard({
               }}
             />
             <span>{label.text}</span>
+            {pane.tty && (status === 'running' || status === 'asking') && (
+              <LiveDuration tty={pane.tty} status={status} />
+            )}
           </span>
         )}
 
-        {/* Expanded badge */}
-        {isExpanded && (
-          <span className={`ws-expand-badge${tuiActive ? ' cli' : ''}`}>
-            {tuiActive ? '⤢ CLI mode' : '⤢ expanded'}
-          </span>
-        )}
-
-        {/* Agent chat toggle */}
-        {agentDetected && !isUltraCompact && (
+        {status !== 'empty' && showStatusDot && (
           <span
-            role="button"
+            title={statusTitle}
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: label.color,
+              boxShadow: status === 'running' || status === 'asking' ? `0 0 5px ${label.color}` : 'none',
+              flexShrink: 0,
+            }}
+          />
+        )}
+
+        {agentDetected && !isExpanded && (
+          <button
+            type="button"
+            className="ws-pane-icon-btn"
+            style={{ width: iconBtnSize, height: iconBtnSize, color: chatOpen ? t.colors.accent.primary : undefined }}
             onClick={(e) => {
               e.stopPropagation();
               toggleChat();
             }}
-            style={{
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              padding: '2px',
-              borderRadius: '3px',
-              color: chatOpen ? t.colors.accent.primary : t.colors.text.muted,
-              background: chatOpen ? t.colors.bg.hover : 'transparent',
-              flexShrink: 0,
-            }}
             title={chatOpen ? 'Hide agent chat' : 'Open live agent chat'}
           >
-            <MessageSquare size={11} />
-          </span>
+            <MessageSquare size={lucideSize} />
+          </button>
         )}
 
-        {/* Single clean Maximize / Restore button */}
-        <button
-          className={`pane-focus-btn${isExpanded ? ' active' : ''}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onExpandPane(isExpanded ? null : pane.id);
-            if (pane.tty) {
-              setTimeout(() => {
-                TerminalManager.fitNow(pane.tty!);
-                TerminalManager.focus(pane.tty!);
-              }, 50);
-            }
-          }}
-          title={isExpanded ? 'Restore grid view' : 'Maximize terminal'}
-        >
-          {isExpanded ? '⤡' : '⛶'}
-        </button>
-
-        {/* Close */}
-        {(totalPanes > 1 || isExpanded) && (
+        {isExpanded ? (
           <button
-            className="ws-close"
+            type="button"
+            className="ws-pane-icon-btn wide"
+            onClick={(e) => {
+              e.stopPropagation();
+              onExpandPane(null);
+              refitPane();
+            }}
+            title="Restore grid (Esc)"
+          >
+            <Minimize2 size={lucideSize} />
+            Restore
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="ws-pane-icon-btn"
+            style={{ width: iconBtnSize, height: iconBtnSize }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onExpandPane(pane.id);
+              refitPane();
+            }}
+            title="Maximize terminal"
+          >
+            <Maximize2 size={lucideSize} />
+          </button>
+        )}
+
+        {totalPanes > 1 && (
+          <button
+            type="button"
+            className="ws-pane-icon-btn danger"
+            style={{ width: iconBtnSize, height: iconBtnSize }}
             onClick={(e) => {
               e.stopPropagation();
               onRemovePane(pane.id);
             }}
             title="Close terminal"
           >
-            ✕
+            <X size={lucideSize} />
           </button>
         )}
       </div>
 
-      {/* ── Terminal content (xterm host + optional agent chat) ── */}
       {pane.tty ? (
         <div
           style={{
@@ -527,8 +595,9 @@ const GridCard = memo(function GridCard({
           >
             <TerminalAnchor sessionId={pane.tty} />
           </div>
-          {agentDetected && chatOpen && entry && (
+          {agentDetected && chatOpen && !isExpanded && entry && (
             <AgentChatPanel
+              key={pane.tty}
               sessionId={pane.tty}
               entry={entry}
               onClose={toggleChat}
@@ -555,13 +624,9 @@ export function GridView({
   onDropToTerminal,
   onRenameTerminal,
   onAddPane,
+  onSetWorkspaceLayoutMode,
 }: Props) {
   const { theme: t } = useTheme();
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    const id = window.setInterval(() => setTick((v) => v + 1), 500);
-    return () => window.clearInterval(id);
-  }, []);
 
   const [draggedPaneId, setDraggedPaneId] = useState<string | null>(null);
   const [dragOverInfo, setDragOverInfo] = useState<{ paneId: string; position: 'before' | 'after' } | null>(null);
@@ -576,8 +641,7 @@ export function GridView({
     typeof window !== 'undefined' ? window.innerHeight - 60 : 800
   );
 
-  // Density mode: 'fit' (zero scroll, all fit) vs 'scrollable' (comfortable with scrollbar)
-  const [density, setDensity] = useState<'fit' | 'scrollable'>(() => {
+  const [density, setDensity] = useState<GridDensity>(() => {
     try {
       const saved = localStorage.getItem('tto-grid-density');
       if (saved === 'fit' || saved === 'scrollable') return saved;
@@ -585,16 +649,7 @@ export function GridView({
     return 'fit';
   });
 
-  // Column override: 'auto' | '1' | '2' | '3' | '4' | '5' | '6' | '8' | '10'
-  const [colOverride, setColOverride] = useState<string>(() => {
-    try {
-      return localStorage.getItem('tto-grid-cols') || 'auto';
-    } catch {
-      return 'auto';
-    }
-  });
-
-  const handleSetDensity = (d: 'fit' | 'scrollable') => {
+  const handleSetDensity = (d: GridDensity) => {
     setDensity(d);
     try {
       localStorage.setItem('tto-grid-density', d);
@@ -607,18 +662,24 @@ export function GridView({
     });
   };
 
-  const handleSetColOverride = (c: string) => {
-    setColOverride(c);
-    try {
-      localStorage.setItem('tto-grid-cols', c);
-    } catch {}
+  const rawPanes = useMemo(() => activeWorkspace?.panes ?? [], [activeWorkspace?.panes]);
+
+  const handleSetLayoutMode = useCallback((mode: GridMode) => {
+    onSetWorkspaceLayoutMode?.(mode);
+    if (isTauri()) {
+      for (const pane of rawPanes) {
+        if (pane.tty) {
+          tauri.setGridMode(pane.tty, mode).catch(() => {});
+        }
+      }
+    }
     requestAnimationFrame(() => {
       for (const [tty] of TerminalManager.handles) {
         TerminalManager.fitNow(tty);
         TerminalManager.repaint(tty);
       }
     });
-  };
+  }, [onSetWorkspaceLayoutMode, rawPanes]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -636,39 +697,89 @@ export function GridView({
     return () => ro.disconnect();
   }, []);
 
-  const rawPanes = useMemo(() => activeWorkspace?.panes ?? [], [activeWorkspace?.panes]);
-
   const currentLayoutMode: GridMode = activeWorkspace?.layoutMode || 'auto';
   const currentTemplateKey: TemplateKey = (activeWorkspace?.template && activeWorkspace.template in TEMPLATES) ? activeWorkspace.template : 4;
 
-  // Derive slot items — only render active terminals in the workspace (no empty grey boxes)
-  const slotItems = useMemo(() => {
-    return rawPanes
-      .filter((p) => p.tty)
-      .slice(0, MAX_GRID_TERMINALS)
-      .map((pane, i) => ({
-        slotIndex: i,
-        pane,
-        isFilled: true,
-      }));
-  }, [rawPanes]);
+  const filledCount = useMemo(() => rawPanes.filter((p) => p.tty).length, [rawPanes]);
+  const rawPanesRef = useRef(rawPanes);
+  rawPanesRef.current = rawPanes;
 
-  const filledCount = slotItems.length;
+  useEffect(() => {
+    if (expandedPane && !rawPanes.some((p) => p.id === expandedPane && p.tty)) {
+      onExpandPane(null);
+    }
+  }, [expandedPane, rawPanes, onExpandPane]);
 
-  const largeCount = useMemo(() => {
-    return slotItems.filter((s) => s.pane.sizeMode === 'large').length;
-  }, [slotItems]);
+  useEffect(() => {
+    const filled = rawPanes.filter((p): p is Pane & { tty: string } => Boolean(p.tty));
+    const expandedTty = expandedPane
+      ? filled.find((p) => p.id === expandedPane)?.tty ?? null
+      : null;
+    for (const pane of filled) {
+      const hide = Boolean(expandedTty) && pane.tty !== expandedTty;
+      TerminalManager.setVisible(pane.tty, !hide);
+    }
+  }, [expandedPane, rawPanes]);
 
-  const effectiveSlots = Math.max(1, Math.min(MAX_GRID_TERMINALS, Math.max(filledCount, currentTemplateKey === 1 ? 1 : Math.min(filledCount, currentTemplateKey)) + largeCount));
-  const { cols, rows: rawRows } = computeGridDimensions(
-    effectiveSlots,
-    containerWidth,
-    containerHeight,
-    colOverride,
-    density
+  useEffect(() => {
+    return () => {
+      for (const pane of rawPanesRef.current) {
+        if (pane.tty) TerminalManager.setVisible(pane.tty, true);
+      }
+    };
+  }, []);
+
+  const seedCount = Math.min(
+    MAX_GRID_TERMINALS,
+    Math.max(currentTemplateKey, rawPanes.length, filledCount, 1),
   );
+  const seedCols = computeGridLayout({
+    paneCount: seedCount,
+    width: containerWidth,
+    height: containerHeight,
+    mode: currentLayoutMode,
+    density,
+    template: currentTemplateKey,
+  }).cols;
+  const effectiveSlots = paintedGridSlots({
+    template: currentTemplateKey,
+    paneCount: rawPanes.length,
+    filledCount,
+    cols: seedCols,
+    mode: currentLayoutMode,
+  });
+  const { cols, rows: rawRows } = computeGridLayout({
+    paneCount: effectiveSlots,
+    width: containerWidth,
+    height: containerHeight,
+    mode: currentLayoutMode,
+    density,
+    template: currentTemplateKey,
+  });
 
-  // Compute exact row requirements with large (span 2) cards taken into account
+  const slotItems = useMemo(() => {
+    const items: { slotIndex: number; pane: Pane; isFilled: boolean; isPadding: boolean }[] = [];
+    for (let i = 0; i < effectiveSlots; i++) {
+      const pane = rawPanes[i];
+      if (pane) {
+        items.push({
+          slotIndex: i,
+          pane,
+          isFilled: Boolean(pane.tty),
+          isPadding: false,
+        });
+      } else {
+        items.push({
+          slotIndex: i,
+          pane: { id: `ghost-${i}`, tty: null },
+          isFilled: false,
+          isPadding: true,
+        });
+      }
+    }
+    return items;
+  }, [rawPanes, effectiveSlots]);
+
   const totalUnits = useMemo(() => {
     return slotItems.reduce((acc, s) => {
       if (s.isFilled && s.pane.sizeMode === 'large' && cols >= 2) {
@@ -686,7 +797,6 @@ export function GridView({
     [slotItems]
   );
 
-  // Trigger terminal refits when layout, sizes, or window geometry change (debounced via rAF)
   useEffect(() => {
     const rafId = window.requestAnimationFrame(() => {
       for (const [tty] of TerminalManager.handles) {
@@ -730,12 +840,13 @@ export function GridView({
 
   const slotRows = useMemo(
     () =>
-      slotItems.map(({ slotIndex, pane, isFilled }) => {
+      slotItems.map(({ slotIndex, pane, isFilled, isPadding }) => {
         if (!isFilled || !pane.tty) {
           return {
             slotIndex,
             pane,
             isFilled: false,
+            isPadding,
             entry: undefined,
             status: 'empty' as TermStatus,
             label: statusLabel('empty'),
@@ -770,6 +881,7 @@ export function GridView({
           slotIndex,
           pane,
           isFilled: true,
+          isPadding: false,
           entry,
           status,
           label: statusLabel(status),
@@ -778,8 +890,7 @@ export function GridView({
           duration: meta ? meta.duration : null,
         };
       }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [slotItems, terminals, activeWorkspace?.command, tick]
+    [slotItems, terminals, activeWorkspace?.command]
   );
 
   const handleDragStart = useCallback((e: React.DragEvent, paneId: string) => {
@@ -798,6 +909,16 @@ export function GridView({
     setDragOverInfo((prev) => {
       if (prev?.paneId === paneId && prev.position === position) return prev;
       return { paneId, position };
+    });
+  }, []);
+
+  const handleEmptyDragOver = useCallback((e: React.DragEvent, key: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverInfo((prev) => {
+      if (prev?.paneId === key && prev.position === 'before') return prev;
+      return { paneId: key, position: 'before' };
     });
   }, []);
 
@@ -822,22 +943,46 @@ export function GridView({
         if (activeWorkspace && onReorderPanes) {
           onReorderPanes(activeWorkspace.id, fromPaneId, targetPaneId, position);
           setTimeout(() => {
-            for (const [t] of TerminalManager.handles) {
-              TerminalManager.fitNow(t);
-              TerminalManager.refresh(t);
+            for (const [tid] of TerminalManager.handles) {
+              TerminalManager.fitNow(tid);
+              TerminalManager.refresh(tid);
             }
           }, 80);
         }
         return;
       }
 
-      // External file drop
       const paths = extractDropPaths(e.dataTransfer);
       if (paths.length > 0 && onDropToTerminal && tty) {
         onDropToTerminal(tty, paths);
       }
     },
     [activeWorkspace, onReorderPanes, onDropToTerminal]
+  );
+
+  const handleEmptyDrop = useCallback(
+    (e: React.DragEvent, targetPaneId: string | null, slotIndex: number) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const fromPaneId = e.dataTransfer.getData('application/x-tto-grid-pane') || currentDraggedPaneIdRef.current;
+      currentDraggedPaneIdRef.current = null;
+      setDraggedPaneId(null);
+      setDragOverInfo(null);
+
+      if (!fromPaneId || !activeWorkspace || !onReorderPanes) return;
+      if (targetPaneId && fromPaneId === targetPaneId) return;
+
+      const dest = targetPaneId || slotIndex;
+      onReorderPanes(activeWorkspace.id, fromPaneId, dest, 'swap');
+      setTimeout(() => {
+        for (const [tid] of TerminalManager.handles) {
+          TerminalManager.fitNow(tid);
+          TerminalManager.refresh(tid);
+        }
+      }, 80);
+    },
+    [activeWorkspace, onReorderPanes]
   );
 
   const handleDragEnd = useCallback(() => {
@@ -876,113 +1021,90 @@ export function GridView({
         height: '100%',
       }}
     >
-      {/* ── Floating Zen Notch (Full-Window Draggable Island) ── */}
       <GridNotch
         filledCount={filledCount}
         maxCount={MAX_GRID_TERMINALS}
         density={density}
         onSetDensity={handleSetDensity}
-        colOverride={colOverride}
-        onSetColOverride={handleSetColOverride}
+        layoutMode={currentLayoutMode}
+        onSetLayoutMode={handleSetLayoutMode}
         onAddPane={onAddPane ? () => onAddPane() : undefined}
         cols={cols}
         rows={rows}
+        paneExpanded={Boolean(expandedPane)}
+        onRestoreExpanded={() => onExpandPane(null)}
       />
 
-      {/* ── Main Grid Container (100% Full Height Canvas) ── */}
       <div
         ref={gridContainerRef}
         className={`ws-grid${expandedPane ? ' has-expanded' : ''}${activeWorkspace?.gridFocusMode ? ' focus-mode' : ''}${density === 'scrollable' ? ' grid-scroll-container' : ''}`}
         data-grid-mode={currentLayoutMode}
         style={gridStyle}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+        }}
       >
-        {slotRows.length === 0 ? (
-          <div
-            style={{
-              gridColumn: '1 / -1',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              minHeight: '260px',
-              height: '100%',
-              color: t.colors.text.muted,
-              gap: '12px',
-            }}
-          >
-            <span style={{ fontSize: '12px' }}>No active terminals in this workspace</span>
-            {onAddPane && (
-              <button
-                type="button"
-                onClick={() => onAddPane()}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '6px 14px',
-                  borderRadius: '6px',
-                  background: t.colors.accent.primary,
-                  color: '#ffffff',
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontWeight: 600,
-                  fontSize: '12px',
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-                }}
-              >
-                <Plus size={14} />
-                <span>Create Terminal</span>
-              </button>
-            )}
-          </div>
-        ) : (
-          slotRows.map(
-            ({ pane, status, label, cli, displayName, duration, entry }) => {
-              const isExpanded = expandedPane === pane.id;
-              const isSelected = selectedPane === pane.id;
-              const isDraggingThis = draggedPaneId === pane.id;
-              const isOverThis = dragOverInfo?.paneId === pane.id && !isDraggingThis;
-              const dropPosition = isOverThis ? (dragOverInfo?.position || null) : null;
-              // Drives the `⤢ CLI mode` badge and hides the command bar so a
-              // full-screen TUI keeps every row it needs.
-              const tuiActive = pane.tty ? TerminalManager.isTui(pane.tty) : false;
-
+        {slotRows.map(
+          ({ pane, status, label, cli, displayName, duration, entry, slotIndex, isFilled, isPadding }) => {
+            if (!isFilled || !pane.tty) {
+              const dropKey = isPadding ? `ghost-${slotIndex}` : pane.id;
               return (
-                <GridCard
-                  key={pane.id}
-                  pane={pane}
-                  status={status}
-                  label={label}
-                  cli={cli}
-                  displayName={displayName}
-                  duration={duration}
-                  isExpanded={isExpanded}
-                  isSelected={isSelected}
-                  focusedTerminal={focusedTerminal}
-                  onSelectTerminal={onSelectTerminal}
-                  isDraggingThis={isDraggingThis}
-                  isDraggingAny={Boolean(draggedPaneId)}
-                  isOverThis={isOverThis}
-                  dropPosition={dropPosition}
-                  totalPanes={filledCount}
-                  onSelectPane={onSelectPane}
-                  onExpandPane={onExpandPane}
-                  onRemovePane={onRemovePane}
-                  onDragStart={handleDragStart}
-                  onDragEnd={handleDragEnd}
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                  onRenameTerminal={onRenameTerminal}
-                  entry={entry}
-                  cols={cols}
+                <EmptyGridSlot
+                  key={isPadding ? `ghost-${slotIndex}` : pane.id}
+                  slotIndex={slotIndex}
+                  paneId={isPadding ? null : pane.id}
                   density={density}
-                  workspaceLayoutMode={currentLayoutMode}
-                  tuiActive={tuiActive}
+                  isDragOver={dragOverInfo?.paneId === dropKey && draggedPaneId !== pane.id}
+                  onDragOver={handleEmptyDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleEmptyDrop}
+                  onAddPane={onAddPane}
                 />
               );
             }
-          )
+
+            const isExpanded = expandedPane === pane.id;
+            const isSelected = selectedPane === pane.id;
+            const isDraggingThis = draggedPaneId === pane.id;
+            const isOverThis = dragOverInfo?.paneId === pane.id && !isDraggingThis;
+            const dropPosition = isOverThis ? (dragOverInfo?.position || null) : null;
+            const tuiActive = pane.tty ? TerminalManager.isTui(pane.tty) : false;
+
+            return (
+              <GridCard
+                key={pane.id}
+                pane={pane}
+                status={status}
+                label={label}
+                cli={cli}
+                displayName={displayName}
+                duration={duration}
+                isExpanded={isExpanded}
+                isSelected={isSelected}
+                focusedTerminal={focusedTerminal}
+                onSelectTerminal={onSelectTerminal}
+                isDraggingThis={isDraggingThis}
+                isDraggingAny={Boolean(draggedPaneId)}
+                isOverThis={isOverThis}
+                dropPosition={dropPosition}
+                totalPanes={filledCount}
+                onSelectPane={onSelectPane}
+                onExpandPane={onExpandPane}
+                onRemovePane={onRemovePane}
+                onDragStart={handleDragStart}
+                onDragEnd={handleDragEnd}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                onRenameTerminal={onRenameTerminal}
+                entry={entry}
+                cols={cols}
+                density={density}
+                tuiActive={tuiActive}
+              />
+            );
+          }
         )}
       </div>
     </div>

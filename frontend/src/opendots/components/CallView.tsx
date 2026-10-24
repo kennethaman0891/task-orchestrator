@@ -1,4 +1,4 @@
-import { useEffect, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   ChevronDown,
   Mic,
@@ -23,6 +23,7 @@ export function CallView({
   onHeadingPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
   const [minimized, setMinimized] = useState(false);
+  const [taskDraft, setTaskDraft] = useState('');
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (voice.status !== 'active') return;
@@ -193,7 +194,29 @@ export function CallView({
         </button>
       </div>
       {!minimized && (
-        <p className="call-footer">Text and voice share this conversation</p>
+        <form
+          className="call-task-row"
+          onSubmit={(event: FormEvent) => {
+            event.preventDefault();
+            const task = taskDraft.trim();
+            if (!task || voice.status !== 'active') return;
+            setTaskDraft('');
+            void voice.sendTask(task);
+          }}
+        >
+          <input
+            className="call-task-input"
+            value={taskDraft}
+            placeholder="Send a task to this terminal"
+            aria-label="Send a task to this terminal"
+            onChange={(event) => setTaskDraft(event.target.value)}
+            onPointerDown={(event) => event.stopPropagation()}
+            disabled={voice.status !== 'active'}
+          />
+          <button type="submit" className="call-task-send" disabled={voice.status !== 'active' || !taskDraft.trim()}>
+            Send
+          </button>
+        </form>
       )}
     </section>
   );

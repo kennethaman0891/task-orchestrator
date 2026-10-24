@@ -856,13 +856,9 @@ h1 {
     width: 12px;
     height: 12px;
   }
-  .pane-expand-btn,
-  .pane-restore-btn {
-    padding: 3px 6px;
-    font-size: 9px;
-  }
-  .ws-expand-badge {
-    display: none;
+  .ws-pane-icon-btn {
+    width: 18px;
+    height: 18px;
   }
 }
 @container (max-width: 300px) {
@@ -886,10 +882,6 @@ h1 {
   }
 }
 @container (max-width: 240px) {
-  .pane-expand-btn,
-  .pane-restore-btn {
-    display: none;
-  }
   .ws-cli-logo svg,
   .ws-cli-logo img {
     width: 10px;
@@ -897,13 +889,11 @@ h1 {
   }
 }
 /* ── Head density vs. the card's own chrome ───────────────────────────────
-   The reference card head is [logo][agent][model][session id][badge][⤢][⛶][✕],
-   and its badges hold short ids ("claude", "sonnet-4") with a short tty for the
-   id. Real data here is longer ("muse-spark-1.3-contributor-free") and this
-   branch adds a status pill, a size dropdown, add-terminal and chat controls,
-   so on a 2-column grid the session label — the one thing that must stay
-   readable — gets squeezed to a few characters. Yield the decorative wear first,
-   widest card first, exactly like the reference's own @container rules above. */
+   Card head is [grip][logo][title…][status][chat][maximize][close]. Badges hold
+   short ids ("claude", "sonnet-4") with a short tty for the id. Real data here
+   is longer ("muse-spark-1.3-contributor-free"), so on a 2-column grid the
+   session label — the one thing that must stay readable — gets squeezed.
+   Yield the decorative wear first, widest card first. */
 @container (max-width: 720px) {
   /* Ellipsize rather than hide: the badges stay identifiable, and the session
      label keeps the space it needs. */
@@ -1225,11 +1215,9 @@ h1 {
   width: 11px;
   height: 11px;
 }
-.ws-grid[data-grid-mode='grid'] .pane-expand-btn,
-.ws-grid[data-grid-mode='grid'] .pane-restore-btn,
-.ws-grid[data-grid-mode='grid'] .pane-focus-btn {
-  padding: 1px 4px;
-  font-size: 8px;
+.ws-grid[data-grid-mode='grid'] .ws-pane-icon-btn {
+  width: 18px;
+  height: 18px;
 }
 /* Compact mode: smaller terminals — 260×160 min pane */
 .ws-grid[data-grid-mode='compact'] .ws-pane-head {
@@ -1245,10 +1233,9 @@ h1 {
   width: 12px;
   height: 12px;
 }
-.ws-grid[data-grid-mode='compact'] .pane-expand-btn,
-.ws-grid[data-grid-mode='compact'] .pane-restore-btn {
-  padding: 2px 5px;
-  font-size: 9px;
+.ws-grid[data-grid-mode='compact'] .ws-pane-icon-btn {
+  width: 18px;
+  height: 18px;
 }
 /* Large mode: fewer, bigger terminals — 480×300 min pane */
 .ws-grid[data-grid-mode='large'] .ws-pane-head {
@@ -1264,10 +1251,9 @@ h1 {
   width: 15px;
   height: 15px;
 }
-.ws-grid[data-grid-mode='large'] .pane-expand-btn,
-.ws-grid[data-grid-mode='large'] .pane-restore-btn {
-  padding: 3px 8px;
-  font-size: 11px;
+.ws-grid[data-grid-mode='large'] .ws-pane-icon-btn {
+  width: 22px;
+  height: 22px;
 }
 /* Mode-specific minimum pane widths as safety net — ensures panes never
    shrink below usable size when JS layout is mid-reflow or stale. */
@@ -1275,7 +1261,7 @@ h1 {
 .ws-grid[data-grid-mode='auto']    .ws-pane { min-width: 320px; }
 .ws-grid[data-grid-mode='large']   .ws-pane { min-width: 480px; }
 .ws-grid[data-grid-mode='grid']    .ws-pane { min-width: 180px; }
-/* Grid-view tracks are computed in JS (computeGridDimensions) from the live
+/* Grid-view tracks are computed in JS (computeGridLayout) from the live
    container size. The safety nets above assume a fixed column count for the
    mode, so once the layout picks more columns than the mode assumes (e.g. 16
    terminals in Compact) they force horizontal overflow — and the grid clips
@@ -1287,20 +1273,9 @@ h1 {
   grid-row: 1 / -1;
   z-index: 2;
 }
-.ws-expand-badge {
-  font-size: 10px;
-  color: #28c840;
-  border: 1px solid rgba(40, 200, 64, 0.4);
-  border-radius: 4px;
-  padding: 1px 6px;
-  flex: none;
-  white-space: nowrap;
-  background: rgba(40, 200, 64, 0.08);
-}
-.ws-expand-badge.cli {
-  color: var(--accent);
-  border-color: rgba(74, 158, 255, 0.5);
-  background: rgba(74, 158, 255, 0.12);
+.ws-grid .ws-pane-ghost {
+  background: transparent;
+  box-shadow: none;
 }
 .ws-add-strip {
   display: flex;
@@ -1331,7 +1306,7 @@ h1 {
 }
 .ws-pane-title {
   flex: 1;
-  text-align: center;
+  text-align: left;
   font-size: 10px;
   font-family: var(--mono);
   color: #acb1aa;
@@ -1342,8 +1317,9 @@ h1 {
   white-space: nowrap;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 6px;
+  min-width: 0;
 }
 .ws-pane-agent {
   background: rgba(var(--accent-rgb, 88, 166, 255), 0.15);
@@ -1534,8 +1510,6 @@ h1 {
   cursor: nwse-resize;
   z-index: 10;
 }
-.pane-expand-btn,
-.pane-restore-btn,
 .pane-focus-btn {
   background: transparent;
   border: 1px solid var(--border);
@@ -1547,8 +1521,6 @@ h1 {
   flex: none;
   white-space: nowrap;
 }
-.pane-expand-btn:hover,
-.pane-restore-btn:hover,
 .pane-focus-btn:hover {
   color: var(--text);
   border-color: var(--accent);
@@ -1556,6 +1528,37 @@ h1 {
 .pane-focus-btn.active {
   color: var(--green);
   border-color: var(--green);
+}
+.ws-grid .ws-pane-icon-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted, #888);
+  cursor: pointer;
+  flex: none;
+  line-height: 0;
+}
+.ws-grid .ws-pane-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text, #fff);
+}
+.ws-grid .ws-pane-icon-btn.danger:hover {
+  background: rgba(239, 68, 68, 0.18);
+  color: #ef4444;
+}
+.ws-grid .ws-pane-icon-btn.wide {
+  width: auto;
+  padding: 0 8px;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 .btn {
   background: var(--bg);

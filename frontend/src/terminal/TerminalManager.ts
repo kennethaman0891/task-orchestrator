@@ -4,6 +4,7 @@
 // `tauri.attach()` is the ONLY source of terminal streaming.
 
 import type { Terminal } from '@xterm/xterm';
+import { menuKeystrokes } from './chatTranscript';
 import { WriteQueue } from './writeQueue';
 import { SynchronizedOutputFilter } from './synchronizedOutputFilter';
 
@@ -33,6 +34,10 @@ interface Handle {
 // Cached Tauri IPC references (imported once, reused for every write/resize/etc.)
 let _invoke: ((cmd: string, args?: Record<string, unknown>) => Promise<any>) | null = null;
 let _Channel: (new (...args: any[]) => any) | null = null;
+/** Currently PTY-focused session — at most one. */
+let _focusedId: string | null = null;
+/** lastLines cache: conceptually `${id}:${n}:${lastOutputAt}`; dropped when lastOutputAt changes. */
+const _lastLinesCache = new Map<string, { lastOutputAt: number; byN: Map<number, string[]> }>();
 
 /** Park style — the host is hidden off-screen until an anchor claims it. */
 const POOL_HOST_STYLE =
@@ -147,6 +152,10 @@ export const TerminalManager = {
 
     const cleanTty = opts.tty ? (opts.tty.startsWith('/dev/') ? opts.tty.slice(5) : opts.tty) : undefined;
 
+    _lastLinesCache.delete(opts.sessionId);
+
+    // Per-handle write completion; WriteQueue stallMs (1500) calls this once if xterm drops the callback.
+    let writeDone: (() => void) | null = null;
     const handle: Handle = {
       sessionId: opts.sessionId,
       tty: cleanTty,
@@ -154,25 +163,24 @@ export const TerminalManager = {
       host: opts.host,
       queue: new WriteQueue({
         deliver: (data: Uint8Array, done: () => void) => {
+          // Notify chat after xterm has parsed the bytes. Notifying from the
+          // PTY channel reads the previous frame and drops the rest of a burst.
           let finished = false;
-          let timer: number | null = null;
-          const safeDone = () => {
-            if (!finished) {
-              finished = true;
-              if (timer !== null) {
-                clearTimeout(timer);
-                timer = null;
-              }
-              done();
-            }
+          const finish = () => {
+            if (finished) return;
+            finished = true;
+            TerminalManager._notifyOutput(opts.sessionId);
+            done();
           };
+          writeDone = finish;
           try {
-            deliverFn(data, safeDone);
-            // Watchdog fallback ensures long streams never stall if xterm drops a write callback
-            timer = window.setTimeout(safeDone, 60);
+            deliverFn(data, finish);
           } catch {
-            safeDone();
+            finish();
           }
+        },
+        onStall: () => {
+          writeDone?.();
         },
       }),
       attached: false,
@@ -214,6 +222,9 @@ export const TerminalManager = {
     TerminalManager.registered = TerminalManager.registered.filter((r) => r !== id && r !== resolvedId);
     TerminalManager.invalidateMetaCache(id);
     TerminalManager.invalidateMetaCache(resolvedId);
+    _lastLinesCache.delete(id);
+    _lastLinesCache.delete(resolvedId);
+    if (_focusedId === resolvedId || _focusedId === id) _focusedId = null;
     TerminalManager._lastSizes.delete(id);
     TerminalManager._lastSizes.delete(resolvedId);
     const resizeTimer = TerminalManager._resizeTimers.get(resolvedId) || TerminalManager._resizeTimers.get(id);
@@ -269,7 +280,6 @@ export const TerminalManager = {
       }
       const u8 = new Uint8Array(data);
       h.queue.push(filter.filter(u8));
-      TerminalManager._notifyOutput(resolvedId);
     };
 
     // Exit channel: PTY exited → cleanup
@@ -431,11 +441,11 @@ export const TerminalManager = {
   },
 
   /**
-   * Select a choice option in an interactive CLI menu/question prompt.
-   * Sends the selection key (e.g. "1", "2", "y", "n") followed by Enter,
-   * or sends Escape (\x1b) for cancellation.
+   * Select a choice in an interactive CLI prompt.
+   * y/n is a single byte. Numbered rows send Enter only when opts.enter is set
+   * (Claude/Codex, or a tail that says "Enter to confirm"). Escape is one \x1b.
    */
-  async sendMenuSelection(id: string, keyOrEscape: string): Promise<void> {
+  async sendMenuSelection(id: string, keyOrEscape: string, opts?: { enter?: boolean }): Promise<void> {
     const resolvedId = TerminalManager.resolveSessionId(id);
     const h = TerminalManager.handles.get(resolvedId);
     if (h) {
@@ -448,13 +458,11 @@ export const TerminalManager = {
       }
     }
     await ensureTauri();
-    if (keyOrEscape.toLowerCase() === 'escape' || keyOrEscape === '\x1b') {
-      await this.write(resolvedId, '\x1b');
-      return;
+    const strokes = menuKeystrokes(keyOrEscape, { enter: opts?.enter ?? true });
+    for (let i = 0; i < strokes.length; i++) {
+      if (i > 0) await new Promise((r) => setTimeout(r, 60));
+      await this.write(resolvedId, strokes[i]);
     }
-    await this.write(resolvedId, keyOrEscape);
-    await new Promise((r) => setTimeout(r, 60));
-    await this.write(resolvedId, '\r');
   },
 
   /** Send a command followed by Enter (\r) to the terminal via Tauri IPC */
@@ -523,9 +531,24 @@ export const TerminalManager = {
   async setFocus(id: string, focused: boolean): Promise<void> {
     const resolvedId = TerminalManager.resolveSessionId(id);
     await ensureTauri();
-    try {
-      await cachedInvoke('terminal_set_focus', { id: resolvedId, focused });
-    } catch {}
+    if (focused) {
+      const prev = _focusedId;
+      _focusedId = resolvedId;
+      if (prev && prev !== resolvedId) {
+        try {
+          await cachedInvoke('terminal_set_focus', { id: prev, focused: false });
+        } catch {}
+      }
+      if (_focusedId !== resolvedId) return;
+      try {
+        await cachedInvoke('terminal_set_focus', { id: resolvedId, focused: true });
+      } catch {}
+    } else {
+      if (_focusedId === resolvedId) _focusedId = null;
+      try {
+        await cachedInvoke('terminal_set_focus', { id: resolvedId, focused: false });
+      } catch {}
+    }
   },
 
   /** True when the terminal's host is parked in the hidden pool or disconnected. */
@@ -700,7 +723,9 @@ export const TerminalManager = {
   focus(id: string): void {
     const h = TerminalManager.get(id);
     if (!h) return;
+    TerminalManager.setFocus(h.sessionId, true).catch(() => {});
     try {
+      h.term.options.cursorBlink = true;
       h.term.focus();
     } catch {}
   },
@@ -726,15 +751,59 @@ export const TerminalManager = {
   lastLines(id: string, n = 60): string[] {
     const h = TerminalManager.get(id);
     if (!h) return [];
+    const sid = h.sessionId;
+    const at = h.lastOutputAt;
+    let entry = _lastLinesCache.get(sid);
+    if (!entry || entry.lastOutputAt !== at) {
+      entry = { lastOutputAt: at, byN: new Map() };
+      _lastLinesCache.set(sid, entry);
+    } else {
+      const hit = entry.byN.get(n);
+      if (hit !== undefined) return hit;
+    }
     try {
       const buf = h.term.buffer.active;
       const out: string[] = [];
       for (let i = buf.length - 1; i >= Math.max(0, buf.length - n); i--) {
         out.unshift(buf.getLine(i)?.translateToString(true) ?? '');
       }
-      return out.filter((l) => l.trim().length > 0);
+      const lines = out.filter((l) => l.trim().length > 0);
+      entry.byN.set(n, lines);
+      return lines;
     } catch {
       return [];
+    }
+  },
+
+  /** Visible rows of the active screen. Scrollback above the viewport is excluded. */
+  getViewportText(id: string): string[] {
+    const h = TerminalManager.get(id);
+    if (!h) return [];
+    try {
+      const term = h.term;
+      const buf = term.buffer.active;
+      if (!buf) return [];
+      const rows = term.rows > 0 ? term.rows : buf.length;
+      const start = buf.viewportY ?? 0;
+      const end = Math.min(buf.length, start + rows);
+      const out: string[] = [];
+      for (let i = Math.max(0, start); i < end; i++) {
+        out.push(buf.getLine(i)?.translateToString(true) ?? '');
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  },
+
+  /** True when xterm is showing the alternate screen (full-screen TUI). */
+  isAlternateScreen(id: string): boolean {
+    const h = TerminalManager.get(id);
+    if (!h) return false;
+    try {
+      return h.term.buffer.active.type === 'alternate';
+    } catch {
+      return false;
     }
   },
 

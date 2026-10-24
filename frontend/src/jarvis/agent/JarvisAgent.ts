@@ -19,6 +19,7 @@ import {
   type DetectedTerminalPrompt,
 } from '../terminalPromptDetector';
 import { realTaskTitle, sessionContextStore } from '../contextStore';
+import { decideCallDelivery } from '../callDelivery';
 import { apiBase } from '@/lib/api';
 
 export class JarvisAgent {
@@ -297,10 +298,12 @@ export class JarvisAgent {
     const rawScreen = TerminalManager.getBufferText(this.terminalId, 80).join('\n').trim();
     const buffer = rawScreen.length > 4000 ? rawScreen.slice(-4000) : rawScreen;
     const currentTask = realTaskTitle(ctx?.currentTaskTitle) || '';
-    const asksToAct = /^(tell|ask|have|instruct|run|execute|fix|implement|build|write|edit|refactor|create|add|remove|delete|send|type|continue|do)\b/i.test(text)
-      || /\b(tell|instruct)\s+(antigravity|the\s+(cli|agent|terminal))\b/i.test(text);
 
-    const fail = { response: 'I could not read a model reply.' };
+    let modelOk = false;
+    let intent = 'advice';
+    let shouldExecute = false;
+    let actionCommand = '';
+    let spoken = 'I could not read a model reply.';
     try {
       const reasonRes = await fetch(`${apiBase()}/api/jarvis/reason`, {
         method: 'POST',
@@ -323,51 +326,42 @@ export class JarvisAgent {
           pending_prompt: this.pendingPrompt,
         }),
       });
-
-      if (!reasonRes.ok) return fail;
-      const reasoning = await reasonRes.json();
-      const spoken = (reasoning.spoken_response || '').trim() || fail.response;
-      const cmd = (reasoning.action_command || '').trim();
-      const intent = reasoning.intent || 'advice';
-      if (intent === 'advice' || intent === 'permission_decision') {
-        this.addTimelineItem(`Jarvis: "${spoken}"`, 'action');
-        this.onChange?.();
-        return { response: spoken };
+      if (reasonRes.ok) {
+        const reasoning = await reasonRes.json();
+        modelOk = true;
+        intent = reasoning.intent || 'advice';
+        shouldExecute = Boolean(reasoning.should_execute);
+        actionCommand = (reasoning.action_command || '').trim();
+        spoken = (reasoning.spoken_response || '').trim() || spoken;
       }
-      const shouldExec = Boolean(reasoning.should_execute) && asksToAct;
-
-      if (!shouldExec) {
-        this.addTimelineItem(`Jarvis: "${spoken}"`, 'action');
-        this.onChange?.();
-        return { response: spoken };
-      }
-
-      if (!this.can('EXECUTE') && !this.can('CONTROL')) {
-        const held = 'Execution is off. I will not type that into the terminal.';
-        this.addTimelineItem(`Held: "${cmd || text}"`, 'action');
-        this.onChange?.();
-        return { response: held };
-      }
-
-      const promptToSend = cmd || text;
-      this.userGaveTask = true;
-      this.workingMemory.task = promptToSend;
-      this.status = 'WORKING';
-      this.hasTaskInFlight = true;
-      this.taskStartedAt = Date.now();
-      this.addTimelineItem(`Running: "${promptToSend}"`, 'task');
-      this.onChange?.();
-
-      if (intent === 'execute_shell' || intent === 'execute') {
-        await this.executeCommand(promptToSend);
-      } else {
-        await TerminalManager.sendPrompt(this.terminalId, promptToSend);
-      }
-      return { response: spoken, executedCommand: promptToSend };
     } catch (e) {
       console.warn('[JarvisAgent] Backend reasoning error:', e);
-      return fail;
     }
+
+    const decision = decideCallDelivery({
+      utterance: text,
+      intent,
+      shouldExecute,
+      actionCommand,
+      spoken,
+      modelOk,
+    });
+    if (!decision.deliver) {
+      this.addTimelineItem(`Jarvis: "${decision.speak}"`, 'action');
+      this.onChange?.();
+      return { response: decision.speak };
+    }
+
+    const promptToSend = decision.command;
+    this.userGaveTask = true;
+    this.workingMemory.task = promptToSend;
+    this.status = 'WORKING';
+    this.hasTaskInFlight = true;
+    this.taskStartedAt = Date.now();
+    this.addTimelineItem(`Running: "${promptToSend}"`, 'task');
+    this.onChange?.();
+    await TerminalManager.sendPrompt(this.terminalId, promptToSend);
+    return { response: decision.speak, executedCommand: promptToSend };
   }
 
   /** Assign a specific developer task or prompt directly to this agent */

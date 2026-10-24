@@ -8,8 +8,10 @@ interface GlobalShortcutsOptions {
   activeWorkspace?: Workspace;
   focusedTerminal: string | null;
   selectedPane: string | null;
+  expandedPane?: string | null;
   onSelectTerminal: (id: string | null) => void;
   onSelectPane: (id: string | null) => void;
+  onExpandPane?: (id: string | null) => void;
   onAddPane: (targetSlotIndex?: number) => void | Promise<void>;
   onRemovePane: (paneId: string) => void;
   onAddIdeTerminal?: () => Promise<string | undefined>;
@@ -26,6 +28,7 @@ interface GlobalShortcutsOptions {
  *   - Cmd+Shift+[ / Cmd+Shift+]: Cycle to previous / next terminal tab
  *   - Cmd+Shift+G / Ctrl+Shift+G: Toggle between Workspace and Grid views
  *   - Cmd+Alt+Arrow: Spatial navigation between cards in Grid View
+ *   - Esc (Grid, maximized): Restore the expanded pane (skipped while renaming or in a TUI)
  *
  * Registered with `{ capture: true }` so it intercepts keydown before child
  * elements, and works seamlessly alongside xterm.js custom key handler.
@@ -36,8 +39,10 @@ export function useGlobalShortcuts({
   activeWorkspace,
   focusedTerminal,
   selectedPane,
+  expandedPane,
   onSelectTerminal,
   onSelectPane,
+  onExpandPane,
   onAddPane,
   onRemovePane,
   onAddIdeTerminal,
@@ -49,8 +54,10 @@ export function useGlobalShortcuts({
     activeWorkspace,
     focusedTerminal,
     selectedPane,
+    expandedPane,
     onSelectTerminal,
     onSelectPane,
+    onExpandPane,
     onAddPane,
     onRemovePane,
     onAddIdeTerminal,
@@ -64,8 +71,10 @@ export function useGlobalShortcuts({
       activeWorkspace,
       focusedTerminal,
       selectedPane,
+      expandedPane,
       onSelectTerminal,
       onSelectPane,
+      onExpandPane,
       onAddPane,
       onRemovePane,
       onAddIdeTerminal,
@@ -75,12 +84,46 @@ export function useGlobalShortcuts({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const current = stateRef.current;
+
+      // Esc restores a maximized grid pane. Must run before the Cmd/Ctrl
+      // early-out — Esc is not a modifier combo, so it never reached here.
+      if (e.key === 'Escape') {
+        if (current.view === 'grid' && current.expandedPane) {
+          const active = document.activeElement as HTMLElement | null;
+          const isRenaming = Boolean(
+            active &&
+              (active.tagName === 'INPUT' ||
+                active.tagName === 'TEXTAREA' ||
+                active.isContentEditable)
+          );
+          if (isRenaming) return;
+          if (current.focusedTerminal && TerminalManager.isTui(current.focusedTerminal)) {
+            return;
+          }
+          e.preventDefault();
+          e.stopPropagation();
+          current.onExpandPane?.(null);
+          current.onToast?.('Restored grid (Esc)');
+        }
+        return;
+      }
+
       const isCmdOrCtrl = e.metaKey || e.ctrlKey;
       if (!isCmdOrCtrl) return;
 
       const key = e.key.toLowerCase();
-      const current = stateRef.current;
       const ws = current.activeWorkspace;
+
+      if (key === 'm' && e.shiftKey && !e.altKey) {
+        if (current.view === 'grid' && current.expandedPane) {
+          e.preventDefault();
+          e.stopPropagation();
+          current.onExpandPane?.(null);
+          current.onToast?.('Restored grid (⌘⇧M)');
+        }
+        return;
+      }
 
       // ── Cmd + T / Ctrl + T: New Tab / New Terminal ──
       if (key === 't' && !e.altKey && !e.shiftKey) {
@@ -190,6 +233,9 @@ export function useGlobalShortcuts({
           e.stopPropagation();
           current.onSelectTerminal(target.tty);
           current.onSelectPane(target.id);
+          if (current.view === 'grid' && current.expandedPane) {
+            current.onExpandPane?.(target.id);
+          }
           try {
             TerminalManager.get(target.tty)?.term.focus();
           } catch {}
@@ -265,6 +311,9 @@ export function useGlobalShortcuts({
           if (target && target.tty) {
             current.onSelectTerminal(target.tty);
             current.onSelectPane(target.id);
+            if (current.expandedPane) {
+              current.onExpandPane?.(target.id);
+            }
             try {
               TerminalManager.get(target.tty)?.term.focus();
             } catch {}

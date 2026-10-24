@@ -36,13 +36,19 @@ export class AntigravityAdapter implements ICLIAdapter {
     const nonBlank = bufferLines.map((l) => l.trim()).filter(Boolean);
     const lastLine = nonBlank[nonBlank.length - 1] || '';
     const secondLastLine = nonBlank[nonBlank.length - 2] || '';
-    const waitingForInput =
-      /[❯>$?]\s*$/.test(lastLine) ||
-      /[>❯]\s*\[\s*\]/.test(lastLine) ||
-      /[>❯]\s*\[\s*\]/.test(secondLastLine) ||
+    const recent = nonBlank.slice(-12).join('\n');
+    const working = /\b(thinking|editing|running|analyzing|generating|searching|executing)\b/i.test(recent);
+    const permission = /requesting permission for:|do you want to proceed\?|\[y\/n\]|\(y\/n\)/i.test(recent);
+    const idleCue =
       /\?\s*for\s*shortcuts/i.test(lastLine) ||
       /type a message/i.test(lastLine) ||
-      /waiting for/i.test(lastLine);
+      /waiting for/i.test(lastLine) ||
+      /^[>❯]\s*$/.test(lastLine) ||
+      /[>❯]\s*\[\s*\]/.test(lastLine) ||
+      /[>❯]\s*\[\s*\]/.test(secondLastLine);
+    // A working frame often keeps a ">" input row. That row is not "waiting"
+    // unless the tail is actually a permission or the idle splash.
+    const waitingForInput = permission || (working ? false : idleCue || /[❯>$?]\s*$/.test(lastLine));
 
     let taskTitle: string | undefined;
     let currentActivity: string | undefined;

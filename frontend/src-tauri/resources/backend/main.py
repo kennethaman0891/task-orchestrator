@@ -2153,6 +2153,7 @@ terminal_windows: Dict[str, str] = {}  # tty -> Terminal.app window id
 pending_cli: Dict[str, bool] = {}      # tty -> waiting for user to launch a CLI
 tmux_pane_targets: Dict[str, str] = {} # tty -> tmux pane target (e.g. "session:0.0")
 tmux_info: Dict[str, dict] = {}        # tty -> tmux session/window/pane info
+_tmux_skip_until = 0.0                 # monotonic deadline; skip list-panes while tmux is down
 _closed_ttys: set = set()              # ttys the user closed — scanner must not resurrect them
 # tty -> model the running opencode was launched with ('' = bare/default launch).
 # Refreshed by scan_terminals; lets the frontend watcher decide /exit + relaunch
@@ -2586,7 +2587,7 @@ def _lsof_cwd(pid: str) -> str:
 
 async def scan_terminals():
     """Scan running processes for terminals with AI agents."""
-    global tmux_info
+    global tmux_info, _tmux_skip_until
     import subprocess, re
     try:
         ps = await asyncio.wait_for(
@@ -2603,28 +2604,34 @@ async def scan_terminals():
         print("[scan] ps timed out — skipping cycle", flush=True)
         return
     
-    # Get tmux pane info: tty, session_name, window_name, pane_title, pane_target
+    # Get tmux pane info: tty, session_name, window_name, pane_title, pane_target.
+    # If the previous list-panes failed (tmux not running), skip the spawn for ~10s.
     tmux_info = {}
-    try:
-        tmux_out = await asyncio.to_thread(
-            lambda: subprocess.run(
-                ["tmux", "list-panes", "-a", "-F",
-                 "#{pane_tty}|#{session_name}|#{window_name}|#{pane_title}|#{session_name}:#{window_index}.#{pane_index}"],
-                capture_output=True, text=True, timeout=2
-            ).stdout
-        )
-        for line in tmux_out.splitlines():
-            parts = line.strip().split("|")
-            if len(parts) >= 6:
-                tty = parts[0].replace("/dev/", "")
-                tmux_info[tty] = {
-                    "session_name": parts[1],
-                    "window_name": parts[2],
-                    "pane_title": parts[3],
-                    "pane_target": parts[5],
-                }
-    except Exception as exc:
-        print(f"[scan] tmux parse failed: {exc}", flush=True)
+    if time.monotonic() >= _tmux_skip_until:
+        try:
+            tmux_result = await asyncio.to_thread(
+                lambda: subprocess.run(
+                    ["tmux", "list-panes", "-a", "-F",
+                     "#{pane_tty}|#{session_name}|#{window_name}|#{pane_title}|#{session_name}:#{window_index}.#{pane_index}"],
+                    capture_output=True, text=True, timeout=2
+                )
+            )
+            if tmux_result.returncode != 0:
+                _tmux_skip_until = time.monotonic() + 10
+            else:
+                for line in tmux_result.stdout.splitlines():
+                    parts = line.strip().split("|")
+                    if len(parts) >= 6:
+                        tty = parts[0].replace("/dev/", "")
+                        tmux_info[tty] = {
+                            "session_name": parts[1],
+                            "window_name": parts[2],
+                            "pane_title": parts[3],
+                            "pane_target": parts[5],
+                        }
+        except Exception as exc:
+            _tmux_skip_until = time.monotonic() + 10
+            print(f"[scan] tmux parse failed: {exc}", flush=True)
     by_tty = {}
     for line in ps.splitlines():
         line = line.strip()

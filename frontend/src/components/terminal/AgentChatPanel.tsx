@@ -2,10 +2,12 @@
 // focused terminal (Claude Code, OpenCode, Codex, Gemini, Prime Agent, ...).
 //
 // Data (read):
-//   1. OpenCode API (/api/opencode/sessions/{id}/messages) when sidecar DB is connected.
-//   2. Live terminal stream & scrollback parsed via dialogueParser when running
-//      Claude Code, Codex, Gemini, or whenever API messages are unavailable.
-//   3. Real-time updates via TerminalManager.onOutput() event notifications.
+//   1. OpenCode API only when this tty is actually OpenCode.
+//   2. Antigravity, Gemini, and alt-screen TUIs: a per-session transcript
+//      snapshotted from the painted viewport (chatTranscript). The splash is
+//      not a message, and a permission card tracks the live tail.
+//   3. Other CLIs: dialogueParser on the xterm buffer.
+//   Real-time updates run after xterm has painted, on a trailing timer.
 // Data (write):
 //   Message composer writes text + Enter (\r) straight into that terminal's
 //   PTY via TerminalManager.sendCommand() — a true control channel into the
@@ -24,6 +26,13 @@ import {
   type InteractivePrompt,
   type PromptOption,
 } from '@/terminal/dialogueParser';
+import {
+  appendUserMessage,
+  markPromptSelected,
+  promptNeedsEnter,
+  snapshotTranscript,
+  usesLiveTranscript,
+} from '@/terminal/chatTranscript';
 import {
   X,
   Send,
@@ -423,7 +432,11 @@ function InteractivePromptCard({
             Selected:{' '}
             {selectedOption?.rawText ||
               selectedOption?.label ||
-              (prompt.selectedKey === 'esc' ? 'Cancelled' : prompt.selectedKey)}
+              (prompt.selectedKey === 'esc'
+                ? 'Cancelled'
+                : prompt.selectedKey === 'approved'
+                ? 'Approved in terminal'
+                : prompt.selectedKey)}
           </span>
         </div>
       ) : (
@@ -860,7 +873,7 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
   const [showHistory, setShowHistory] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const lastOutputTsRef = useRef<number>(0);
+  const syncGen = useRef(0);
 
   // Detect CLI and state from live buffer & entry
   const recentLines = TerminalManager.lastLines(sessionId, 40);
@@ -930,11 +943,15 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
   const hasTokens =
     entry.tokens && (entry.tokens.tokens_input > 0 || entry.tokens.tokens_output > 0);
   const state = agentState(entry, detected.state);
+  const liveTranscript =
+    usesLiveTranscript(effectiveCli) || TerminalManager.isAlternateScreen(sessionId);
 
-  // Sync messages from either OpenCode API or parsed terminal buffer/scrollback
+  // Sync messages from the OpenCode API, the viewport transcript, or the linear parser.
   const syncMessages = useCallback(async () => {
-    // 1. Try OpenCode API if a valid session ID is registered
-    if (sessionIdFromStatus) {
+    const gen = ++syncGen.current;
+    // OpenCode's own transcript. Antigravity must not take this branch just
+    // because a running task left a session id on the sidecar entry.
+    if (effectiveCli === 'opencode' && sessionIdFromStatus) {
       try {
         const resp = await fetch(`/api/opencode/sessions/${sessionIdFromStatus}/messages?limit=50`);
         if (resp.ok) {
@@ -979,6 +996,7 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
                   error: p.state?.error,
                 })),
             }));
+            if (gen !== syncGen.current) return;
             setMessages((prev) => {
               if (prev.length === mapped.length && prev.length > 0) {
                 const prevLast = prev[prev.length - 1];
@@ -1000,23 +1018,29 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
           }
         }
       } catch {
-        // Fall back to terminal parser below
+        if (gen !== syncGen.current) return;
+        // Fall back to the terminal parser below
       }
     }
 
-    // 2. Fall back to parsing the terminal buffer and full scrollback
-    try {
-      let bufferLines = TerminalManager.getBufferText(sessionId, 1200);
+    if (gen !== syncGen.current) return;
 
-      // If buffer has very few lines, check full scrollback from Tauri
-      if (bufferLines.length < 15) {
-        const fullText = await TerminalManager.getFullScrollbackText(sessionId);
-        if (fullText && fullText.trim()) {
-          bufferLines = fullText.split('\n');
+    // Viewport transcript for TUIs. The raw PTY byte log is not a screen:
+    // cursor erases leave old permission rows in it forever.
+    try {
+      if (liveTranscript) {
+        const lines = TerminalManager.getViewportText(sessionId);
+        if (lines.length === 0) {
+          setLoadingMessages(false);
+          return;
         }
+        const next = snapshotTranscript(sessionId, lines, effectiveCli);
+        setMessages((prev) => (prev === next ? prev : next));
+        setMessagesError(null);
+        return;
       }
 
-      // If still empty, check sidecar entry live_output
+      let bufferLines = TerminalManager.getBufferText(sessionId, 1200);
       if (bufferLines.length === 0 && entry.live_output) {
         bufferLines = entry.live_output.split('\n');
       }
@@ -1033,7 +1057,7 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
     } finally {
       setLoadingMessages(false);
     }
-  }, [sessionId, sessionIdFromStatus, effectiveCli, entry.live_output]);
+  }, [sessionId, sessionIdFromStatus, effectiveCli, entry.live_output, liveTranscript]);
 
   // Initial load
   useEffect(() => {
@@ -1041,22 +1065,29 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
     syncMessages();
   }, [syncMessages]);
 
-  // Real-time listener: sync whenever new output arrives in the terminal
+  // Snapshot after the painted burst settles. onOutput fires from the xterm
+  // write callback. A second pass 120ms later lets a permission card resolve
+  // once the tail has stayed clear, without waiting for the 2s safety poll.
   useEffect(() => {
+    let timer = 0;
+    let follow = 0;
     const unsub = TerminalManager.onOutput(sessionId, () => {
-      const now = Date.now();
-      // Debounce sync calls to at most once every 300ms
-      if (now - lastOutputTsRef.current > 300) {
-        lastOutputTsRef.current = now;
+      window.clearTimeout(timer);
+      window.clearTimeout(follow);
+      timer = window.setTimeout(() => {
         syncMessages();
-      }
+        follow = window.setTimeout(() => {
+          syncMessages();
+        }, 120);
+      }, 70);
     });
 
-    // Also poll every 2s in case of background updates
     const pollId = window.setInterval(syncMessages, 2000);
 
     return () => {
       unsub();
+      window.clearTimeout(timer);
+      window.clearTimeout(follow);
       window.clearInterval(pollId);
     };
   }, [sessionId, syncMessages]);
@@ -1080,16 +1111,19 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
     const msg = draft.trim();
     if (!msg || !sessionId) return;
 
-    // Optimistically add user message to list
-    const userMsg: UnifiedChatMessage = {
-      id: `local-user-${Date.now()}`,
-      role: 'user',
-      time: Date.now(),
-      textParts: [msg],
-      reasoningParts: [],
-      toolParts: [],
-    };
-    setMessages((prev) => [...prev, userMsg]);
+    if (liveTranscript) {
+      setMessages(appendUserMessage(sessionId, msg));
+    } else {
+      const userMsg: UnifiedChatMessage = {
+        id: `local-user-${Date.now()}`,
+        role: 'user',
+        time: Date.now(),
+        textParts: [msg],
+        reasoningParts: [],
+        toolParts: [],
+      };
+      setMessages((prev) => [...prev, userMsg]);
+    }
     setDraft('');
     setSentFlash(true);
 
@@ -1106,38 +1140,48 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
   // Handle option selection for interactive CLI prompts (e.g. Claude Code permission questions)
   const handleSelectPromptOption = useCallback(
     async (prompt: InteractivePrompt, opt: PromptOption) => {
-      prompt.resolved = true;
-      prompt.selectedKey = opt.key;
-      const userMsg: UnifiedChatMessage = {
-        id: `local-user-choice-${Date.now()}`,
-        role: 'user',
-        time: Date.now(),
-        textParts: [opt.rawText || `${opt.key}. ${opt.label}`],
-        reasoningParts: [],
-        toolParts: [],
-      };
-      setMessages((prev) => [...prev, userMsg]);
-      await TerminalManager.sendMenuSelection(sessionId, opt.key);
+      const value = (opt.value || opt.key).replace(/\r/g, '') || opt.key;
+      const enter = promptNeedsEnter(TerminalManager.getViewportText(sessionId), effectiveCli);
+      if (liveTranscript) {
+        setMessages(markPromptSelected(sessionId, prompt.id, opt.key));
+      } else {
+        prompt.resolved = true;
+        prompt.selectedKey = opt.key;
+        const userMsg: UnifiedChatMessage = {
+          id: `local-user-choice-${Date.now()}`,
+          role: 'user',
+          time: Date.now(),
+          textParts: [opt.rawText || `${opt.key}. ${opt.label}`],
+          reasoningParts: [],
+          toolParts: [],
+        };
+        setMessages((prev) => [...prev, userMsg]);
+      }
+      await TerminalManager.sendMenuSelection(sessionId, value, { enter });
     },
-    [sessionId]
+    [sessionId, effectiveCli, liveTranscript]
   );
 
   const handleCancelPrompt = useCallback(
     async (prompt: InteractivePrompt) => {
-      prompt.resolved = true;
-      prompt.selectedKey = 'esc';
-      const userMsg: UnifiedChatMessage = {
-        id: `local-user-choice-${Date.now()}`,
-        role: 'user',
-        time: Date.now(),
-        textParts: ['Cancelled (Esc)'],
-        reasoningParts: [],
-        toolParts: [],
-      };
-      setMessages((prev) => [...prev, userMsg]);
+      if (liveTranscript) {
+        setMessages(markPromptSelected(sessionId, prompt.id, 'esc'));
+      } else {
+        prompt.resolved = true;
+        prompt.selectedKey = 'esc';
+        const userMsg: UnifiedChatMessage = {
+          id: `local-user-choice-${Date.now()}`,
+          role: 'user',
+          time: Date.now(),
+          textParts: ['Cancelled (Esc)'],
+          reasoningParts: [],
+          toolParts: [],
+        };
+        setMessages((prev) => [...prev, userMsg]);
+      }
       await TerminalManager.sendMenuSelection(sessionId, 'escape');
     },
-    [sessionId]
+    [sessionId, liveTranscript]
   );
 
   // Identify any currently pending, unresolved prompt in the session
@@ -1396,6 +1440,30 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
               </div>
             )}
           </>
+        ) : liveTranscript ? (
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            {messages.length > 0 ? (
+              <MessageBubble
+                message={messages[messages.length - 1]}
+                cli={effectiveCli}
+                theme={t}
+                onSelectOption={handleSelectPromptOption}
+                onCancelPrompt={handleCancelPrompt}
+              />
+            ) : (
+              <div
+                style={{
+                  fontSize: 11,
+                  color: t.colors.text.muted,
+                  lineHeight: 1.5,
+                  textAlign: 'center',
+                  padding: '20px',
+                }}
+              >
+                No turns yet. What you send here is kept for this terminal.
+              </div>
+            )}
+          </div>
         ) : (
           <div style={{ flex: 1, overflowY: 'auto' }}>
             {/* ── Compact overview / Telemetry view ── */}

@@ -36,10 +36,12 @@ export function useTerminals() {
           const msg = JSON.parse(e.data);
           if (msg && msg.type === 'state' && msg.terminals) {
             const h = JSON.stringify(msg.terminals);
-            lastHash = h;
-            setTerminals(msg.terminals);
+            if (h !== lastHash) {
+              lastHash = h;
+              setTerminals(msg.terminals);
+              setLastUpdate(Date.now());
+            }
             if (msg.token_usage) setTokenUsage(msg.token_usage);
-            setLastUpdate(Date.now());
           }
         } catch {
           /* ignore malformed messages */

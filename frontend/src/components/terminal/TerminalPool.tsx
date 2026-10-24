@@ -129,15 +129,15 @@ export function TerminalPool({ sessionIds }: PoolProps) {
               fontFamily: t.fontFamily.mono,
               fontSize: 13,
               lineHeight: 1.15,
-              cursorBlink: true,
+              cursorBlink: false,
               cursorStyle: 'block',
-              scrollback: 50000,
+              scrollback: 2000,
               allowProposedApi: true,
               cols: 120,
               rows: 40,
               theme: buildXtermTheme(t),
               disableStdin: false,
-              allowTransparency: true,
+              allowTransparency: false,
               drawBoldTextInBrightColors: true,
             });
 
@@ -398,16 +398,10 @@ export function TerminalAnchor({ sessionId, className, style }: TerminalAnchorPr
       container.appendChild(handle.host);
 
       TerminalManager.setVisible(sessionId, true);
-      TerminalManager.setFocus(sessionId, true);
-
-      // Focus the terminal instance and enable cursor blink while visible
+      // Attach never marks focus. Focus is exclusive and is set only when
+      // the user selects this card (GridView / IDEView call TerminalManager.focus).
       try {
-        handle.term.options.cursorBlink = true;
-        requestAnimationFrame(() => {
-          try {
-            handle.term.focus();
-          } catch {}
-        });
+        handle.term.options.cursorBlink = false;
       } catch {}
 
       // Immediately repaint buffer onto canvas after DOM reparenting (WebKit canvas context restore)

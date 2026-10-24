@@ -34,6 +34,7 @@ export interface UseTerminalCallReturn {
   error: string | null;
   pendingPrompt?: DetectedTerminalPrompt | null;
   selectPromptOption?: (optionKey: string) => Promise<void>;
+  sendTask: (text: string) => Promise<void>;
   toggleMute: () => void;
   toggleSpeaker: () => void;
   end: () => Promise<void>;
@@ -583,6 +584,7 @@ export function useTerminalCall({
     error,
     pendingPrompt,
     selectPromptOption,
+    sendTask: handleTurn,
     toggleMute,
     toggleSpeaker,
     end,

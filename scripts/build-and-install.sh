@@ -53,21 +53,42 @@ rsync -av --delete \
   --exclude "frontend" \
   --exclude "node_modules" \
   --exclude "voice/models" \
+  --exclude "todo-app" \
+  --exclude "tests" \
   "$ROOT/backend/" "$TAURI/resources/backend/"
 
 step "5/9 cargo release build (custom-protocol default)"
 ( cd "$TAURI" && cargo build --release )
 
-step "6/9 gate: binary must NOT be a dev-mode binary"
-# A custom-protocol build embeds the UI and never references the dev URL.
-# A dev-mode binary carries "http://localhost:1421" as its load target.
-if strings "$BIN" 2>/dev/null | grep -q "localhost:1421"; then
-  echo "✗ GATE FAILED: binary references devUrl (localhost:1421)." >&2
-  echo "  It was built WITHOUT the custom-protocol feature → would white-screen." >&2
-  echo "  Check src-tauri/Cargo.toml [features] default = [\"custom-protocol\"]." >&2
+step "6/9 gate: binary must embed the freshly built UI (custom-protocol)"
+# 2026-10-24: the old gate grepped the binary for "localhost:1421" via
+# `strings | grep -q`. Under `set -o pipefail`, grep -q exits on first match,
+# strings dies of SIGPIPE, and the pipeline returns 141 → the `if` NEVER fired,
+# so the gate could not fail. It was also unsound: Tauri embeds tauri.conf.json
+# (including devUrl) in BOTH dev and production binaries, so that string proves
+# nothing. Two real checks instead:
+#   1) custom-protocol must still be a default feature (white-screen root cause).
+#   2) the release binary must contain the vite-built hashed JS entry bundle.
+if ! grep -Eq '^default[[:space:]]*=[[:space:]]*\[[^]]*"custom-protocol"' "$TAURI/Cargo.toml"; then
+  echo "✗ GATE FAILED: src-tauri/Cargo.toml default features lost custom-protocol." >&2
   exit 1
 fi
-echo "✓ binary is an embedded-UI (custom-protocol) build"
+
+BUILT_ASSET=$(grep -o 'assets/index-[A-Za-z0-9_-]*\.js' "$FRONT/dist/index.html" | head -1 || true)
+if [ -z "$BUILT_ASSET" ]; then
+  echo "✗ GATE FAILED: no hashed JS entry found in dist/index.html." >&2
+  exit 1
+fi
+
+STRINGS_DUMP="$(mktemp)"
+trap 'rm -f "$STRINGS_DUMP"' EXIT
+strings "$BIN" > "$STRINGS_DUMP" 2>/dev/null || true
+if ! grep -Fq -- "$BUILT_ASSET" "$STRINGS_DUMP"; then
+  echo "✗ GATE FAILED: binary does not embed $BUILT_ASSET — UI was not bundled." >&2
+  echo "  The binary would load a dev server (white screen) instead of the embedded UI." >&2
+  exit 1
+fi
+echo "✓ binary embeds the freshly built UI bundle ($BUILT_ASSET) via custom-protocol"
 
 step "7/9 assemble + ad-hoc sign bundle"
 STAGE="/tmp/tto-stage-$$.app"
@@ -106,6 +127,8 @@ rsync -av --delete \
   --exclude "frontend" \
   --exclude "node_modules" \
   --exclude "voice/models" \
+  --exclude "todo-app" \
+  --exclude "tests" \
   "$ROOT/backend/" "$STAGE/Contents/Resources/backend/"
 
 # Include top-level resources (downloads.html, etc.)

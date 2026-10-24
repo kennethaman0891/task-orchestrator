@@ -9,6 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test": "npx tsx src/lib/workspace.test.ts && npx tsx src/views/grid/gridLayout.test.ts && npx tsx src/jarvis/callDelivery.test.ts && npx tsx src/terminal/chatTranscript.test.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

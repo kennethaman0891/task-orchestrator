@@ -198,20 +198,104 @@ export function saveTheme(name: string): void {
 
 // ── Grid math ─────────────────────────────────────────────────────────
 
+export type GridDensity = 'fit' | 'scrollable';
+
+function resolveTemplate(template: TemplateKey | number): TemplateKey {
+  return (template in TEMPLATES ? template : 4) as TemplateKey;
+}
+
+function packByMinWidth(paneCount: number, width: number, minW: number): { cols: number; rows: number } {
+  const cols = Math.min(paneCount, Math.max(1, Math.floor((width + GRID_GAP) / (minW + GRID_GAP))));
+  return { cols, rows: Math.max(1, Math.ceil(paneCount / cols)) };
+}
+
+function autoLayout(paneCount: number, width: number, height: number): { cols: number; rows: number } {
+  if (paneCount === 2) {
+    return width < 680 && height > 700 ? { cols: 1, rows: 2 } : { cols: 2, rows: 1 };
+  }
+  if (paneCount === 3) {
+    return width >= 1050 ? { cols: 3, rows: 1 } : { cols: 2, rows: 2 };
+  }
+  if (paneCount === 4) return { cols: 2, rows: 2 };
+  if (paneCount === 5 || paneCount === 6) return { cols: 3, rows: 2 };
+  if (paneCount === 7 || paneCount === 8) {
+    return width >= 1200 ? { cols: 4, rows: 2 } : { cols: 3, rows: 3 };
+  }
+  if (paneCount === 9) return { cols: 3, rows: 3 };
+  if (paneCount === 10) {
+    return width >= 1200 ? { cols: 5, rows: 2 } : { cols: 4, rows: 3 };
+  }
+  if (paneCount <= 12) return { cols: 4, rows: 3 };
+  if (paneCount <= 14) {
+    return width >= 1350 ? { cols: 5, rows: 3 } : { cols: 4, rows: 4 };
+  }
+  if (paneCount <= 16) return { cols: 4, rows: 4 };
+
+  const w = Math.max(width, 1);
+  const h = Math.max(height, 1);
+  const aspect = w / h;
+  let cols = Math.round(Math.sqrt(paneCount * aspect));
+  const maxCols = Math.max(1, Math.floor(width / 110));
+  cols = Math.max(1, Math.min(maxCols, cols, paneCount));
+  return { cols, rows: Math.max(1, Math.ceil(paneCount / cols)) };
+}
+
+export function computeGridLayout(opts: {
+  paneCount: number;
+  width: number;
+  height: number;
+  mode: GridMode;
+  density: GridDensity;
+  template: TemplateKey;
+}): { cols: number; rows: number } {
+  const { paneCount, width, height, mode, template } = opts;
+
+  if (paneCount <= 1) return { cols: 1, rows: 1 };
+
+  if (width <= 0 || height <= 0) {
+    const cols = mode === 'grid' ? (TEMPLATES[resolveTemplate(template)]?.cols || 2) : 1;
+    return { cols: Math.max(1, cols), rows: Math.max(1, Math.ceil(paneCount / Math.max(1, cols))) };
+  }
+
+  if (mode === 'compact') return packByMinWidth(paneCount, width, gridMins('compact').minW);
+  if (mode === 'large') return packByMinWidth(paneCount, width, gridMins('large').minW);
+  if (mode === 'grid') {
+    const cols = TEMPLATES[resolveTemplate(template)]?.cols || 2;
+    return { cols, rows: Math.max(1, Math.ceil(paneCount / cols)) };
+  }
+
+  return autoLayout(paneCount, width, height);
+}
+
+export function paintedGridSlots(opts: {
+  template: TemplateKey;
+  paneCount: number;
+  filledCount: number;
+  cols: number;
+  mode: GridMode;
+}): number {
+  const { template, paneCount, filledCount, cols, mode } = opts;
+  const base = Math.max(filledCount, mode === 'grid' ? template : filledCount);
+  const rowComplete = Math.max(1, cols) * Math.ceil(base / Math.max(1, cols));
+  const templateFloor = mode === 'grid' ? template : 0;
+  return Math.min(16, Math.max(templateFloor, paneCount, rowComplete, filledCount, 1));
+}
+
 export function computeResponsiveLayout(
   containerWidth: number,
   containerHeight: number,
   paneCount: number,
   mode: GridMode,
+  template: TemplateKey = 4,
 ): { cols: number; rows: number; minW: number; minH: number } {
   const { minW, minH } = gridMins(mode);
-
-  if (containerWidth <= 0 || containerHeight <= 0) {
-    return { cols: templateCols(Math.min(paneCount, 16) as TemplateKey), rows: Math.ceil(paneCount / templateCols(Math.min(paneCount, 16) as TemplateKey)), minW, minH };
-  }
-
-  const maxCols = Math.max(1, Math.floor((containerWidth + GRID_GAP) / (minW + GRID_GAP)));
-  const cols = Math.min(maxCols, paneCount);
-  const rows = Math.ceil(paneCount / cols);
+  const { cols, rows } = computeGridLayout({
+    paneCount,
+    width: containerWidth,
+    height: containerHeight,
+    mode,
+    density: 'fit',
+    template,
+  });
   return { cols, rows, minW, minH };
 }

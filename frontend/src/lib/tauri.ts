@@ -72,6 +72,8 @@ export const tauri = {
 
   setVisible: (id: string, visible: boolean) => invoke('terminal_set_visible', { id, visible }),
 
+  setGridMode: (id: string, mode: string) => invoke('terminal_set_grid_mode', { id, mode }),
+
   diagnostics: () => invoke<any[]>('terminal_diagnostics'),
 
   dropFiles: (id: string, paths: string[]) => invoke('terminal_drop_files', { id, paths }),

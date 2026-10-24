@@ -153,11 +153,8 @@ export function deriveTaskStatus(
   if (!entry) return 'stopped';
 
   const st = (entry.current_task?.status ?? '').toLowerCase();
-  const now = Date.now();
-  const lastOut = TerminalManager.outputAt(tty);
-  const hasRenderer = lastOut !== 0;
 
-  // 1. App-level task reached terminal state
+  // 1. App-level task reached terminal state — sidecar only, no buffer walk
   if (['done', 'completed', 'success', 'succeeded', 'finished'].includes(st)) {
     TerminalManager.setWorkEnded(tty);
     return 'over';
@@ -167,7 +164,7 @@ export function deriveTaskStatus(
     return 'stopped';
   }
 
-  // 2. Fetch live terminal buffer
+  // 2. Fetch live terminal buffer (prompt / question detection only)
   const linesList = TerminalManager.lastLines(tty, 80);
   const nonBlankLines = linesList.map((l) => l.trim()).filter(Boolean);
   const lastLine = nonBlankLines[nonBlankLines.length - 1] || '';
@@ -210,7 +207,9 @@ export function deriveTaskStatus(
   }
 
   // 8. Live output streaming without an idle prompt (active command in progress)
-  if (hasRenderer && now - lastOut < 2500) {
+  const now = Date.now();
+  const lastOut = TerminalManager.outputAt(tty);
+  if (lastOut !== 0 && now - lastOut < 2500) {
     return 'running';
   }
 

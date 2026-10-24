@@ -541,6 +541,7 @@ export function WorkspaceView({
         {/* Side-by-side Agent Chat Panel */}
         {agentDetected && chatOpen && focusedTerminal && focusedEntry && (
           <AgentChatPanel
+            key={focusedTerminal}
             sessionId={focusedTerminal}
             entry={focusedEntry}
             onClose={() => setChatOpen(false)}
