@@ -113,8 +113,16 @@ pub async fn terminal_resize(
     id: String,
     cols: u16,
     rows: u16,
+    pixel_width: Option<u16>,
+    pixel_height: Option<u16>,
 ) -> Result<(), String> {
-    state.manager.resize(&id, cols, rows)
+    state.manager.resize(
+        &id,
+        cols,
+        rows,
+        pixel_width.unwrap_or(0),
+        pixel_height.unwrap_or(0),
+    )
 }
 
 #[tauri::command]
@@ -293,7 +301,28 @@ pub async fn open_devtools(window: tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
-// --- Folder picker (workspace wizard) ---
+// --- Folder & File pickers (workspace wizard & IDE) ---
+
+#[tauri::command]
+pub async fn pick_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
+    app.dialog().file().pick_file(move |p| {
+        let _ = tx.send(p);
+    });
+    let picked = rx
+        .await
+        .map_err(|_| "file picker failed".to_string())?;
+    Ok(picked.map(|p| match p {
+        tauri_plugin_dialog::FilePath::Path(s) => s.to_string_lossy().to_string(),
+        tauri_plugin_dialog::FilePath::Url(u) => {
+            match u.to_file_path() {
+                Ok(pb) => pb.to_string_lossy().to_string(),
+                Err(_) => u.to_string(),
+            }
+        }
+    }))
+}
 
 #[tauri::command]
 pub async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {

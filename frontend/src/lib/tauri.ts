@@ -56,7 +56,8 @@ export const tauri = {
 
   sendCommand: (id: string, command: string) => invoke('terminal_send_command', { id, command }),
 
-  resize: (id: string, cols: number, rows: number) => invoke('terminal_resize', { id, cols, rows }),
+  resize: (id: string, cols: number, rows: number, pixelWidth = 0, pixelHeight = 0) =>
+    invoke('terminal_resize', { id, cols, rows, pixelWidth, pixelHeight }),
 
   close: (id: string) => invoke('terminal_close', { id }),
 
@@ -94,6 +95,7 @@ export const tauri = {
   // ── System ──────────────────────────────────────────────────────
 
   pickFolder: () => invoke<string>('pick_folder'),
+  pickFile: () => invoke<string>('pick_file'),
   getLaunchCwd: () => invoke<string>('get_launch_cwd'),
   pathExists: (path: string) => invoke<boolean>('path_exists', { path }),
   egoLiteStatus: () => invoke<any>('ego_lite_status'),

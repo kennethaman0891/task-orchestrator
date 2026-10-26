@@ -33,29 +33,42 @@ export function CityRoads() {
   const materials = useMemo(() => {
     return {
       asphalt: new THREE.MeshStandardMaterial({
-        color: isNight ? '#161922' : '#2a2e39',
-        roughness: 0.85,
-        metalness: 0.1,
+        color: isNight ? '#12151e' : '#232733',
+        roughness: isNight ? 0.34 : 0.65,
+        metalness: isNight ? 0.42 : 0.12,
       }),
       sidewalk: new THREE.MeshStandardMaterial({
-        color: isNight ? '#222834' : '#88909d',
-        roughness: 0.9,
+        color: isNight ? '#1e2433' : '#788191',
+        roughness: 0.78,
+        metalness: 0.08,
       }),
       curb: new THREE.MeshStandardMaterial({
-        color: isNight ? '#2d3545' : '#707784',
-        roughness: 0.8,
+        color: isNight ? '#333d4e' : '#555f6f',
+        roughness: 0.7,
+        metalness: 0.2,
       }),
-      centerLine: new THREE.MeshBasicMaterial({
-        color: isNight ? '#ffd166' : '#f4b41a',
+      centerLine: new THREE.MeshStandardMaterial({
+        color: isNight ? '#fbbf24' : '#f59e0b',
+        emissive: isNight ? '#d97706' : '#000000',
+        emissiveIntensity: isNight ? 0.8 : 0,
         side: THREE.DoubleSide,
       }),
-      crosswalk: new THREE.MeshBasicMaterial({
+      crosswalk: new THREE.MeshStandardMaterial({
+        color: isNight ? '#f1f5f9' : '#ffffff',
+        emissive: isNight ? '#94a3b8' : '#000000',
+        emissiveIntensity: isNight ? 0.5 : 0,
+        side: THREE.DoubleSide,
+      }),
+      stopLine: new THREE.MeshStandardMaterial({
         color: isNight ? '#e2e8f0' : '#ffffff',
+        emissive: isNight ? '#94a3b8' : '#000000',
+        emissiveIntensity: isNight ? 0.5 : 0,
         side: THREE.DoubleSide,
       }),
-      stopLine: new THREE.MeshBasicMaterial({
-        color: isNight ? '#cbd5e1' : '#ffffff',
-        side: THREE.DoubleSide,
+      manhole: new THREE.MeshStandardMaterial({
+        color: isNight ? '#252933' : '#475569',
+        metalness: 0.85,
+        roughness: 0.35,
       }),
       lampPole: new THREE.MeshStandardMaterial({
         color: isNight ? '#1e2430' : '#334155',
@@ -183,6 +196,11 @@ export function CityRoads() {
               {/* Intersection center asphalt pad */}
               <mesh position={[0, 0.018, 0]} rotation={[-Math.PI / 2, 0, 0]} material={materials.asphalt}>
                 <planeGeometry args={[ROAD_WIDTH + 0.1, ROAD_WIDTH + 0.1]} />
+              </mesh>
+
+              {/* Metallic street utility manhole cover */}
+              <mesh position={[0.75, 0.022, 0.75]} rotation={[-Math.PI / 2, 0, 0]} material={materials.manhole}>
+                <circleGeometry args={[0.34, 16]} />
               </mesh>
 
               {/* North Crosswalk */}

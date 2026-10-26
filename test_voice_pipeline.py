@@ -45,18 +45,15 @@ async def test_voice_pipeline():
     routes = create_voice_routes(handler)
     print(f"Voice routes created: {len(routes)} routes")
     
-    print("
-All voice pipeline components working!")
+    print("\nAll voice pipeline components working!")
     return True
 
 if __name__ == "__main__":
     try:
         asyncio.run(test_voice_pipeline())
-        print("
-Voice pipeline test passed!")
+        print("\nVoice pipeline test passed!")
     except Exception as e:
-        print(f"
-Test failed: {e}")
+        print(f"\nTest failed: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

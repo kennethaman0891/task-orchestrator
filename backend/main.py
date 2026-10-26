@@ -16,6 +16,7 @@ import logging
 import secrets
 import sys
 import time
+import mimetypes
 import shutil
 import platform
 import urllib.error
@@ -1654,21 +1655,29 @@ def _clean_model_field(model: str) -> str:
     return model.strip()
 
 
-def get_session_tokens(directory: str):
-    """Read token usage for the most recent opencode session in a directory."""
+# --- Session Tokens Cache ---
+_session_tokens_cache: Dict[str, tuple[float, dict]] = {}
+_SESSION_TOKENS_TTL = 15.0
+_session_tokens_pending: set = set()
+
+
+def _read_session_tokens_db(directory: str) -> dict:
+    """Read token usage for the most recent opencode session in a directory with safe cleanup."""
+    empty = {"tokens_input": 0, "tokens_output": 0, "cost": 0.0, "model": "", "session_title": ""}
     if not OPencode_DB.exists() or not directory:
-        return {"tokens_input": 0, "tokens_output": 0, "cost": 0.0, "model": "", "session_title": ""}
+        return empty
+    conn = None
     try:
         import sqlite3
-        conn = sqlite3.connect(f"file:{OPencode_DB}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{OPencode_DB}?mode=ro", uri=True, timeout=2.0)
         conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA busy_timeout=1000")
         row = conn.execute(
             "SELECT tokens_input, tokens_output, cost, model, title "
             "FROM session WHERE parent_id IS NULL AND directory=? "
             "ORDER BY time_updated DESC LIMIT 1",
             (directory,)
         ).fetchone()
-        conn.close()
         if row:
             return {
                 "tokens_input": row[0] or 0,
@@ -1679,7 +1688,51 @@ def get_session_tokens(directory: str):
             }
     except Exception:
         pass
-    return {"tokens_input": 0, "tokens_output": 0, "cost": 0.0, "model": "", "session_title": ""}
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return empty
+
+
+def _update_session_tokens_cache(directory: str) -> None:
+    try:
+        result = _read_session_tokens_db(directory)
+        _session_tokens_cache[directory] = (time.time(), result)
+    finally:
+        _session_tokens_pending.discard(directory)
+
+
+def get_session_tokens(directory: str) -> dict:
+    """Read token usage for the most recent opencode session in a directory (cached)."""
+    empty = {"tokens_input": 0, "tokens_output": 0, "cost": 0.0, "model": "", "session_title": ""}
+    if not directory:
+        return empty
+    now = time.time()
+    cached = _session_tokens_cache.get(directory)
+    if cached and (now - cached[0] < _SESSION_TOKENS_TTL):
+        return cached[1]
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Perform cached off-thread reads via asyncio.to_thread so it never blocks the event loop
+        if directory not in _session_tokens_pending:
+            _session_tokens_pending.add(directory)
+            loop.create_task(asyncio.to_thread(_update_session_tokens_cache, directory))
+        if cached:
+            return cached[1]
+        return empty
+    else:
+        # Synchronous execution (tests, scripts)
+        result = _read_session_tokens_db(directory)
+        _session_tokens_cache[directory] = (now, result)
+        return result
 
 # --- Token Usage Dashboard ---
 TOKEN_THRESHOLD = 100_000  # hide models that have used fewer tokens than this
@@ -1713,19 +1766,26 @@ def aggregate_token_usage() -> dict:
     they are reused tokens, not new consumption)."""
     groups: Dict[str, dict] = {}
     if OPencode_DB.exists():
+        conn = None
         try:
             import sqlite3
-            conn = sqlite3.connect(f"file:{OPencode_DB}?mode=ro", uri=True)
+            conn = sqlite3.connect(f"file:{OPencode_DB}?mode=ro", uri=True, timeout=2.0)
             conn.execute("PRAGMA query_only=ON")
+            conn.execute("PRAGMA busy_timeout=1000")
             rows = conn.execute(
                 "SELECT model, "
                 "COALESCE(SUM(tokens_input),0)+COALESCE(SUM(tokens_output),0)"
                 "+COALESCE(SUM(tokens_reasoning),0) "
                 "FROM session WHERE parent_id IS NULL GROUP BY model"
             ).fetchall()
-            conn.close()
         except Exception:
             rows = []
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
         for model_json, used in rows:
             mid, provider = _parse_model(model_json)
             if provider == "omniroute":
@@ -2608,30 +2668,35 @@ async def scan_terminals():
     # If the previous list-panes failed (tmux not running), skip the spawn for ~10s.
     tmux_info = {}
     if time.monotonic() >= _tmux_skip_until:
-        try:
-            tmux_result = await asyncio.to_thread(
-                lambda: subprocess.run(
-                    ["tmux", "list-panes", "-a", "-F",
-                     "#{pane_tty}|#{session_name}|#{window_name}|#{pane_title}|#{session_name}:#{window_index}.#{pane_index}"],
-                    capture_output=True, text=True, timeout=2
+        tmux_bin = shutil.which("tmux")
+        if not tmux_bin:
+            _tmux_skip_until = time.monotonic() + 60
+        else:
+            try:
+                tmux_result = await asyncio.to_thread(
+                    lambda: subprocess.run(
+                        [tmux_bin, "list-panes", "-a", "-F",
+                         "#{pane_tty}|#{session_name}|#{window_name}|#{pane_title}|#{session_name}:#{window_index}.#{pane_index}"],
+                        capture_output=True, text=True, timeout=2
+                    )
                 )
-            )
-            if tmux_result.returncode != 0:
-                _tmux_skip_until = time.monotonic() + 10
-            else:
-                for line in tmux_result.stdout.splitlines():
-                    parts = line.strip().split("|")
-                    if len(parts) >= 6:
-                        tty = parts[0].replace("/dev/", "")
-                        tmux_info[tty] = {
-                            "session_name": parts[1],
-                            "window_name": parts[2],
-                            "pane_title": parts[3],
-                            "pane_target": parts[5],
-                        }
-        except Exception as exc:
-            _tmux_skip_until = time.monotonic() + 10
-            print(f"[scan] tmux parse failed: {exc}", flush=True)
+                if tmux_result.returncode != 0:
+                    _tmux_skip_until = time.monotonic() + 10
+                else:
+                    for line in tmux_result.stdout.splitlines():
+                        parts = line.strip().split("|")
+                        if len(parts) >= 6:
+                            tty = parts[0].replace("/dev/", "")
+                            tmux_info[tty] = {
+                                "session_name": parts[1],
+                                "window_name": parts[2],
+                                "pane_title": parts[3],
+                                "pane_target": parts[5],
+                            }
+            except Exception as exc:
+                _tmux_skip_until = time.monotonic() + 30
+                if not isinstance(exc, FileNotFoundError):
+                    print(f"[scan] tmux parse failed: {exc}", flush=True)
     by_tty = {}
     for line in ps.splitlines():
         line = line.strip()
@@ -3271,7 +3336,7 @@ async def send_to_terminal_shell(tty: str, command: str):
     # (new tab — guaranteed delivery, imprecise) and then keystroke typing.
     wid, tab_idx = _find_tab_by_tty(tty)
     if not wid:
-        wid = terminal_windows.get(tty) or await _find_window_by_tty(tty)
+        wid = terminal_windows.get(tty) or _find_window_by_tty(tty)
     if wid:
         escaped = _as_script_str(command)
         if tab_idx is not None:
@@ -3506,21 +3571,22 @@ def _norm_text(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip()
 
 
-def _opencode_db():
+def _opencode_db(timeout: float = 2.0):
     """Read-only connection to opencode's session DB, or None."""
     import sqlite3
     db = Path.home() / ".local/share/opencode/opencode.db"
     if not db.exists():
         return None
     try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=timeout)
         conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA busy_timeout=1000")
         return conn
     except Exception:
         return None
 
 
-def _session_for_task(tty: str, task: Task) -> Optional[str]:
+def _session_for_task(tty: str, task: Task, conn: Optional[Any] = None) -> Optional[str]:
     """Find the opencode session that received this task's delivered prompt.
 
     Matches a user text part whose text starts with the task description
@@ -3535,47 +3601,79 @@ def _session_for_task(tty: str, task: Task) -> Optional[str]:
     if len(prefix) < 8:
         return None
     start_s = task.started_at or task.created_at or (time.time() - 30)
-    conn = _opencode_db()
+    start_ms = int(start_s * 1000)
+
+    close_conn = False
+    if conn is None:
+        conn = _opencode_db()
+        close_conn = True
+
     if not conn:
         return None
     try:
-        rows = conn.execute(
+        # Step 1: Query only candidate sessions created around or after task start
+        # (with a 5s buffer to account for clock skew), ordered newest-first.
+        # This avoids scanning the huge 320k+ row part table!
+        sessions = conn.execute(
             """
-            SELECT p.session_id, p.time_created, p.data
-            FROM part p
-            WHERE p.session_id IN (
+            SELECT id FROM session
+            WHERE parent_id IS NULL AND directory = ? AND time_created >= ?
+            ORDER BY time_created DESC LIMIT 10
+            """,
+            (t.info.cwd, start_ms - 5000),
+        ).fetchall()
+
+        if not sessions:
+            # Fallback for resumed session: check newest updated sessions in directory
+            sessions = conn.execute(
+                """
                 SELECT id FROM session
                 WHERE parent_id IS NULL AND directory = ?
-            )
-              AND p.time_created >= ?
-              AND json_extract(p.data, '$.type') = 'text'
-              AND EXISTS (
-                  SELECT 1 FROM message m
-                  WHERE m.id = p.message_id
-                    AND json_extract(m.data, '$.role') = 'user'
-              )
-            ORDER BY p.time_created DESC
-            LIMIT 500
-            """,
-            (t.info.cwd, int(start_s * 1000)),
-        ).fetchall()
-        best = None
-        for sid, tc, data in rows:
-            try:
-                text = _norm_text(json.loads(data).get("text", ""))
-            except Exception:
-                continue
-            if text.startswith(prefix):
-                best = sid
-                break  # rows are ordered newest-first
-        return best
+                ORDER BY time_updated DESC LIMIT 5
+                """,
+                (t.info.cwd,),
+            ).fetchall()
+
+        if not sessions:
+            return None
+
+        # Step 2: Only check parts for these specific candidate sessions with strict limit
+        for (sid,) in sessions:
+            part_rows = conn.execute(
+                """
+                SELECT p.data
+                FROM part p
+                WHERE p.session_id = ?
+                  AND p.time_created >= ?
+                  AND json_extract(p.data, '$.type') = 'text'
+                  AND EXISTS (
+                      SELECT 1 FROM message m
+                      WHERE m.id = p.message_id
+                        AND json_extract(m.data, '$.role') = 'user'
+                  )
+                ORDER BY p.time_created DESC
+                LIMIT 20
+                """,
+                (sid, start_ms - 10000),
+            ).fetchall()
+
+            for (p_data,) in part_rows:
+                try:
+                    text = _norm_text(json.loads(p_data).get("text", ""))
+                except Exception:
+                    continue
+                if text.startswith(prefix):
+                    return sid  # First matching session (newest-first)
+
+        return None
     except Exception:
         return None
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if close_conn and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _turn_finished(sid: str, after_s: float) -> bool:
@@ -3646,11 +3744,12 @@ def _commit_opencode_session(tty: str, sid: str) -> None:
     if sid:
         _opencode_term_session[tty] = (time.time(), sid)
 
+_opencode_term_task: Dict[str, str] = {}        # tty -> task_id for pinned task session
+
 def _opencode_session_alive(conn, sid: str, cwd: str, now_s: float) -> bool:
     """Committed session still usable: exists, matches the terminal's cwd,
     and saw DB activity (parts or messages) within the hold window."""
     try:
-        print(f"[DEBUG] Entered DB try block for {tty}", flush=True)
         row = conn.execute(
             "SELECT directory, time_updated, time_created FROM session WHERE id = ?",
             (sid,),
@@ -3728,16 +3827,12 @@ def _opencode_live_status(tty: str) -> dict:
     # gate, every shell sitting in a directory with an active opencode
     # session would wrongly report the session's state.
     ct = t.current_task if t else None
-    # Also check t.info.cli as fallback — the scanner sets this when it
-    # detects opencode as the foreground CLI, even if opencode_models
-    # hasn't been updated yet (cache timing issue).
     cli_is_opencode = (t.info.cli or "").lower() == "opencode"
     known_opencode = tty in opencode_models or cli_is_opencode or (ct is not None and ct.status == "running")
-    print(f"[DEBUG _opencode_live_status] tty={tty} known_opencode={known_opencode} cli={t.info.cli} opencode_models={tty in opencode_models} cli_is_opencode={cli_is_opencode}")
     if not known_opencode:
         _opencode_live_cache[tty] = (now, result)
         return result
-    print(f"[DEBUG] known_opencode=True for {tty}, proceeding to DB query")
+
     # Open the DB only when we have a directory to match (avoids leaking a
     # read-only sqlite fd for bare/unknown terminals on every 1s broadcast).
     conn = _opencode_db() if cwd else None
@@ -3747,35 +3842,37 @@ def _opencode_live_status(tty: str) -> dict:
     try:
         sid = ""
         sess_ts = 0
+        committed = _opencode_term_session.get(tty)
+        committed_sid = committed[1] if committed else ""
+
         # 1) App task in flight → pin to the session holding its delivered
-        #    prompt (unique per delivery) and commit it.  Correct under
-        #    parallel same-cwd sessions.  Never steal a session that another
-        #    tty already committed as its anchor (identical-prompt delivery).
+        #    prompt (unique per delivery) and commit it.
         if ct and ct.status == "running" and ct.description:
-            try:
-                sid = _session_for_task(tty, ct) or ""
-            except Exception:
-                sid = ""
-            if sid:
-                others_take = {
-                    s for t, (_, s) in _opencode_term_session.items() if t != tty and s
-                }
-                if sid in others_take:
+            if _opencode_term_task.get(tty) == ct.id and committed_sid and _opencode_session_alive(conn, committed_sid, cwd, now):
+                sid = committed_sid
+            else:
+                try:
+                    sid = _session_for_task(tty, ct, conn=conn) or ""
+                except Exception:
                     sid = ""
-            if sid:
-                _commit_opencode_session(tty, sid)
+                if sid:
+                    others_take = {
+                        s for ot, (_, s) in _opencode_term_session.items() if ot != tty and s
+                    }
+                    if sid in others_take:
+                        sid = ""
+                if sid:
+                    _commit_opencode_session(tty, sid)
+                    _opencode_term_task[tty] = ct.id
+        else:
+            _opencode_term_task.pop(tty, None)
+
         # 2) Otherwise the session committed to THIS terminal — used as-is
-        #    while it is still alive.  This is the isolation guarantee: a
-        #    second terminal working in the same directory never moves the
-        #    first one, because we never look at "the freshest session"
-        #    again.
-        committed_sid = ""
-        if not sid:
-            committed = _opencode_term_session.get(tty)
-            if committed:
-                committed_sid = committed[1]
-                if _opencode_session_alive(conn, committed_sid, cwd, now):
-                    sid = committed_sid
+        #    while it is still alive.
+        if not sid and committed_sid:
+            if _opencode_session_alive(conn, committed_sid, cwd, now):
+                sid = committed_sid
+
         # 3) No task, no live commitment → attribute from THIS terminal's
         #    boot anchor (never a sibling's), back-porting the own committed
         #    session even when stale, and commit it.
@@ -3877,7 +3974,6 @@ def _opencode_live_status(tty: str) -> dict:
         except Exception:
             pass
     _opencode_live_cache[tty] = (now, result)
-    print(f"[DEBUG] FINAL RETURN for {tty}: state={result.get('state')}, last_text_len={len(result.get('last_text', ''))}", flush=True)
     return result
 
 async def completion_loop():
@@ -4680,6 +4776,218 @@ async def stop_agent():
     """Stop the background agent loop."""
     stop_agent_loop()
     return {"ok": True, "running": False}
+
+
+# --- Qwen Prime Orchestrator Endpoints ---------------------------------------
+try:
+    from qwen_orchestrator import (
+        get_hardware_profile,
+        OllamaEngine,
+        PrimeIntelligenceEngine,
+        QwenTaskRouter,
+    )
+except ImportError:
+    from backend.qwen_orchestrator import (
+        get_hardware_profile,
+        OllamaEngine,
+        PrimeIntelligenceEngine,
+        QwenTaskRouter,
+    )
+
+_qwen_ollama = OllamaEngine()
+_qwen_intelligence = PrimeIntelligenceEngine(ollama_engine=_qwen_ollama)
+_qwen_router = QwenTaskRouter()
+
+
+class QwenOrchestrateRequest(BaseModel):
+    prompt: str
+    workspace_id: Optional[str] = ""
+    workspace_name: Optional[str] = ""
+    project_path: Optional[str] = ""
+    target_ttys: Optional[List[str]] = []
+    model: Optional[str] = ""
+    strategy: Optional[str] = "fastest"  # fastest | reasoning
+
+
+class QwenDispatchRequest(BaseModel):
+    plan_id: str
+    subtask_ids: Optional[List[str]] = None
+
+
+class QwenBenchmarkRequest(BaseModel):
+    model_name: Optional[str] = ""
+
+
+@app.get("/api/qwen/profile")
+async def get_qwen_system_profile():
+    """Return hardware specs, Ollama connection status, and installed Qwen models."""
+    hw = await asyncio.to_thread(get_hardware_profile)
+    ollama_ok = await asyncio.to_thread(_qwen_ollama.is_available)
+    ollama_version = await asyncio.to_thread(_qwen_ollama.get_version) if ollama_ok else "unavailable"
+    local_models = await asyncio.to_thread(_qwen_ollama.get_installed_models) if ollama_ok else []
+    qwen_models = [m for m in local_models if m.is_qwen]
+    fastest_model = (
+        _qwen_ollama.select_optimal_model(strategy="fastest", installed=local_models, hardware=hw)
+        if local_models else ""
+    )
+    reasoning_model = (
+        _qwen_ollama.select_optimal_model(strategy="reasoning", installed=local_models, hardware=hw)
+        if local_models else ""
+    )
+    for model in local_models:
+        model.is_fastest = bool(fastest_model) and model.model_name == fastest_model
+
+    return {
+        "hardware": hw.model_dump(),
+        "ollama": {
+            "available": ollama_ok,
+            "version": ollama_version,
+            "url": _qwen_ollama.base_url,
+        },
+        "qwen_models": [m.model_dump() for m in qwen_models],
+        "local_models": [m.model_dump() for m in local_models],
+        "recommendations": {
+            "fastest": fastest_model,
+            "reasoning": reasoning_model,
+        },
+    }
+
+
+@app.post("/api/qwen/benchmark")
+async def run_qwen_benchmark(req: QwenBenchmarkRequest = QwenBenchmarkRequest()):
+    """Benchmark single or all installed Qwen models measuring tokens/sec."""
+    if req.model_name and req.model_name.strip():
+        bench = await asyncio.to_thread(_qwen_ollama.benchmark_model, req.model_name.strip())
+        return {"ok": bench.status == "benchmarked", "benchmark": bench.model_dump()}
+
+    benchmarks = await asyncio.to_thread(_qwen_ollama.benchmark_all_qwen_models)
+    hw = await asyncio.to_thread(get_hardware_profile)
+    installed = await asyncio.to_thread(_qwen_ollama.get_installed_models)
+    fastest = _qwen_ollama.select_optimal_model(strategy="fastest", installed=installed, hardware=hw)
+    for model in installed:
+        model.is_fastest = bool(fastest) and model.model_name == fastest
+    return {
+        "ok": True,
+        "benchmarks": [b.model_dump() for b in benchmarks],
+        "local_models": [m.model_dump() for m in installed],
+        "fastest": fastest,
+    }
+
+
+@app.post("/api/qwen/orchestrate")
+async def qwen_orchestrate_task(req: QwenOrchestrateRequest):
+    """Analyze prompt with reverse-engineered Prime-Agent intelligence and return plan."""
+    prompt = req.prompt.strip()
+    if not prompt:
+        raise HTTPException(400, "Prompt cannot be empty")
+
+    # Find matching workspace. The desktop does not push workspaces, so the
+    # request name and project path are enough when the sidecar has no copy.
+    ws_dict = None
+    if req.workspace_id:
+        for w in stored_workspaces:
+            if w.get("id") == req.workspace_id:
+                ws_dict = dict(w)
+                break
+    if ws_dict is None and req.workspace_name:
+        for w in stored_workspaces:
+            if w.get("name") == req.workspace_name:
+                ws_dict = dict(w)
+                break
+    if ws_dict is None and (req.workspace_id or req.workspace_name or req.project_path):
+        ws_dict = {
+            "id": req.workspace_id or "",
+            "name": req.workspace_name or "Workspace",
+            "projectPath": req.project_path or "",
+        }
+    elif ws_dict is not None and req.project_path and not (ws_dict.get("projectPath") or ws_dict.get("path")):
+        ws_dict["projectPath"] = req.project_path
+
+    # Roster is exactly the terminals the client checked. An empty list is
+    # this workspace having nothing selected, not every shell on the machine.
+    target_terms = []
+    roster: List[str] = []
+    seen_ttys = set()
+    for raw in req.target_ttys or []:
+        tty = (raw or "").strip()
+        if not tty or tty in seen_ttys:
+            continue
+        seen_ttys.add(tty)
+        roster.append(tty)
+        resolved = _resolve_tty(tty)
+        t = terminals.get(tty) or terminals.get(resolved)
+        target_terms.append({
+            "tty": tty,
+            "label": (t.info.window_name or t.session_name or tty) if t else tty,
+            "cli": (t.info.cli or "shell") if t else "shell",
+            "cwd": (t.info.cwd or "") if t else "",
+            "current_task": t.current_task.description if t and t.current_task else None,
+        })
+
+    requested_model = (req.model or "").strip()
+    if requested_model.lower().startswith("ollama/"):
+        requested_model = requested_model.split("/", 1)[1]
+
+    plan = await asyncio.to_thread(
+        _qwen_intelligence.orchestrate_task,
+        user_prompt=prompt,
+        workspace=ws_dict,
+        terminals=target_terms,
+        model=requested_model or None,
+        strategy=req.strategy or "fastest",
+    )
+
+    allowed = set(roster)
+    plan.subtasks = [s for s in plan.subtasks if s.target_tty in allowed]
+    plan.allowed_ttys = roster
+    _qwen_router.register_plan(plan)
+    return {"ok": True, "plan": plan.model_dump()}
+
+
+@app.get("/api/qwen/plans")
+async def list_qwen_plans():
+    """List recent orchestration plans."""
+    plans = _qwen_router.list_plans()
+    return {"plans": [p.model_dump() for p in plans]}
+
+
+@app.get("/api/qwen/plan/{plan_id}")
+async def get_qwen_plan(plan_id: str):
+    """Get single plan by ID."""
+    plan = _qwen_router.get_plan(plan_id)
+    if not plan:
+        raise HTTPException(404, "Plan not found")
+    return {"ok": True, "plan": plan.model_dump()}
+
+
+@app.post("/api/qwen/dispatch")
+async def dispatch_qwen_plan(req: QwenDispatchRequest):
+    """Dispatch subtasks to the target terminals."""
+    plan = _qwen_router.get_plan(req.plan_id)
+    if not plan:
+        raise HTTPException(404, "Plan not found")
+
+    tasks_to_run = plan.subtasks
+    if req.subtask_ids:
+        tasks_to_run = [s for s in plan.subtasks if s.id in req.subtask_ids]
+
+    async def _send_subtask(tty: str, command: str):
+        real_tty = _resolve_tty(tty)
+        # Rust session ids are typed by the desktop client. The shell sender
+        # only runs when this id is a live sidecar terminal.
+        if real_tty in terminals:
+            await send_to_terminal_shell(real_tty, command)
+        elif tty in terminals:
+            await send_to_terminal_shell(tty, command)
+
+    result = await _qwen_router.dispatch_plan(
+        req.plan_id,
+        subtasks_to_run=tasks_to_run,
+        terminal_sender=_send_subtask,
+    )
+    await broadcast_state()
+    return result
+
 
 
 async def _execute_delivery(tty: str, task: Task, plan: list[tuple[float, str]], ws_sent: bool):
@@ -5804,7 +6112,7 @@ async def _spawn_pty(session_name: str, cols: int, rows: int) -> tuple[int, asyn
 
 class FileContent(BaseModel):
     path: str
-    content: str
+    content: str = ""
 
 def _allowed_roots() -> List[Path]:
     """Finder-accessible roots: Home + Volumes + registered workspace project paths."""
@@ -6079,8 +6387,9 @@ async def put_file(payload: FileContent):
     p.write_text(payload.content, encoding="utf-8")
     return {"ok": True, "path": _display_path(p)}
 
-# MIME type map for common image extensions
-_IMAGE_MIME = {
+# MIME type map for common media (image, video, audio) extensions
+_MEDIA_MIME = {
+    # Images
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -6090,15 +6399,32 @@ _IMAGE_MIME = {
     ".bmp": "image/bmp",
     ".ico": "image/x-icon",
     ".avif": "image/avif",
+    # Video
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".ogg": "video/ogg",
+    ".ogv": "video/ogg",
+    ".mov": "video/quicktime",
+    ".m4v": "video/mp4",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+    # Audio
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".flac": "audio/flac",
+    ".aac": "audio/aac",
+    ".oga": "audio/ogg",
 }
+_IMAGE_MIME = _MEDIA_MIME
 
 
 @app.get("/api/file/blob")
 async def get_file_blob(path: str):
-    """Serve a file as raw binary — used for images and other non-text files.
+    """Serve a file as raw binary / media stream — used for images, video, audio,
+    and other binary files. Supports HTTP Range requests (crucial for video streaming/seeking).
     Returns 403 for sensitive paths and 404 for missing files, with
-    Cache-Control: no-store to prevent the browser/webview from caching
-    error responses (the main cause of 'images sometimes don't open').
+    Cache-Control headers configured for safe revalidation.
     """
     try:
         if not path or not path.startswith('/'):
@@ -6115,18 +6441,13 @@ async def get_file_blob(path: str):
         raise HTTPException(404, "File not found")
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    data = p.read_bytes()
     ext = p.suffix.lower()
-    media_type = _IMAGE_MIME.get(ext, "application/octet-stream")
-    # ETag from mtime+size lets the browser skip re-fetching unchanged images.
-    import hashlib
-    stat = p.stat()
-    etag_val = hashlib.md5(f"{stat.st_mtime_ns}-{stat.st_size}".encode()).hexdigest()
-    resp = StreamingResponse(io.BytesIO(data), media_type=media_type)
-    resp.headers["Cache-Control"] = "private, max-age=0, must-revalidate"
-    resp.headers["ETag"] = f'"{etag_val}"'
-    resp.headers["Content-Length"] = str(stat.st_size)
-    return resp
+    media_type = _MEDIA_MIME.get(ext) or mimetypes.guess_type(str(p))[0] or "application/octet-stream"
+    return FileResponse(
+        str(p),
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=0, must-revalidate"},
+    )
 
 @app.post("/api/file/rename")
 async def rename_file(payload: dict):
@@ -8053,7 +8374,8 @@ async def remote_notify_loop():
             rstate = _remote.models.state
             chats = _remote_cfg.allowed_chat_ids or _remote_cfg.allowed_phone_numbers
             chat = chats[0] if chats else ""
-            print(f"[notify] tick: terminals={len(terminals)}, enabled={_remote_cfg.enabled}, chat={chat!r}", flush=True)
+            if os.environ.get("TTO_DEBUG"):
+                print(f"[notify] tick: terminals={len(terminals)}, enabled={_remote_cfg.enabled}, chat={chat!r}", flush=True)
             for tty, t in list(terminals.items()):
                 # 1. Task complete / failed (from history).
                 for tk in list(t.history[-5:]):

@@ -164,4 +164,50 @@ mod tests {
         assert_eq!(emit.len(), MAX_CHUNK - 8);
         assert_eq!(defer, b"\x1b]0;untitled");
     }
+
+    #[test]
+    fn test_high_volume_detached_drain() {
+        // Generate 10,000 lines of output (> 550 KB) to simulate heavy CLI output
+        let mut data = Vec::new();
+        for i in 0..10_000 {
+            data.extend_from_slice(format!("Line {:05}: The quick brown fox jumps over the lazy dog\n", i).as_bytes());
+        }
+        let total_len = data.len();
+        assert!(total_len > 500_000);
+
+        let (tx, mut rx) = mpsc::channel(QUEUE_CAP);
+        let reader = Box::new(std::io::Cursor::new(data));
+        let handle = spawn_reader(reader, tx);
+
+        // Simulate scheduler background drain ticks for detached session
+        let mut drained = Vec::new();
+        let mut eof_seen = false;
+        let start = std::time::Instant::now();
+
+        while !eof_seen && start.elapsed().as_secs() < 5 {
+            for _ in 0..32 {
+                match rx.try_recv() {
+                    Ok(chunk) => {
+                        drained.extend_from_slice(&chunk.data);
+                        if chunk.eof {
+                            eof_seen = true;
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        break;
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        eof_seen = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        handle.join().expect("reader thread should terminate cleanly");
+        assert!(eof_seen, "Should reach EOF");
+        assert_eq!(drained.len(), total_len, "All output bytes must be drained without backpressure loss");
+    }
 }

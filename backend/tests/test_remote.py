@@ -307,8 +307,8 @@ class TestConfirmations(unittest.TestCase):
 class TestFormatter(unittest.TestCase):
     def test_help_has_commands(self):
         msg = formatter.help_message()
-        for cmd in ("/status", "/terminals", "/terminal", "/logs", "/run", "/queue",
-                    "/tokens", "/agents", "/files", "CONFIRM"):
+        for cmd in ("/status", "/workspace", "/sessions", "/session", "/abort",
+                    "/tokens", "/health"):
             self.assertIn(cmd, msg)
 
     def test_status(self):

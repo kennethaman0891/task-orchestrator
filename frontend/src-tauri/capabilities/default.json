@@ -26,6 +26,10 @@
     "core:webview:allow-webview-hide",
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-message",
     "shell:allow-open",
     "shell:default"
   ]

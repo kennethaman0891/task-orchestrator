@@ -1,5 +1,7 @@
 """Unit tests for browse proxy SSRF protection and redirect validation."""
 import unittest
+from unittest.mock import patch
+import socket
 import sys
 import os
 
@@ -34,8 +36,9 @@ class TestBrowseSSRFValidation(unittest.TestCase):
                     _validate_browse_url(bad_url)
 
     def test_allows_public_https_domains(self):
-        valid = _validate_browse_url("https://example.com/test")
-        self.assertEqual(valid, "https://example.com/test")
+        with patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]):
+            valid = _validate_browse_url("https://example.com/test")
+            self.assertEqual(valid, "https://example.com/test")
 
     def test_allows_localhost_loopback(self):
         valid = _validate_browse_url("http://localhost:3000")

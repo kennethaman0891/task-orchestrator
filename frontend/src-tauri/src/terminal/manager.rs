@@ -266,6 +266,8 @@ impl TerminalManager {
             last_activity: now(),
             cols,
             rows,
+            pixel_width: 0,
+            pixel_height: 0,
             tui_active: false,
             pid,
             tty: pty::tty_for_pid(pid),
@@ -427,34 +429,43 @@ impl TerminalManager {
         if tty.is_empty() {
             return Err("empty tty".to_string());
         }
-        let sessions = self.sessions.lock();
-        for session in sessions.values() {
-            if session.meta.lock().tty == tty {
-                let agent = detect_agent(command);
-                // Auto-append --no-banner only when the command *invokes* claude
-                // (not when it merely mentions it, e.g. `grep -r claude .`).
-                let cmd_to_send = if invokes_claude(command) && !command.contains("--no-banner") {
-                    let mut c = command.to_string();
-                    if !c.ends_with(' ') {
-                        c.push(' ');
-                    }
-                    c.push_str("--no-banner");
-                    eprintln!("[MANAGER] Appended --no-banner to claude command");
-                    c
-                } else {
-                    command.to_string()
-                };
-                if !agent.is_empty() {
-                    session.meta.lock().agent = agent;
-                }
-                let cli = detect_cli(&cmd_to_send);
-                if !cli.is_empty() {
-                    session.meta.lock().cli = cli;
-                }
-                return session.send_command(&cmd_to_send);
+        let session = {
+            let sessions = self.sessions.lock();
+            let clean_tty = tty.strip_prefix("/dev/").unwrap_or(tty);
+            sessions
+                .values()
+                .find(|s| {
+                    let m = s.meta.lock();
+                    let s_clean = m.tty.strip_prefix("/dev/").unwrap_or(&m.tty);
+                    m.tty == tty || s_clean == clean_tty || m.tty == clean_tty || s_clean == tty
+                })
+                .cloned()
+        };
+        let Some(session) = session else {
+            return Err(format!("no session with tty {tty}"));
+        };
+        let agent = detect_agent(command);
+        // Auto-append --no-banner only when the command *invokes* claude
+        // (not when it merely mentions it, e.g. `grep -r claude .`).
+        let cmd_to_send = if invokes_claude(command) && !command.contains("--no-banner") {
+            let mut c = command.to_string();
+            if !c.ends_with(' ') {
+                c.push(' ');
             }
+            c.push_str("--no-banner");
+            eprintln!("[MANAGER] Appended --no-banner to claude command");
+            c
+        } else {
+            command.to_string()
+        };
+        if !agent.is_empty() {
+            session.meta.lock().agent = agent;
         }
-        Err(format!("no session with tty {tty}"))
+        let cli = detect_cli(&cmd_to_send);
+        if !cli.is_empty() {
+            session.meta.lock().cli = cli;
+        }
+        session.send_command(&cmd_to_send)
     }
 
     /// Write raw bytes to a session found by its slave tty (remote /stop
@@ -463,13 +474,22 @@ impl TerminalManager {
         if tty.is_empty() {
             return Err("empty tty".to_string());
         }
-        let sessions = self.sessions.lock();
-        for session in sessions.values() {
-            if session.meta.lock().tty == tty {
-                return session.write(data.as_bytes());
-            }
-        }
-        Err(format!("no session with tty {tty}"))
+        let session = {
+            let sessions = self.sessions.lock();
+            let clean_tty = tty.strip_prefix("/dev/").unwrap_or(tty);
+            sessions
+                .values()
+                .find(|s| {
+                    let m = s.meta.lock();
+                    let s_clean = m.tty.strip_prefix("/dev/").unwrap_or(&m.tty);
+                    m.tty == tty || s_clean == clean_tty || m.tty == clean_tty || s_clean == tty
+                })
+                .cloned()
+        };
+        let Some(session) = session else {
+            return Err(format!("no session with tty {tty}"));
+        };
+        session.write(data.as_bytes())
     }
 
     /// Restart the shell inside the session whose slave tty matches
@@ -493,62 +513,82 @@ impl TerminalManager {
 
     fn id_for_tty(&self, tty: &str) -> Result<String, String> {
         let sessions = self.sessions.lock();
+        let clean_tty = tty.strip_prefix("/dev/").unwrap_or(tty);
         for (id, session) in sessions.iter() {
-            if session.meta.lock().tty == tty {
+            let m = session.meta.lock();
+            let s_clean = m.tty.strip_prefix("/dev/").unwrap_or(&m.tty);
+            if m.tty == tty || s_clean == clean_tty || m.tty == clean_tty || s_clean == tty {
                 return Ok(id.clone());
             }
         }
         Err(format!("no session with tty {tty}"))
     }
 
-    pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
+    pub fn resize(
+        &self,
+        id: &str,
+        cols: u16,
+        rows: u16,
+        pixel_width: u16,
+        pixel_height: u16,
+    ) -> Result<(), String> {
         use super::resize as rz;
         let session = self.get_session(id)?;
         let (cols, rows) = rz::clamp(cols, rows);
-        {
+        // A 0 from the caller means "unknown", not "clear the pixel grid".
+        let (pixel_width, pixel_height) = {
             let m = session.meta.lock();
-            if !rz::changed(m.cols, m.rows, cols, rows) {
+            let pw = if pixel_width == 0 { m.pixel_width } else { pixel_width };
+            let ph = if pixel_height == 0 { m.pixel_height } else { pixel_height };
+            if !rz::changed(m.cols, m.rows, cols, rows)
+                && m.pixel_width == pw
+                && m.pixel_height == ph
+            {
                 return Ok(()); // no-op: avoids ioctl + resize loops (spec §35)
             }
-        }
+            (pw, ph)
+        };
         {
             let pty = session.pty.lock();
-            pty::resize(&*pty.master, cols, rows)?;
+            pty::resize(&*pty.master, cols, rows, pixel_width, pixel_height)?;
         }
         {
             let mut m = session.meta.lock();
             m.cols = cols;
             m.rows = rows;
+            m.pixel_width = pixel_width;
+            m.pixel_height = pixel_height;
         }
         Ok(())
     }
 
     /// Kill the process and drop the session. The frontend recreates on demand.
     pub fn close(&self, id: &str) -> Result<(), String> {
-        let mut sessions = self.sessions.lock();
-        let clean_id = id.strip_prefix("/dev/").unwrap_or(id);
-        let target_key = if sessions.contains_key(id) {
-            Some(id.to_string())
-        } else {
-            sessions.iter().find_map(|(k, s)| {
-                let meta = s.meta.lock();
-                if meta.id == id {
-                    return Some(k.clone());
-                }
-                if !meta.tty.is_empty() && !id.is_empty() {
-                    let clean_tty = meta.tty.strip_prefix("/dev/").unwrap_or(&meta.tty);
-                    if meta.tty == id || clean_tty == clean_id || meta.tty == clean_id || clean_tty == id {
+        let session_to_kill = {
+            let mut sessions = self.sessions.lock();
+            let clean_id = id.strip_prefix("/dev/").unwrap_or(id);
+            let target_key = if sessions.contains_key(id) {
+                Some(id.to_string())
+            } else {
+                sessions.iter().find_map(|(k, s)| {
+                    let meta = s.meta.lock();
+                    if meta.id == id {
                         return Some(k.clone());
                     }
-                }
-                None
-            })
+                    if !meta.tty.is_empty() && !id.is_empty() {
+                        let clean_tty = meta.tty.strip_prefix("/dev/").unwrap_or(&meta.tty);
+                        if meta.tty == id || clean_tty == clean_id || meta.tty == clean_id || clean_tty == id {
+                            return Some(k.clone());
+                        }
+                    }
+                    None
+                })
+            };
+            target_key.and_then(|k| sessions.remove(&k))
         };
-        if let Some(k) = target_key {
-            if let Some(session) = sessions.remove(&k) {
-                let _ = session.pty.lock().child.kill();
-                let _ = session.pty.lock().child.wait();
-            }
+        if let Some(session) = session_to_kill {
+            let _ = session.pty.lock().child.kill();
+            let _ = session.pty.lock().child.wait();
         }
         let _ = self.app.emit("terminal-updated", ());
         Ok(())
@@ -558,8 +598,11 @@ impl TerminalManager {
     /// are NOT orphaned with a dead terminal — orphaned TUI processes spin at
     /// 100% CPU and can crash their runtime (Bun SIGTRAP in the renderer).
     pub fn kill_all(&self) {
-        let sessions = self.sessions.lock();
-        for session in sessions.values() {
+        let sessions: Vec<Arc<TerminalSession>> = {
+            let sessions = self.sessions.lock();
+            sessions.values().cloned().collect()
+        };
+        for session in sessions {
             let mut pty = session.pty.lock();
             let _ = pty.child.kill();
             let _ = pty.child.wait();
@@ -679,21 +722,29 @@ impl TerminalManager {
     pub fn batch_resize(&self, workspace_id: &str, cols: u16, rows: u16) -> usize {
         use super::resize as rz;
         let (cols, rows) = rz::clamp(cols, rows);
+        let sessions: Vec<Arc<TerminalSession>> = {
+            let sessions = self.sessions.lock();
+            sessions
+                .values()
+                .filter(|s| s.meta.lock().workspace_id == workspace_id)
+                .cloned()
+                .collect()
+        };
         let mut resized = 0usize;
-        let sessions = self.sessions.lock();
-        for session in sessions.values() {
+        for session in sessions {
             {
                 let m = session.meta.lock();
-                if m.workspace_id != workspace_id {
-                    continue;
-                }
                 if !rz::changed(m.cols, m.rows, cols, rows) {
                     continue;
                 }
             }
+            let (pixel_width, pixel_height) = {
+                let m = session.meta.lock();
+                (m.pixel_width, m.pixel_height)
+            };
             {
                 let pty = session.pty.lock();
-                if pty::resize(&*pty.master, cols, rows).is_err() {
+                if pty::resize(&*pty.master, cols, rows, pixel_width, pixel_height).is_err() {
                     continue;
                 }
             }
@@ -705,7 +756,6 @@ impl TerminalManager {
             resized += 1;
         }
         if resized > 0 {
-            drop(sessions);
             let _ = self.app.emit("terminal-updated", ());
         }
         resized
@@ -715,29 +765,20 @@ impl TerminalManager {
         self.sessions.lock().values().map(|s| s.diag()).collect()
     }
 
-    /// Drain one terminal's pending output up to `budget` chunks, forwarding to
-    /// the attached renderer channel AND/OR mirror subscribers. Returns (forwarded, exited).
-    ///
-    /// IMPORTANT (fix: blank-terminal bug): output is ONLY consumed while a
-    /// renderer is listening — either the PRIMARY channel (old grid view) or at
-    /// least ONE mirror SUBSCRIBER (Space view). While nothing listens (e.g.
-    /// the first ~200 ms between spawn and webview attach, or a pane swap),
-    /// chunks stay queued — bounded by QUEUE_CAP — so the next listener resumes
-    /// exactly where output left off.
-    ///
-    /// FIX (missing-content bug): previously drain refused to run unless the
-    /// PRIMARY channel existed. The Space view only ever SUBSCRIBES (mirrors),
-    /// never attaches — so its sessions had channel=None forever, the queue
-    /// filled to QUEUE_CAP (~2 MB), the PTY reader blocked on backpressure,
-    /// and terminals froze with truncated/missing content. Now mirrors count
-    /// as listeners too.
     /// Drain up to `budget` chunks from a specific session directly without holding the sessions map lock.
+    ///
+    /// Chunks are ALWAYS drained from `rx`, appended to the persistent scrollback, and
+    /// tapped for Rust subscribers (like the gateway bridge) regardless of whether a frontend
+    /// renderer is currently attached. This prevents the bounded `QUEUE_CAP` channel from
+    /// saturating and halting the PTY reader thread on `tx.blocking_send()`, which would
+    /// freeze child processes at the kernel PTY buffer level when detached or in the background.
+    ///
+    /// Forwarding via `recovery::send_chunk` and exit notification via `recovery::notify_exit`
+    /// are gated by `has_listeners`. When a frontend renderer attaches later, it retrieves
+    /// the full accumulated scrollback via `get_scrollback`.
     pub fn drain_session(&self, session: &Arc<TerminalSession>, budget: usize) -> (usize, bool) {
         let has_primary = session.channel.lock().is_some();
         let has_subscribers = !session.subscribers.lock().is_empty();
-        if !has_primary && !has_subscribers {
-            return (0, false);
-        }
         let has_listeners = has_primary || has_subscribers;
         let mut forwarded = 0usize;
         let mut exited = false;
@@ -767,7 +808,7 @@ impl TerminalManager {
                     forwarded += 1;
                 }
             }
-            if chunk.eof {
+            if chunk.eof && has_listeners {
                 recovery::notify_exit(session);
             }
         }
@@ -891,3 +932,33 @@ pub fn spawn_detector(manager: Arc<TerminalManager>) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_invokes_claude() {
+        assert!(invokes_claude("claude --resume"));
+        assert!(invokes_claude("cd ~/proj && claude"));
+        assert!(invokes_claude("sudo claude"));
+        assert!(!invokes_claude("grep -r claude ."));
+        assert!(!invokes_claude("cd ~/claude-app && npm dev"));
+    }
+
+    #[test]
+    fn test_detect_agent() {
+        assert_eq!(detect_agent("claude"), "claude");
+        assert_eq!(detect_agent("codex"), "codex");
+        assert_eq!(detect_agent("antigravity"), "antigravity");
+        assert_eq!(detect_agent("ls -la"), "");
+    }
+
+    #[test]
+    fn test_detect_cli() {
+        assert_eq!(detect_cli("nvim file.txt"), "nvim");
+        assert_eq!(detect_cli("git status"), "git");
+        assert_eq!(detect_cli("cargo test"), "cargo");
+    }
+}
+

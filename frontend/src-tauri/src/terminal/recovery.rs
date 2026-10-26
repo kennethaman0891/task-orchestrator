@@ -2,11 +2,12 @@
 //!
 //! - `attach`: swaps in a fresh renderer channel. The PTY is NEVER restarted —
 //!   the session keeps running while detached; output accumulates in the
-//!   bounded queue.
+//!   persistent scrollback. If the child process already exited while detached,
+//!   the exit notification is dispatched immediately.
 //! - `send_chunk`: returns false when the channel is gone (webview unloaded /
 //!   stale) so the scheduler marks the session detached instead of crashing.
-//! - `detach`: clears the channel; output stays bounded and is resumed on the
-//!   next attach.
+//! - `detach`: clears the channel; output continues draining smoothly into
+//!   scrollback and is replayed on the next attach.
 
 use std::sync::Arc;
 
@@ -15,10 +16,14 @@ use tauri::ipc::Channel;
 use super::session::TerminalSession;
 
 pub fn attach(session: &Arc<TerminalSession>, on_output: Channel<Vec<u8>>, on_exit: Channel<()>) {
+    let already_exited = session.meta.lock().status == "exited";
     *session.channel.lock() = Some(on_output);
     *session.exit_channel.lock() = Some(on_exit);
     // The session is considered alive again from the renderer's perspective.
     session.meta.lock().last_activity = now();
+    if already_exited {
+        notify_exit(session);
+    }
 }
 
 pub fn detach(session: &Arc<TerminalSession>) {

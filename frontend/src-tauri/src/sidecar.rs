@@ -451,6 +451,21 @@ pub fn spawn_if_needed() -> Option<Child> {
             }
         })
         .or_else(|| {
+            let brew_arm = PathBuf::from("/opt/homebrew/bin/python3");
+            if brew_arm.exists() {
+                log(&format!("using Homebrew arm64 interpreter: {}", brew_arm.display()));
+                Some(brew_arm)
+            } else {
+                let brew_intel = PathBuf::from("/usr/local/bin/python3");
+                if brew_intel.exists() {
+                    log(&format!("using Homebrew x86_64 interpreter: {}", brew_intel.display()));
+                    Some(brew_intel)
+                } else {
+                    None
+                }
+            }
+        })
+        .or_else(|| {
             if Command::new("python3").arg("--version").output().is_ok() {
                 Some(PathBuf::from("python3"))
             } else {
@@ -485,10 +500,14 @@ pub fn spawn_if_needed() -> Option<Child> {
         log_file: std::fs::File,
     ) -> Option<Child> {
         let tto_host = collab_ttos_host();
+        let existing_path = std::env::var("PATH").unwrap_or_default();
+        let home_bin = format!("{}/.local/bin", crate::home_dir().display());
+        let augmented_path = format!("/opt/homebrew/bin:/usr/local/bin:{home_bin}:{existing_path}");
         let mut binding = Command::new(python);
         let mut cmd = binding
             .arg(script)
             .current_dir(backend_dir)
+            .env("PATH", augmented_path)
             .env("TTO_PORT", port)
             .env("TTO_SESSION_TOKEN", session_token());
         if let Some(host) = tto_host {

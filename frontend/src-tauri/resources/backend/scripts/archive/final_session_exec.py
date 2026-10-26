@@ -17,7 +17,9 @@ sh("pkill -9 -f 'tmux.*tto' 2>/dev/null")
 time.sleep(3)
 print("    done. port:")
 o = sh("lsof -nP -iTCP:8765 -sTCP:LISTEN 2>/dev/null | tail -1")
-print(f'    {\"⚠️\" if o else \"✅ free\"} {\"still: \"+o[:70] if o else \"(ready)\"}')
+status_icon = "⚠️" if o else "✅ free"
+status_msg = f"still: {o[:70]}" if o else "(ready)"
+print(f"    {status_icon} {status_msg}")
 print()
 
 cd = "/Users/kennethaman/tto-web/backend"
@@ -46,7 +48,8 @@ s = open(LOG, encoding="utf-8", errors="replace").read()
 for k, v in [("Connected", "Connected as" in s), ("Synced", "Synced" in s),
              ("Voice", "voice" in s.lower()), ("Whisper", "faster_whisper" in s or "No module named" not in s),
              ("No trace", "Traceback" not in s)]:
-    print(f'    {\"✅\" if v else \"❌\"} {k}')
+    status_mark = "✅" if v else "❌"
+    print(f"    {status_mark} {k}")
 print()
 
 print("══ 4. THE decisive phone-lane test — exactly what happen when you say:")
@@ -58,7 +61,8 @@ async def go():
     # We test the ADAPTER directly through the bridge dict the voice lane reads.
     src = open("remote/voice_msg.py", encoding="utf-8", errors="replace").read()
     # confirm the lane still passes 1 arg (the "await create_fn(sess_name)" call)
-    print(f'    voice_msg lane session call → one arg: {\"✅\" if \"await create_fn(sess_name)\" in src or \"create_fn(sess_name)\" in src else \"❌ check\"}')
+    arg_check = "✅" if "await create_fn(sess_name)" in src or "create_fn(sess_name)" in src else "❌ check"
+    print(f"    voice_msg lane session call → one arg: {arg_check}")
     # now call create_agent_session('build') the adapter that resolves ws + agent
     from remote import voice_msg as vm
     fn = vm._b("create_agent_session")
@@ -67,7 +71,7 @@ async def go():
         return
     # adapter is async 1-arg: resolve default ws, call real session lane
     res = await fn("build")
-    print(f'    → bridge create_agent_session(\"build\") = {str(res)[:130]}')
+    print(f'    → bridge create_agent_session("build") = {str(res)[:130]}')
     print()
 
     # 4b. Now prove the web API (what the TTO UI reads) lists the session
@@ -75,13 +79,14 @@ async def go():
         try:
             r = httpx.get("http://127.0.0.1:8765/api/sessions", timeout=6)
             sess = r.json().get("sessions", [])
-            print(f'    web API sessions ({len(sess)}): {[s.get(\"id\",\"?\")[:14] for s in sess]}')
+            sess_ids = [s.get("id", "?")[:14] for s in sess]
+            print(f"    web API sessions ({len(sess)}): {sess_ids}")
             if sess:
-                print(f'    {\"✅ SESSION VISIBLE IN WEB UI\"}')
+                print("    ✅ SESSION VISIBLE IN WEB UI")
                 return
         except Exception:
             pass
-        await asyncio.sleep(矿山2)
+        await asyncio.sleep(2)
     print("    ❌ no session yet in web API")
 
 asyncio.run(go())

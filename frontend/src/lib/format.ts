@@ -83,6 +83,9 @@ export function getLanguage(filename: string): string {
     html: 'html', css: 'css', json: 'json', md: 'markdown',
     yaml: 'yaml', yml: 'yaml', toml: 'toml', sh: 'bash',
     sql: 'sql', xml: 'xml', php: 'php', swift: 'swift',
+    mp4: 'video', webm: 'video', mov: 'video', mkv: 'video', m4v: 'video', avi: 'video',
+    mp3: 'audio', wav: 'audio', flac: 'audio', aac: 'audio', m4a: 'audio', ogg: 'audio',
+    png: 'image', jpg: 'image', jpeg: 'image', svg: 'image', gif: 'image', webp: 'image',
   };
   return map[ext] || 'text';
 }
@@ -95,6 +98,31 @@ const IMAGE_EXTENSIONS = new Set([
 /** True when `filename` has a known image extension. */
 export function isImageFile(filename: string): boolean {
   return IMAGE_EXTENSIONS.has(getExtension(filename));
+}
+
+/** Video file extensions the editor should render in a video player. */
+const VIDEO_EXTENSIONS = new Set([
+  'mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv', 'avi',
+]);
+
+/** True when `filename` has a known video extension. */
+export function isVideoFile(filename: string): boolean {
+  return VIDEO_EXTENSIONS.has(getExtension(filename));
+}
+
+/** Audio file extensions the editor can render with audio controls. */
+const AUDIO_EXTENSIONS = new Set([
+  'mp3', 'wav', 'flac', 'm4a', 'aac', 'oga',
+]);
+
+/** True when `filename` has a known audio extension. */
+export function isAudioFile(filename: string): boolean {
+  return AUDIO_EXTENSIONS.has(getExtension(filename));
+}
+
+/** True when `filename` is an image, video, or audio file. */
+export function isMediaFile(filename: string): boolean {
+  return isImageFile(filename) || isVideoFile(filename) || isAudioFile(filename);
 }
 
 const SQLITE_EXTENSIONS = new Set(['sqlite3', 'sqlite', 'db', 'db3', 's3db']);

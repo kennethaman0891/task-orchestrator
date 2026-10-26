@@ -5,6 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import * as THREE from 'three';
 import { Canvas } from '@react-three/fiber';
 import { useProjectsFeed } from '@/city/feed';
 import { useCityStore } from '@/city/store';
@@ -188,10 +189,15 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
       {webgl ? (
         <div style={{ position: 'absolute', inset: 0 }} onContextMenu={(e) => e.preventDefault()}>
           <Canvas
-            shadows
-            dpr={[1, 1.75]}
-            camera={{ position: [60, 46, 60], fov: 45, near: 0.5, far: 700 }}
-            gl={{ antialias: true, powerPreference: 'high-performance' }}
+            shadows="soft"
+            dpr={[1, 2]}
+            camera={{ position: [60, 46, 60], fov: 42, near: 0.5, far: 800 }}
+            gl={{
+              antialias: true,
+              powerPreference: 'high-performance',
+              toneMapping: THREE.ACESFilmicToneMapping,
+              toneMappingExposure: 1.15,
+            }}
             style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
           >
             <CityScene />

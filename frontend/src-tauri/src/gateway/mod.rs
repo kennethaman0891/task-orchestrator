@@ -353,7 +353,8 @@ async fn handle_message(
             let session_id = env.payload.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
             let cols = env.payload.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
             let rows = env.payload.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
-            match manager.resize(&session_id, cols, rows) {
+            // 0 keeps the pixel size last reported by the desktop renderer.
+            match manager.resize(&session_id, cols, rows, 0, 0) {
                 Ok(()) => {
                     let resp = json!({ "v": 1, "id": env.id, "type": "ack",
                         "payload": { "ok": true, "kind": "terminal.resize", "sessionId": session_id } });

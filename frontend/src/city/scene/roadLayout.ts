@@ -29,11 +29,11 @@ export const SKIP_DIRS = [
 ];
 
 const COLONY_CAP = 8;
-const COLONY_X_MIN = -2.4;
-const COLONY_X_MAX = 2.4;
-const COLONY_Z = 0.2;
+const COLONY_X_MIN = -3.0;
+const COLONY_X_MAX = 3.0;
+const COLONY_Z = 5.0;
 /** Depth-2 spur sits just in front of its colony. */
-const DEPTH2_Z_STEP = 1.1;
+const DEPTH2_Z_STEP = 0.8;
 
 function pathParts(relative: string | null): string[] {
   if (!relative) return [];
@@ -75,7 +75,7 @@ export function layoutDistrict(
     relativePath: '',
     depth: 0,
     x: 0,
-    z: 1.6,
+    z: 5.2,
     rotY: 0,
     length: 2.4,
   };

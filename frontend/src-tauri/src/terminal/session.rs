@@ -30,6 +30,9 @@ pub struct SessionMeta {
     pub last_activity: f64,
     pub cols: u16,
     pub rows: u16,
+    /// Last TIOCGWINSZ pixel size. 0 until the frontend reports a cell size.
+    pub pixel_width: u16,
+    pub pixel_height: u16,
     pub tui_active: bool,
     pub pid: u32,
     /// Slave tty name (e.g. "ttys004") — links the session to the sidecar's

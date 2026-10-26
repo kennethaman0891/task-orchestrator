@@ -75,6 +75,23 @@ export function TerminalPool({ sessionIds }: PoolProps) {
   const themeRef = useRef(theme);
   themeRef.current = theme;
 
+  const latestSessionIdsRef = useRef(new Set<string>(sessionIds));
+  latestSessionIdsRef.current = new Set(sessionIds);
+
+  const pruneTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  const effectRunIdRef = useRef(0);
+
+  // Clean up pending prune timers on component unmount
+  useEffect(() => {
+    return () => {
+      for (const timer of pruneTimersRef.current.values()) {
+        clearTimeout(timer);
+      }
+      pruneTimersRef.current.clear();
+      creatingRef.current.clear();
+    };
+  }, []);
+
   // Update theme on all existing terminals when theme changes (no recreation)
   useEffect(() => {
     for (const handle of TerminalManager.all()) {
@@ -91,44 +108,79 @@ export function TerminalPool({ sessionIds }: PoolProps) {
       return;
     }
     mountedRef.current = true;
+    const runId = ++effectRunIdRef.current;
+
     // Publish the pool root so TerminalAnchor's park() can re-parent hosts
     // back here (previous park() only restyled the host but left it orphaned
     // in a removed DOM subtree → disconnected → fitNow bails → blank).
     TerminalManager.setPoolRoot(containerRef.current);
 
     const currentIds = new Set(sessionIds);
+    latestSessionIdsRef.current = currentIds;
     console.log('[TerminalPool] Effect running, sessionIds:', Array.from(currentIds));
+
+    // Cancel any pending prune timers for sessions that are present
+    for (const sid of currentIds) {
+      const timer = pruneTimersRef.current.get(sid);
+      if (timer) {
+        clearTimeout(timer);
+        pruneTimersRef.current.delete(sid);
+      }
+      const resolved = TerminalManager.resolveSessionId(sid);
+      if (resolved && resolved !== sid) {
+        const rTimer = pruneTimersRef.current.get(resolved);
+        if (rTimer) {
+          clearTimeout(rTimer);
+          pruneTimersRef.current.delete(resolved);
+        }
+      }
+    }
 
     // Create terminals for new sessions — with error handling
     (async () => {
       try {
         const { Terminal } = await import('@xterm/xterm');
         const { Unicode11Addon } = await import('@xterm/addon-unicode11');
+        // Canvas draws block and box glyphs with fillRect, so logo pixels
+        // meet. Import failure keeps the DOM renderer (open() creates it
+        // only when no addon renderer registered during onWillOpen).
+        let CanvasAddon: typeof import('@xterm/addon-canvas').CanvasAddon | null = null;
+        try {
+          CanvasAddon = (await import('@xterm/addon-canvas')).CanvasAddon;
+        } catch (e) {
+          console.warn('[TerminalPool] CanvasAddon unavailable, DOM renderer will be used:', e);
+        }
 
         for (const sessionId of currentIds) {
+          if (effectRunIdRef.current !== runId || !containerRef.current || !mountedRef.current) {
+            console.log(`[TerminalPool] Container gone or unmounted, stopping`);
+            break;
+          }
           if (TerminalManager.has(sessionId)) {
             continue;
           }
           if (creatingRef.current.has(sessionId)) {
             continue;
           }
-          if (!containerRef.current || !mountedRef.current) {
-            console.log(`[TerminalPool] Container gone or unmounted, stopping`);
-            continue;
-          }
 
           creatingRef.current.add(sessionId);
-          // Yield to browser event loop so UI and WindowServer remain 100% responsive during creation
-          await new Promise((resolve) => setTimeout(resolve, 0));
-          if (!containerRef.current || !mountedRef.current) break;
-
           try {
+            // Yield to browser event loop so UI and WindowServer remain 100% responsive during creation
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (effectRunIdRef.current !== runId || !containerRef.current || !mountedRef.current) break;
+
+            if (TerminalManager.has(sessionId)) {
+              continue;
+            }
+
             // Use latest theme from ref
             const t = themeRef.current;
             const term = new Terminal({
               fontFamily: t.fontFamily.mono,
               fontSize: 13,
-              lineHeight: 1.15,
+              // 1.0 is xterm's own default. 1.15 left empty leading around
+              // Menlo's block glyphs, so splash logos painted as gapped bricks.
+              lineHeight: 1,
               cursorBlink: false,
               cursorStyle: 'block',
               scrollback: 2000,
@@ -139,6 +191,9 @@ export function TerminalPool({ sessionIds }: PoolProps) {
               disableStdin: false,
               allowTransparency: false,
               drawBoldTextInBrightColors: true,
+              // Fills ▀▄█ and box-drawing as cell rectangles. Ignored on the
+              // DOM renderer; the canvas addon below is what honors it.
+              customGlyphs: true,
             });
 
             const fitAddon = new FitAddon();
@@ -158,11 +213,26 @@ export function TerminalPool({ sessionIds }: PoolProps) {
             host.style.cssText = POOL_HOST_STYLE;
             containerRef.current.appendChild(host);
 
+            // Load before open(). Terminal.open() skips the DOM renderer when
+            // a canvas renderer is already registered from onWillOpen. Loading
+            // after open leaves the DOM row layer in place under the canvas.
+            if (CanvasAddon) {
+              try {
+                term.loadAddon(new CanvasAddon());
+              } catch (e) {
+                console.warn(`[TerminalPool] CanvasAddon load failed for ${sessionId}, DOM renderer will be used:`, e);
+              }
+            }
+
             term.open(host);
             patchXtermDecrqm(term);
 
-            // Use DOM renderer for all terminals to ensure proper ANSI color rendering.
-            // CanvasAddon has known issues with color rendering in some environments.
+            if (host.querySelector('canvas.xterm-text-layer')) {
+              host.dataset.ttoRenderer = 'canvas';
+            } else {
+              host.dataset.ttoRenderer = 'dom';
+              console.warn(`[TerminalPool] Canvas renderer did not attach for ${sessionId}; DOM fallback is active`);
+            }
 
             // Unicode 11 addon for accurate glyph widths
             try {
@@ -202,6 +272,7 @@ export function TerminalPool({ sessionIds }: PoolProps) {
             console.log(`[TerminalPool] Terminal ${sessionId} fully created and registered`);
           } catch (itemErr) {
             console.error(`[TerminalPool] Failed to create terminal for ${sessionId}:`, itemErr);
+          } finally {
             creatingRef.current.delete(sessionId);
           }
         }
@@ -212,13 +283,48 @@ export function TerminalPool({ sessionIds }: PoolProps) {
     })();
 
     // Cleanup: remove terminals that are no longer in sessionIds
-    for (const handle of TerminalManager.all()) {
-      if (!currentIds.has(handle.sessionId)) {
-        const host = handle.host;
-        const resizeDisp = (host as any).__ttoResizeDisposable;
-        if (resizeDisp) resizeDisp.dispose();
-        host.remove();
-        TerminalManager.unregister(handle.sessionId);
+    // Safeguard: If currentIds is empty and we have existing handles, DO NOT immediately destroy all terminals.
+    // This protects against empty flashes during boot or workspace transitions.
+    if (currentIds.size === 0) {
+      if (TerminalManager.all().length > 0) {
+        console.log(`[TerminalPool] sessionIds flashed empty (${TerminalManager.all().length} handles preserved)`);
+      }
+    } else {
+      for (const handle of TerminalManager.all()) {
+        const sid = handle.sessionId;
+        const isPresent =
+          currentIds.has(sid) ||
+          (handle.tty && currentIds.has(handle.tty)) ||
+          currentIds.has(TerminalManager.resolveSessionId(sid));
+
+        if (!isPresent) {
+          if (!pruneTimersRef.current.has(sid)) {
+            const timer = setTimeout(() => {
+              pruneTimersRef.current.delete(sid);
+              // Verify again that sessionIds is non-empty and the session is truly still absent
+              const latest = latestSessionIdsRef.current;
+              const stillPresent =
+                latest.has(sid) ||
+                (handle.tty && latest.has(handle.tty)) ||
+                latest.has(TerminalManager.resolveSessionId(sid));
+
+              if (latest.size > 0 && !stillPresent) {
+                console.log(`[TerminalPool] Pruning absent session ${sid} after grace period`);
+                const h = TerminalManager.get(sid);
+                if (h) {
+                  const host = h.host;
+                  const resizeDisp = (host as any).__ttoResizeDisposable;
+                  if (resizeDisp) {
+                    try { resizeDisp.dispose(); } catch {}
+                  }
+                  try { host.remove(); } catch {}
+                  TerminalManager.unregister(sid);
+                }
+              }
+            }, 1000);
+            pruneTimersRef.current.set(sid, timer);
+          }
+        }
       }
     }
 
@@ -361,14 +467,18 @@ export function TerminalAnchor({ sessionId, className, style }: TerminalAnchorPr
 
     /** Park the host back in the hidden pool — only if WE still own it. */
     const park = () => {
-      if (!TerminalManager.isOwnedBy(sessionId, container)) return;
-      const handle = TerminalManager.get(sessionId);
-      if (handle) {
-        try {
-          handle.term.options.cursorBlink = false;
-        } catch {}
+      try {
+        if (!TerminalManager.isOwnedBy(sessionId, container)) return;
+        const handle = TerminalManager.get(sessionId);
+        if (handle) {
+          try {
+            handle.term.options.cursorBlink = false;
+          } catch {}
+        }
+        TerminalManager.park(sessionId);
+      } catch (e) {
+        console.error(`[TerminalAnchor] Failed to park ${sessionId}:`, e);
       }
-      TerminalManager.park(sessionId);
     };
 
     /** rAF-debounced fit request (ResizeObserver can fire in bursts). */
@@ -394,8 +504,23 @@ export function TerminalAnchor({ sessionId, className, style }: TerminalAnchorPr
       attachedRef.current = true;
 
       console.log(`[TerminalAnchor] Found handle for ${sessionId}, moving host into anchor`);
-      handle.host.style.cssText = ANCHOR_HOST_STYLE;
-      container.appendChild(handle.host);
+      try {
+        handle.host.style.cssText = ANCHOR_HOST_STYLE;
+        if (handle.host.parentElement !== container) {
+          container.appendChild(handle.host);
+        }
+      } catch (e) {
+        console.error(`[TerminalAnchor] Failed to reparent host for ${sessionId}:`, e);
+        attachedRef.current = false;
+        return;
+      }
+
+      setTuiActive(handle.tuiActive);
+      const prevCb = handle.onTuiChange;
+      handle.onTuiChange = (active) => {
+        if (!disposed) setTuiActive(active);
+        prevCb?.(active);
+      };
 
       TerminalManager.setVisible(sessionId, true);
       // Attach never marks focus. Focus is exclusive and is set only when
@@ -455,9 +580,9 @@ export function TerminalAnchor({ sessionId, className, style }: TerminalAnchorPr
 
       teardownEvents = () => {
         clearTimeout(stabilizeTimer);
-        ro?.disconnect();
-        window.removeEventListener('resize', requestFit);
-        container.removeEventListener('wheel', onWheel);
+        try { ro?.disconnect(); } catch {}
+        try { window.removeEventListener('resize', requestFit); } catch {}
+        try { container.removeEventListener('wheel', onWheel); } catch {}
         ro = null;
       };
       console.log(`[TerminalAnchor] Attached and visible: ${sessionId}`);
@@ -477,9 +602,9 @@ export function TerminalAnchor({ sessionId, className, style }: TerminalAnchorPr
       disposed = true;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       rafRef.current = 0;
-      unsub();
+      try { unsub(); } catch {}
       clearInterval(pollTimer);
-      teardownEvents?.();
+      try { teardownEvents?.(); } catch {}
       park();
     };
   }, [sessionId]);

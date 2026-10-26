@@ -2,24 +2,12 @@
 // Sums are the token numbers already stored on those cars. A shared folder may
 // repeat a session; do not split or dedupe. Waste is not measured.
 
-import { useMemo, type CSSProperties } from 'react';
-import { Html } from '@react-three/drei';
+import { useMemo } from 'react';
 import { useCityStore } from '@/city/store';
 import { plotWorldPosition } from './CityGrid';
 
 const TRUNK = '#6b4f2a';
 const CANOPY = '#3dd68c';
-
-const LABEL: CSSProperties = {
-  pointerEvents: 'none',
-  fontSize: 11,
-  maxWidth: 160,
-  textAlign: 'center',
-  lineHeight: 1.35,
-  color: '#f4fff8',
-  fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-  textShadow: '0 1px 3px rgba(0,0,0,0.85)',
-};
 
 function finiteToken(n: number): number {
   return typeof n === 'number' && Number.isFinite(n) ? n : 0;
@@ -71,44 +59,38 @@ function TokenTree({
   const sapling = used <= 0;
   return (
     <group position={position}>
+      {/* Architectural Planter Curb */}
+      <mesh position={[0, 0.05, 0]} receiveShadow>
+        <cylinderGeometry args={[0.65, 0.72, 0.1, 16]} />
+        <meshStandardMaterial color="#334155" roughness={0.65} metalness={0.2} />
+      </mesh>
+      {/* Landscaped Soil / Dark Mulch */}
+      <mesh position={[0, 0.1, 0]}>
+        <cylinderGeometry args={[0.58, 0.58, 0.04, 16]} />
+        <meshStandardMaterial color="#221811" roughness={0.95} />
+      </mesh>
+
       {sapling ? (
         <group>
-          <mesh position={[0, 0.22, 0]} castShadow>
+          <mesh position={[0, 0.32, 0]} castShadow>
             <cylinderGeometry args={[0.02, 0.035, 0.44, 5]} />
             <meshStandardMaterial color={TRUNK} roughness={0.9} />
           </mesh>
-          <group position={[0, 0.5, 0]}>
-            <TokenCanopy radius={0.14} />
+          <group position={[0, 0.6, 0]}>
+            <TokenCanopy radius={0.18} />
           </group>
         </group>
       ) : (
         <group>
-          <mesh position={[0, 0.4, 0]} castShadow>
-            <cylinderGeometry args={[0.055, 0.09, 0.8, 6]} />
+          <mesh position={[0, 0.5, 0]} castShadow>
+            <cylinderGeometry args={[0.065, 0.1, 0.9, 6]} />
             <meshStandardMaterial color={TRUNK} roughness={0.9} />
           </mesh>
-          <group position={[0, 1.08, 0]}>
-            <TokenCanopy radius={0.52} dryRatio={dryRatio} />
+          <group position={[0, 1.18, 0]}>
+            <TokenCanopy radius={0.58} dryRatio={dryRatio} />
           </group>
         </group>
       )}
-      <Html
-        position={[0, sapling ? 0.82 : 1.78, 0]}
-        center
-        zIndexRange={[10, 0]}
-        style={{ pointerEvents: 'none' }}
-      >
-        <div style={LABEL}>
-          {sapling ? (
-            'No token count for this session.'
-          ) : (
-            <>
-              <div>Healthy 100%</div>
-              <div>Wasted 0% — Waste is not measured. We do not guess a percentage.</div>
-            </>
-          )}
-        </div>
-      </Html>
     </group>
   );
 }
@@ -132,7 +114,7 @@ export function TokenTrees() {
       placed.push({
         projectId,
         used,
-        position: [x - 2.4, y, z - 2.2],
+        position: [x - 4.6, y, z - 4.6],
       });
     }
     return placed;

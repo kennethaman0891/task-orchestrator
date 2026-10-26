@@ -177,7 +177,7 @@ print()
 print("══ 4. THE PERMANENT RECEIPT (only the GREEN lane, forever) ══")
 for k in ["Connected as TTO", "Connected", "voice", "Synced 9", "Synced"]:
     print(f"    {'✅' if k.lower() in s.lower() else '❌'} {k}")
-print(f"    {'✅' if 'faster_whisper' in s.lower() or 'Notr' if True else '❌'} faster_whisper (imported, no 'no module')")
+print(f"    {'✅' if ('faster_whisper' in s.lower() or 'notr' in s.lower()) else '❌'} faster_whisper (imported, no 'no module')")
 print(f"    {'✅' if 'Traceback' not in s and 'NameError' not in s else '❌'} no traceback / no NameError")
 print()
 

@@ -1,23 +1,48 @@
 // Developer City — CitySky: majestic 3D Sun and Moon celestial bodies,
 // solar flares, lunar craters, atmospheric glow, and twinkling night starfield.
 
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState, useEffect } from 'react';
 import * as THREE from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
+import { Stars } from '@react-three/drei';
 import { useCityStore } from '@/city/store';
 
 export function CitySky() {
   const cityMood = useCityStore((s) => s.cityMood);
   const isNight = cityMood === 'night';
-  const { camera } = useThree();
+  const { camera, scene } = useThree();
 
   // High celestial positions far beyond the city towers (> 300 units away)
-  const sunPosition = useMemo(() => new THREE.Vector3(160, 240, 140), []);
-  const moonPosition = useMemo(() => new THREE.Vector3(-150, 220, -130), []);
+  const sunPosition = useMemo(() => new THREE.Vector3(140, 220, 120), []);
+  const moonPosition = useMemo(() => new THREE.Vector3(-140, 200, -110), []);
 
   const sunGlowRef = useRef<THREE.Group>(null);
   const moonGlowRef = useRef<THREE.Group>(null);
-  const starsRef = useRef<THREE.Points>(null);
+  const sunLightRef = useRef<THREE.DirectionalLight>(null);
+  const moonLightRef = useRef<THREE.DirectionalLight>(null);
+
+  // Dedicated light target object placed at the center of the city (0, 0, 0)
+  const [lightTarget] = useState(() => {
+    const obj = new THREE.Object3D();
+    obj.position.set(0, 0, 0);
+    return obj;
+  });
+
+  useEffect(() => {
+    scene.add(lightTarget);
+    return () => {
+      scene.remove(lightTarget);
+    };
+  }, [scene, lightTarget]);
+
+  useEffect(() => {
+    if (sunLightRef.current) {
+      sunLightRef.current.target = lightTarget;
+    }
+    if (moonLightRef.current) {
+      moonLightRef.current.target = lightTarget;
+    }
+  }, [lightTarget, isNight]);
 
   // Billboard glow halos to always face camera
   useFrame(() => {
@@ -27,193 +52,165 @@ export function CitySky() {
     if (moonGlowRef.current) {
       moonGlowRef.current.lookAt(camera.position);
     }
-    if (starsRef.current && isNight) {
-      starsRef.current.rotation.y += 0.0001;
-    }
   });
-
-  // Night Starfield
-  const starPositions = useMemo(() => {
-    const coords: number[] = [];
-    const count = 450;
-    const radius = 480;
-    for (let i = 0; i < count; i++) {
-      const u = Math.random();
-      const v = Math.random();
-      const theta = u * 2.0 * Math.PI;
-      const phi = Math.acos(2.0 * v - 1.0);
-      // Only upper hemisphere (sky)
-      const y = Math.abs(Math.sin(phi)) * radius;
-      const x = Math.cos(theta) * Math.cos(phi) * radius;
-      const z = Math.sin(theta) * Math.cos(phi) * radius;
-      coords.push(x, y + 10, z);
-    }
-    return new Float32Array(coords);
-  }, []);
 
   return (
     <group>
       {/* ── 1. The Radiant 3D Sun (Daytime) ────────────────────────── */}
       {!isNight && (
-        <group position={sunPosition.toArray()}>
-          {/* Radiant Sun Core Sphere */}
-          <mesh>
-            <sphereGeometry args={[14, 32, 32]} />
-            <meshBasicMaterial color="#ffffff" fog={false} />
-          </mesh>
+        <>
+          <group position={sunPosition.toArray()}>
+            {/* Radiant Sun Core Sphere */}
+            <mesh>
+              <sphereGeometry args={[14, 32, 32]} />
+              <meshBasicMaterial color="#fffbeb" fog={false} />
+            </mesh>
 
-          {/* Sun Glow Halos & Corona */}
-          <group ref={sunGlowRef}>
-            {/* Inner intense solar corona */}
-            <mesh>
-              <ringGeometry args={[13.8, 30, 36]} />
-              <meshBasicMaterial
-                color="#fff6bf"
-                transparent
-                opacity={0.8}
-                side={THREE.DoubleSide}
-                fog={false}
-                depthWrite={false}
-              />
-            </mesh>
-            {/* Mid solar flare ring */}
-            <mesh>
-              <ringGeometry args={[30, 56, 36]} />
-              <meshBasicMaterial
-                color="#fed766"
-                transparent
-                opacity={0.4}
-                side={THREE.DoubleSide}
-                fog={false}
-                depthWrite={false}
-              />
-            </mesh>
-            {/* Outer atmospheric haze halo */}
-            <mesh>
-              <ringGeometry args={[56, 95, 36]} />
-              <meshBasicMaterial
-                color="#f59e0b"
-                transparent
-                opacity={0.16}
-                side={THREE.DoubleSide}
-                fog={false}
-                depthWrite={false}
-              />
-            </mesh>
+            {/* Billboarding Corona Glow Halos */}
+            <group ref={sunGlowRef}>
+              <mesh>
+                <ringGeometry args={[13.8, 32, 36]} />
+                <meshBasicMaterial
+                  color="#fef08a"
+                  transparent
+                  opacity={0.65}
+                  side={THREE.DoubleSide}
+                  fog={false}
+                  depthWrite={false}
+                />
+              </mesh>
+              <mesh>
+                <ringGeometry args={[30, 60, 36]} />
+                <meshBasicMaterial
+                  color="#fde047"
+                  transparent
+                  opacity={0.35}
+                  side={THREE.DoubleSide}
+                  fog={false}
+                  depthWrite={false}
+                />
+              </mesh>
+              <mesh>
+                <ringGeometry args={[56, 110, 36]} />
+                <meshBasicMaterial
+                  color="#fbbf24"
+                  transparent
+                  opacity={0.15}
+                  side={THREE.DoubleSide}
+                  fog={false}
+                  depthWrite={false}
+                />
+              </mesh>
+            </group>
           </group>
 
           {/* Directional Sunlight shining from Sun down onto the city */}
           <directionalLight
-            position={[0, 0, 0]}
-            target-position={[0, 0, 0]}
+            ref={sunLightRef}
+            position={sunPosition.toArray()}
             color="#fff8e7"
-            intensity={1.85}
+            intensity={2.2}
             castShadow
+            shadow-bias={-0.00015}
             shadow-mapSize-width={2048}
             shadow-mapSize-height={2048}
-            shadow-camera-left={-85}
-            shadow-camera-right={85}
-            shadow-camera-top={85}
-            shadow-camera-bottom={-85}
+            shadow-camera-left={-90}
+            shadow-camera-right={90}
+            shadow-camera-top={90}
+            shadow-camera-bottom={-90}
             shadow-camera-near={100}
-            shadow-camera-far={600}
+            shadow-camera-far={500}
           />
-        </group>
+        </>
       )}
 
       {/* ── 2. The Luminous 3D Moon & Starfield (Nighttime) ─────────── */}
       {isNight && (
-        <group position={moonPosition.toArray()}>
-          {/* Main Moon Sphere */}
-          <mesh>
-            <sphereGeometry args={[11, 32, 32]} />
-            <meshStandardMaterial
-              color="#f1f5f9"
-              emissive="#cbd5e1"
-              emissiveIntensity={1.4}
-              roughness={0.85}
-              metalness={0.1}
-              fog={false}
-            />
-          </mesh>
-
-          {/* Lunar Dark Maria / Craters */}
-          {[-1.8, 1.5, -0.6, 2.2].map((cx, i) => (
-            <mesh key={`crater-${i}`} position={[cx, (i - 1.5) * 2.5, 9.8]}>
-              <circleGeometry args={[2.2 - (i % 2) * 0.6, 16]} />
-              <meshBasicMaterial
-                color="#64748b"
-                transparent
-                opacity={0.4}
-                fog={false}
-                depthWrite={false}
-              />
-            </mesh>
-          ))}
-
-          {/* Moonlight Atmospheric Halo */}
-          <group ref={moonGlowRef}>
+        <>
+          <group position={moonPosition.toArray()}>
+            {/* Main Moon Sphere */}
             <mesh>
-              <ringGeometry args={[10.8, 28, 36]} />
-              <meshBasicMaterial
-                color="#bfdbfe"
-                transparent
-                opacity={0.45}
-                side={THREE.DoubleSide}
+              <sphereGeometry args={[12, 32, 32]} />
+              <meshStandardMaterial
+                color="#f8fafc"
+                emissive="#e2e8f0"
+                emissiveIntensity={1.3}
+                roughness={0.8}
+                metalness={0.1}
                 fog={false}
-                depthWrite={false}
               />
             </mesh>
-            <mesh>
-              <ringGeometry args={[28, 55, 36]} />
-              <meshBasicMaterial
-                color="#60a5fa"
-                transparent
-                opacity={0.18}
-                side={THREE.DoubleSide}
-                fog={false}
-                depthWrite={false}
-              />
-            </mesh>
+
+            {/* Lunar Dark Maria / Craters */}
+            {[-1.8, 1.5, -0.6, 2.2].map((cx, i) => (
+              <mesh key={`crater-${i}`} position={[cx, (i - 1.5) * 2.5, 10.6]}>
+                <circleGeometry args={[2.2 - (i % 2) * 0.6, 16]} />
+                <meshBasicMaterial
+                  color="#475569"
+                  transparent
+                  opacity={0.45}
+                  fog={false}
+                  depthWrite={false}
+                />
+              </mesh>
+            ))}
+
+            {/* Moonlight Atmospheric Halo */}
+            <group ref={moonGlowRef}>
+              <mesh>
+                <ringGeometry args={[11.8, 30, 36]} />
+                <meshBasicMaterial
+                  color="#93c5fd"
+                  transparent
+                  opacity={0.5}
+                  side={THREE.DoubleSide}
+                  fog={false}
+                  depthWrite={false}
+                />
+              </mesh>
+              <mesh>
+                <ringGeometry args={[30, 65, 36]} />
+                <meshBasicMaterial
+                  color="#3b82f6"
+                  transparent
+                  opacity={0.18}
+                  side={THREE.DoubleSide}
+                  fog={false}
+                  depthWrite={false}
+                />
+              </mesh>
+            </group>
           </group>
 
           {/* Directional Moonlight shining from Moon down onto the city */}
           <directionalLight
-            position={[0, 0, 0]}
-            target-position={[0, 0, 0]}
-            color="#a5c4ff"
-            intensity={1.25}
+            ref={moonLightRef}
+            position={moonPosition.toArray()}
+            color="#93c5fd"
+            intensity={1.4}
             castShadow
+            shadow-bias={-0.00015}
             shadow-mapSize-width={2048}
             shadow-mapSize-height={2048}
-            shadow-camera-left={-85}
-            shadow-camera-right={85}
-            shadow-camera-top={85}
-            shadow-camera-bottom={-85}
+            shadow-camera-left={-90}
+            shadow-camera-right={90}
+            shadow-camera-top={90}
+            shadow-camera-bottom={-90}
             shadow-camera-near={100}
-            shadow-camera-far={600}
+            shadow-camera-far={500}
           />
-        </group>
-      )}
 
-      {/* ── 3. Night Celestial Starfield ───────────────────────────── */}
-      {isNight && (
-        <points ref={starsRef}>
-          <bufferGeometry>
-            <bufferAttribute
-              attach="attributes-position"
-              args={[starPositions, 3]}
-            />
-          </bufferGeometry>
-          <pointsMaterial
-            size={2.2}
-            color="#ffffff"
-            transparent
-            opacity={0.85}
-            sizeAttenuation
-            fog={false}
+          {/* Shimmering Multi-Depth Celestial Stars */}
+          <Stars
+            radius={320}
+            depth={80}
+            count={3200}
+            factor={4.5}
+            saturation={0.4}
+            fade
+            speed={0.8}
           />
-        </points>
+        </>
       )}
     </group>
   );

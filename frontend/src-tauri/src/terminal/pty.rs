@@ -258,12 +258,23 @@ pub fn spawn_shell(
 }
 
 /// Resize the PTY window so the process sees the new terminal dimensions.
-pub fn resize(pty: &dyn MasterPty, cols: u16, rows: u16) -> Result<(), String> {
+///
+/// `pixel_width` and `pixel_height` are the whole window in device pixels
+/// (`cols * cell_width`, `rows * cell_height`). Zero tells graphics-aware
+/// CLIs that the terminal has no pixel grid. Pass the last known non-zero
+/// size rather than wiping it on a cols-only update.
+pub fn resize(
+    pty: &dyn MasterPty,
+    cols: u16,
+    rows: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+) -> Result<(), String> {
     pty.resize(PtySize {
         rows,
         cols,
-        pixel_width: 0,
-        pixel_height: 0,
+        pixel_width,
+        pixel_height,
     })
     .map_err(|e| format!("pty resize: {e}"))
 }

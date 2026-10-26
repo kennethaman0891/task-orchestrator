@@ -13,7 +13,7 @@ import { CarInterior } from './CarInterior';
 import { plotWorldPosition } from './CityGrid';
 import { layoutDistrict, segmentForCwd } from './roadLayout';
 
-const PLOT_LIMIT = 4;
+const PLOT_LIMIT = 5.8;
 
 function clampPlot(n: number): number {
   if (n > PLOT_LIMIT) return PLOT_LIMIT;
@@ -26,15 +26,25 @@ function normPath(path: string): string {
 }
 
 /**
- * Offset from the plot centre. Parked: sidewalk row along +X, south then north.
- * Moving: the folder road for this terminal's cwd. Both stay inside ±4.
+ * Returns [dx, dy, dz, rotY] offset from the plot centre.
+ * Parked: dedicated parking bays in the front plaza (Z = 5.2) or east wing (X = 5.2),
+ * safely outside the building footprint.
+ * Moving: the folder road segment for this terminal's cwd.
  */
-function carLocalOffset(car: TerminalCar, project: Project, dirs: string[]): [number, number, number] {
+function carLocalTransform(car: TerminalCar, project: Project, dirs: string[]): [number, number, number, number] {
   if (!car.moving) {
     const slot = Math.max(0, Math.trunc(Number(car.slotIndex)) || 0);
-    const x = ((slot % 4) - 1.5) * 1.6;
-    const z = slot >= 4 ? -3.2 : 3.2;
-    return [clampPlot(x), 0, clampPlot(z)];
+    if (slot < 4) {
+      // 4 Front Parking Bays facing the road (Z = 5.2, X in [-2.7, -0.9, 0.9, 2.7])
+      const x = ((slot % 4) - 1.5) * 1.8;
+      const z = 5.2;
+      return [clampPlot(x), 0, clampPlot(z), 0];
+    }
+    // East Wing Parking Bays (X = 5.2, Z in [-2.7, -0.9, 0.9, 2.7])
+    const sideSlot = slot - 4;
+    const x = 5.2;
+    const z = ((sideSlot % 4) - 1.5) * 1.8;
+    return [clampPlot(x), 0, clampPlot(z), Math.PI / 2];
   }
 
   const projectPath = project.path || car.projectPath;
@@ -42,8 +52,8 @@ function carLocalOffset(car: TerminalCar, project: Project, dirs: string[]): [nu
   const relative = relativeToProject(projectPath, car.cwd || projectPath);
   const segments = layoutDistrict(project.id, rootName, dirs, relative);
   const seg = segmentForCwd(projectPath, normPath(car.cwd || projectPath), segments);
-  if (!seg) return [0, 0, clampPlot(2.2)];
-  return [clampPlot(seg.x), 0, clampPlot(seg.z)];
+  if (!seg) return [0, 0, 5.0, 0];
+  return [clampPlot(seg.x), 0, clampPlot(seg.z), seg.rotY];
 }
 
 function makeLabelTexture(label: string, width: number, height: number): THREE.CanvasTexture {
@@ -139,7 +149,7 @@ function TerminalCarNode({
   onEnter: (projectId: string, paneId: string, terminalId: string) => void;
 }) {
   const world = plotWorldPosition(project.plot);
-  const [dx, dy, dz] = carLocalOffset(car, project, dirs);
+  const [dx, dy, dz, rotY] = carLocalTransform(car, project, dirs);
   const roll = useRef<THREE.Group>(null);
   useFrame(({ clock }) => {
     const group = roll.current;
@@ -156,9 +166,9 @@ function TerminalCarNode({
   };
 
   return (
-    <group position={[world[0] + dx, dy, world[2] + dz]} rotation={[0, 0, 0]}>
+    <group position={[world[0] + dx, dy, world[2] + dz]} rotation={[0, rotY, 0]}>
       <group ref={roll}>
-      {inside ? <CarInterior car={car} /> : <CarBody color={car.color} spec={spec} />}
+      {inside ? <CarInterior car={car} /> : <CarBody color={car.color} spec={spec} moving={car.moving} />}
       <CarNameBoards name={car.name} />
       {selected && (
         <mesh position={[0, 0.04, 0]} rotation={[-Math.PI / 2, 0, 0]}>

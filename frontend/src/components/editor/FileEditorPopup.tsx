@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
 import { getFile } from '@/lib/api';
-import { baseName, isImageFile } from '@/lib/format';
+import { baseName, isImageFile, isVideoFile, isAudioFile } from '@/lib/format';
 import { buttonBase, buttonSize, buttonVariant, scrollbarStyle } from '@/lib/theme';
 import { CodeEditor } from '@/components/editor/CodeEditor';
 import { ImageViewer } from '@/components/editor/ImageViewer';
+import { VideoViewer } from '@/components/editor/VideoViewer';
 import { X, Maximize2, Minimize2, AppWindow } from 'lucide-react';
 
 interface Props {
@@ -61,10 +62,15 @@ export function FileEditorPopup({
   const lastRectRef = useRef(rect);
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
 
-  // ── Load file content when active file changes (images load via ImageViewer) ──
+  // ── Load file content when active file changes (images & media load via their viewers) ──
   useEffect(() => {
     if (!activeFile) { setContent(null); setError(null); setLoading(false); return; }
-    if (isImageFile(activeFile)) { setContent(null); setError(null); setLoading(false); return; }
+    if (isImageFile(activeFile) || isVideoFile(activeFile) || isAudioFile(activeFile)) {
+      setContent(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -292,6 +298,10 @@ export function FileEditorPopup({
           {isImageFile(activeFile) ? (
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
               <ImageViewer key={activeFile} path={activeFile} error={error} />
+            </div>
+          ) : isVideoFile(activeFile) || isAudioFile(activeFile) ? (
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+              <VideoViewer key={activeFile} path={activeFile} error={error} />
             </div>
           ) : (
             <CodeEditor

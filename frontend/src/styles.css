@@ -1406,21 +1406,17 @@ h1 {
   padding: 0;
 }
 .xterm-rows > div {
-  line-height: 1.15;
+  /* Match TerminalPool lineHeight: 1. A 1.15 row is empty leading around
+     block glyphs on the DOM fallback. The canvas renderer does not use
+     this line box; custom glyphs fill the cell instead. */
+  line-height: 1;
 }
 
-/* ── DOM renderer (WebGL disabled) ─────────────────────────────────────
-   WebGL was disabled because its canvas rasterizer garbles box-drawing
-   and block characters (▄ ▀ █ ╔═╗║╚╝) at small font sizes (≤12px).
-   The cell-grid alignment in the WebGL texture atlas doesn't match the
-   actual font metrics, producing fragmented/overlapping tiles in TUI
-   apps like OpenCode, vim, and htop. The DOM renderer renders every
-   codepoint cleanly using CSS font metrics and is fast enough for
-   workspace-card-sized terminals (50–100 visible rows).
-   
-   If WebGL is re-enabled in the future, the following CSS would be
-   needed to hide .xterm-rows (DOM) when the canvas is active:
-   .term-pane.webgl-active .xterm-rows { opacity: 0; pointer-events: none; } */
+/* ── Canvas renderer, WebGL still off ──────────────────────────────────
+   Block and box glyphs are drawn by @xterm/addon-canvas (customGlyphs)
+   as filled cell rectangles. WebGL stays off: its texture atlas garbles
+   ▄▀█ and box drawing at font sizes ≤12px. Do not set width/height on
+   canvas or .xterm-screen; that stretches the raster. */
 
 /* ── Content containment: prevent terminal from bleeding into sidebar ──
    Only .tw-output gets style+paint containment (it wraps all terminals in the
@@ -4656,8 +4652,9 @@ h1 {
   font-size: 10px;
   color: var(--text);
 }
-.git-spinner {
-  animation: spin 1s linear infinite;
+.git-spinner,
+.spin {
+  animation: spin 0.8s linear infinite;
   display: inline-block;
 }
 @keyframes spin {

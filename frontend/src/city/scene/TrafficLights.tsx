@@ -52,50 +52,82 @@ function ProjectSignal({
 
   return (
     <group position={[x, y, z + 3.6]}>
-      <mesh position={[0, 0.68, 0]}>
-        <cylinderGeometry args={[0.035, 0.045, 1.36, 6]} />
-        <meshStandardMaterial color="#2c3344" metalness={0.45} roughness={0.5} />
+      {/* Industrial Powder-Coated Metal Mast */}
+      <mesh position={[0, 0.72, 0]} castShadow>
+        <cylinderGeometry args={[0.04, 0.055, 1.44, 8]} />
+        <meshStandardMaterial color="#1e293b" metalness={0.75} roughness={0.3} />
       </mesh>
-      <mesh position={[0, 1.72, 0]} onPointerDown={open}>
-        <boxGeometry args={[0.32, 0.72, 0.16]} />
-        <meshStandardMaterial color="#1a2030" metalness={0.3} roughness={0.55} />
+
+      {/* Traffic Signal Main Enclosure */}
+      <mesh position={[0, 1.76, 0]} onPointerDown={open} castShadow>
+        <boxGeometry args={[0.34, 0.78, 0.18]} />
+        <meshStandardMaterial color="#0f172a" metalness={0.6} roughness={0.4} />
       </mesh>
+
+      {/* Sun Visor Hoods & Lenses */}
       {LENSES.map((lens) => {
         const on = lit === lens.key;
+        const ly = 1.76 + lens.y;
         return (
-          <mesh key={lens.key} position={[0, 1.72 + lens.y, 0.09]}>
-            <circleGeometry args={[0.062, 12]} />
-            <meshStandardMaterial
-              color={lens.color}
-              emissive={lens.color}
-              emissiveIntensity={on ? 1.6 : 0.05}
-              roughness={0.4}
-              side={2}
-            />
-          </mesh>
+          <group key={lens.key} position={[0, ly, 0.09]}>
+            {/* Extended Sun Visor Hood */}
+            <mesh position={[0, 0.04, 0.03]} rotation={[-0.3, 0, 0]}>
+              <cylinderGeometry args={[0.08, 0.08, 0.06, 10, 1, true, 0, Math.PI]} />
+              <meshStandardMaterial color="#0b0f19" metalness={0.5} roughness={0.5} side={2} />
+            </mesh>
+            {/* Glowing Emissive Fresnel Lens */}
+            <mesh position={[0, 0, 0.01]}>
+              <circleGeometry args={[0.068, 16]} />
+              <meshStandardMaterial
+                color={lens.color}
+                emissive={lens.color}
+                emissiveIntensity={on ? 3.0 : 0.04}
+                roughness={0.2}
+                side={2}
+              />
+            </mesh>
+          </group>
         );
       })}
-      <Html position={[0, 2.28, 0]} center distanceFactor={36} zIndexRange={[10, 0]} pointerEvents="none">
-        <div
-          style={{
-            pointerEvents: 'none',
-            whiteSpace: 'nowrap',
-            textAlign: 'center',
-            fontSize: 11,
-            fontWeight: 600,
-            lineHeight: 1.35,
-            fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-            color: '#f8fafc',
-            background: 'rgba(8, 10, 18, 0.88)',
-            padding: '3px 8px',
-            borderRadius: 10,
-          }}
-        >
-          {lines.map((line) => (
-            <div key={line}>{line}</div>
-          ))}
-        </div>
-      </Html>
+
+      {/* Subtle night-time lens glow on ground */}
+      {lit !== 'red' && (
+        <pointLight
+          position={[0, 1.76, 0.3]}
+          color={lit === 'green' ? '#22c55e' : '#f5c542'}
+          intensity={0.4}
+          distance={4}
+          decay={2}
+        />
+      )}
+
+      {lit !== 'red' && (
+        <Html position={[0, 2.36, 0]} center distanceFactor={36} zIndexRange={[10, 0]} pointerEvents="none">
+          <div
+            style={{
+              pointerEvents: 'none',
+              whiteSpace: 'nowrap',
+              textAlign: 'center',
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: '0.04em',
+              lineHeight: 1.35,
+              fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+              color: lit === 'green' ? '#4ade80' : '#fde047',
+              background: 'rgba(10, 12, 20, 0.88)',
+              border: `1px solid ${lit === 'green' ? 'rgba(74, 222, 128, 0.3)' : 'rgba(253, 224, 71, 0.3)'}`,
+              backdropFilter: 'blur(8px)',
+              padding: '3px 8px',
+              borderRadius: 8,
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.4)',
+            }}
+          >
+            {lines.map((line) => (
+              <div key={line}>{line}</div>
+            ))}
+          </div>
+        </Html>
+      )}
     </group>
   );
 }

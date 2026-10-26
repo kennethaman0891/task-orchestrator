@@ -24,6 +24,7 @@ import { RoadObstacles } from './RoadObstacles';
 import { TrafficLights } from './TrafficLights';
 import { TokenTrees } from './TokenTrees';
 import { AgentStation } from './AgentStation';
+import { ParkingLots } from './ParkingLots';
 
 export function CityScene() {
   const projects = useCityStore((s) => s.projects);
@@ -129,6 +130,7 @@ export function CityScene() {
         />
       ))}
 
+      <ParkingLots />
       <TerminalCars />
       <TokenTrees />
       <AgentStation />

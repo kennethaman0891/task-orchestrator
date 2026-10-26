@@ -35,6 +35,11 @@ export function imageBlobUrl(path: string): string {
   return appendSessionToken(`${apiBase()}/api/file/blob?path=${encodeURIComponent(sanitizePath(path))}`);
 }
 
+/** Build the raw media (video, audio) URL for a given file path — used directly as <video src> or <audio src>. */
+export function mediaBlobUrl(path: string): string {
+  return imageBlobUrl(path);
+}
+
 function api(path: string): string { return `${apiBase()}${path}`; }
 
 // ── Fetch with timeout ────────────────────────────────────────────────
@@ -134,11 +139,11 @@ export function putFile(path: string, content: string): Promise<{ ok: boolean }>
   }).then((r) => handle(r));
 }
 
-export function createFile(path: string): Promise<{ ok: boolean }> {
+export function createFile(path: string, content = ''): Promise<{ ok: boolean }> {
   return fetchWithTimeout(api('/api/file/create'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, content }),
   }).then((r) => handle(r));
 }
 

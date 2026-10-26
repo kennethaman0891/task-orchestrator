@@ -1461,6 +1461,8 @@ export default function App() {
             <AgentView
               projectPath={activeWorkspace?.projectPath}
               workspaces={visibleWorkspaces}
+              terminals={unifiedTerminals}
+              activeId={activeWsId}
               onToast={showToast}
             />
           )}

@@ -18,10 +18,11 @@ import {
   type GitStatus,
   type FileSearchResult,
 } from '@/lib/api';
-import { baseName, isImageFile, isBinaryFile, getLanguage } from '@/lib/format';
+import { baseName, isImageFile, isVideoFile, isAudioFile, isBinaryFile, getLanguage } from '@/lib/format';
 import { buttonBase, buttonSize, buttonVariant, inputBase, scrollbarStyle } from '@/lib/theme';
 import { CodeEditor } from '@/components/editor/CodeEditor';
 import { ImageViewer } from '@/components/editor/ImageViewer';
+import { VideoViewer } from '@/components/editor/VideoViewer';
 import { BinaryViewer } from '@/components/editor/BinaryViewer';
 import { TerminalAnchor } from '@/components/terminal/TerminalPool';
 import { CliLogo } from '@/lib/cliLogos';
@@ -44,9 +45,11 @@ import {
   FilePlus,
   FolderPlus,
   FolderOpen,
+  FolderMinus,
   FileUp,
 } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { tauri, isTauri } from '@/lib/tauri';
 import { FolderIcon, FileIcon } from '@/lib/treeIcons';
 
 interface Props {
@@ -150,52 +153,6 @@ export function IDEView({
       });
     }
   }, [availableSessionIds.length, onAddIdeTerminal]);
-
-  // Native macOS Finder File Picker
-  const handlePickFile = useCallback(async () => {
-    try {
-      const selected = await openDialog({
-        multiple: false,
-        directory: false,
-        title: 'Open File in Antigravity IDE',
-      });
-      if (selected && typeof selected === 'string') {
-        const name = baseName(selected);
-        onOpenFile(selected, name);
-      }
-    } catch (err: any) {
-      console.warn('[IDEView] Open file dialog error:', err);
-    }
-  }, [onOpenFile]);
-
-  // Native macOS Finder Folder Picker
-  const handlePickFolder = useCallback(async () => {
-    try {
-      const selected = await openDialog({
-        directory: true,
-        multiple: false,
-        title: 'Open Project Folder in Antigravity IDE',
-      });
-      if (selected && typeof selected === 'string') {
-        onSetProjectPath?.(selected);
-        onToast(`Opened project folder: ${baseName(selected)}`);
-      }
-    } catch (err: any) {
-      console.warn('[IDEView] Open folder dialog error:', err);
-    }
-  }, [onSetProjectPath, onToast]);
-
-  // Global shortcuts: Cmd+O (Open File from Finder)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') {
-        e.preventDefault();
-        handlePickFile();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePickFile]);
 
   // Debounced recursive project search
   useEffect(() => {
@@ -310,6 +267,88 @@ export function IDEView({
     refreshGit();
   }, [refreshTree, refreshGit]);
 
+  // Native macOS Finder File Picker
+  const handlePickFile = useCallback(async () => {
+    try {
+      let selected: string | null = null;
+      if (isTauri()) {
+        try {
+          selected = await tauri.pickFile();
+        } catch {
+          const res = await openDialog({
+            multiple: false,
+            directory: false,
+            title: 'Open File in Antigravity IDE',
+          });
+          selected = Array.isArray(res) ? res[0] : res;
+        }
+      } else {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.onchange = (e) => {
+          const file = (e.target as HTMLInputElement).files?.[0];
+          if (file) {
+            onOpenFile((file as any).path || file.name, file.name);
+          }
+        };
+        input.click();
+        return;
+      }
+      if (selected && typeof selected === 'string') {
+        const name = baseName(selected);
+        onOpenFile(selected, name);
+        onToast(`Opened file: ${name}`);
+      }
+    } catch (err: any) {
+      console.warn('[IDEView] Open file dialog error:', err);
+      onToast(`Could not open file: ${err?.message || err}`, true);
+    }
+  }, [onOpenFile, onToast]);
+
+  // Native macOS Finder Folder Picker
+  const handlePickFolder = useCallback(async () => {
+    try {
+      let selected: string | null = null;
+      if (isTauri()) {
+        try {
+          selected = await tauri.pickFolder();
+        } catch {
+          const res = await openDialog({
+            directory: true,
+            multiple: false,
+            title: 'Open Project Folder in Antigravity IDE',
+          });
+          selected = Array.isArray(res) ? res[0] : res;
+        }
+      } else {
+        const manual = window.prompt('Enter absolute project folder path:', rootPath || '/Users');
+        if (manual && manual.trim()) {
+          selected = manual.trim();
+        }
+      }
+      if (selected && typeof selected === 'string') {
+        onSetProjectPath?.(selected);
+        onToast(`Opened project folder: ${baseName(selected)}`);
+        refreshTree();
+      }
+    } catch (err: any) {
+      console.warn('[IDEView] Open folder dialog error:', err);
+      onToast(`Could not open folder: ${err?.message || err}`, true);
+    }
+  }, [onSetProjectPath, onToast, rootPath, refreshTree]);
+
+  // Global shortcuts: Cmd+O (Open File from Finder)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        handlePickFile();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handlePickFile]);
+
   // Toggle folder expansion and dynamically load contents if not loaded yet
   const toggleFolder = useCallback(
     async (folderPath: string) => {
@@ -355,7 +394,7 @@ export function IDEView({
       setFileLoading(false);
       return;
     }
-    if (isImageFile(activeFile)) {
+    if (isImageFile(activeFile) || isVideoFile(activeFile) || isAudioFile(activeFile)) {
       setFileContent(null);
       setFileError(null);
       setFileLoading(false);
@@ -422,28 +461,64 @@ export function IDEView({
     [activeFile, fileContent, onSaveFile, onMarkDirty, onToast],
   );
 
+  // Start inline creation with project path validation
+  const handleStartCreate = useCallback((isDir: boolean) => {
+    if (!rootPath) {
+      onToast('Please open a project folder first', true);
+      handlePickFolder();
+      return;
+    }
+    setCreatingItem((prev) => {
+      if (prev && prev.isDir === isDir) {
+        return null;
+      }
+      return { parentPath: rootPath, isDir };
+    });
+    setNewItemName('');
+  }, [rootPath, onToast, handlePickFolder]);
+
   // Create new file or folder
   const handleCreateConfirm = useCallback(async () => {
     if (!creatingItem || !newItemName.trim()) return;
-    const fullPath = creatingItem.parentPath
-      ? `${creatingItem.parentPath}/${newItemName.trim()}`
-      : newItemName.trim();
+    const name = newItemName.trim();
+    const parent = creatingItem.parentPath || rootPath;
+    if (!parent) {
+      onToast('Cannot create item: project path is missing', true);
+      return;
+    }
+    const fullPath = parent.endsWith('/') ? `${parent}${name}` : `${parent}/${name}`;
     try {
       if (creatingItem.isDir) {
         await createDir(fullPath);
-        onToast(`Created folder "${newItemName.trim()}"`);
+        onToast(`Created folder "${name}"`);
       } else {
-        await createFile(fullPath);
-        onToast(`Created file "${newItemName.trim()}"`);
-        onOpenFile(fullPath, newItemName.trim());
+        await createFile(fullPath, '');
+        onToast(`Created file "${name}"`);
+        onOpenFile(fullPath, name);
       }
       setCreatingItem(null);
       setNewItemName('');
-      refreshTree();
+      await refreshTree();
     } catch (err: any) {
       onToast(`Create failed: ${err?.message || err}`, true);
     }
-  }, [creatingItem, newItemName, onOpenFile, onToast, refreshTree]);
+  }, [creatingItem, newItemName, rootPath, onOpenFile, onToast, refreshTree]);
+
+  // Manual refresh with full feedback
+  const handleManualRefresh = useCallback(async () => {
+    try {
+      await Promise.all([refreshTree(), refreshGit()]);
+      onToast('Explorer refreshed');
+    } catch (err: any) {
+      onToast(`Refresh failed: ${err?.message || err}`, true);
+    }
+  }, [refreshTree, refreshGit, onToast]);
+
+  // Collapse all open folders in explorer
+  const handleCollapseAll = useCallback(() => {
+    setExpandedFolders(new Set());
+    onToast('Collapsed all folders');
+  }, [onToast]);
 
   // Rename item
   const handleRenameConfirm = useCallback(async () => {
@@ -790,12 +865,11 @@ export function IDEView({
                   ...buttonVariant(t, 'ghost'),
                   padding: 3,
                   height: 'auto',
+                  backgroundColor: creatingItem && !creatingItem.isDir ? t.colors.accent.light : undefined,
+                  color: creatingItem && !creatingItem.isDir ? t.colors.accent.primary : undefined,
                 }}
-                title="New File in Root"
-                onClick={() => {
-                  setCreatingItem({ parentPath: rootPath, isDir: false });
-                  setNewItemName('');
-                }}
+                title="New File in Project (Root)"
+                onClick={() => handleStartCreate(false)}
               >
                 <FilePlus size={13} />
               </button>
@@ -807,12 +881,11 @@ export function IDEView({
                   ...buttonVariant(t, 'ghost'),
                   padding: 3,
                   height: 'auto',
+                  backgroundColor: creatingItem && creatingItem.isDir ? t.colors.accent.light : undefined,
+                  color: creatingItem && creatingItem.isDir ? t.colors.accent.primary : undefined,
                 }}
-                title="New Folder in Root"
-                onClick={() => {
-                  setCreatingItem({ parentPath: rootPath, isDir: true });
-                  setNewItemName('');
-                }}
+                title="New Folder in Project (Root)"
+                onClick={() => handleStartCreate(true)}
               >
                 <FolderPlus size={13} />
               </button>
@@ -826,10 +899,26 @@ export function IDEView({
                   height: 'auto',
                 }}
                 title="Refresh Explorer"
-                onClick={refreshTree}
+                onClick={handleManualRefresh}
               >
                 <RefreshCw size={13} className={loadingTree ? 'spin' : ''} />
               </button>
+              {expandedFolders.size > 0 && (
+                <button
+                  type="button"
+                  style={{
+                    ...buttonBase(t),
+                    ...buttonSize(t, 'sm'),
+                    ...buttonVariant(t, 'ghost'),
+                    padding: 3,
+                    height: 'auto',
+                  }}
+                  title="Collapse All Folders"
+                  onClick={handleCollapseAll}
+                >
+                  <FolderMinus size={13} />
+                </button>
+              )}
             </div>
           </div>
 
@@ -1299,6 +1388,18 @@ export function IDEView({
                   }}
                 >
                   <ImageViewer path={activeFile} />
+                </div>
+              ) : isVideoFile(activeFile) || isAudioFile(activeFile) ? (
+                <div
+                  style={{
+                    flex: 1,
+                    overflow: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    minHeight: 0,
+                  }}
+                >
+                  <VideoViewer path={activeFile} />
                 </div>
               ) : isBinary ? (
                 <BinaryViewer

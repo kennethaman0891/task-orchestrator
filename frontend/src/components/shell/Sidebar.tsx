@@ -31,6 +31,7 @@ import {
   MoreHorizontal,
   ExternalLink,
   Search,
+  Bot,
 } from 'lucide-react';
 import { listFiles, renameFile, searchProjectFiles, type FileEntry, type FileSearchResult } from '@/lib/api';
 import { isTauri as checkTauri, tauri } from '@/lib/tauri';
@@ -89,6 +90,7 @@ interface Props {
 // Active views with implementations available in top navigation.
 const VIEW_TABS: { key: View; label: string; icon: React.ReactNode }[] = [
   { key: 'workspace', label: 'Workspace', icon: <Monitor size={13} /> },
+  { key: 'agent', label: 'Qwen Prime', icon: <Bot size={13} /> },
   { key: 'grid', label: 'Grid', icon: <LayoutGrid size={13} /> },
   { key: 'ide', label: 'IDE', icon: <Code2 size={13} /> },
   { key: 'city', label: 'City', icon: <Building2 size={13} /> },

@@ -8,6 +8,26 @@ import { menuKeystrokes } from './chatTranscript';
 import { WriteQueue } from './writeQueue';
 import { SynchronizedOutputFilter } from './synchronizedOutputFilter';
 
+/** Whole-window device pixels for TIOCSWINSZ. 0 means the cell grid is not measured yet. */
+function ptyPixelSize(term: Terminal, cols: number, rows: number): { pixelWidth: number; pixelHeight: number } {
+  const none = { pixelWidth: 0, pixelHeight: 0 };
+  try {
+    const cell = (term as any)._core?._renderService?.dimensions?.css?.cell as
+      | { width?: number; height?: number }
+      | undefined;
+    const w = Number(cell?.width);
+    const h = Number(cell?.height);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return none;
+    const dpr = typeof window !== 'undefined' && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+    return {
+      pixelWidth: Math.min(65535, Math.max(0, Math.round(cols * w * dpr))),
+      pixelHeight: Math.min(65535, Math.max(0, Math.round(rows * h * dpr))),
+    };
+  } catch {
+    return none;
+  }
+}
+
 interface Handle {
   sessionId: string;
   tty?: string;
@@ -66,10 +86,18 @@ export const TerminalManager = {
   _poolRoot: null as HTMLElement | null,
   setPoolRoot(el: HTMLElement): void { TerminalManager._poolRoot = el; },
   _resizeTimers: new Map<string, number>(),
-  _lastSizes: new Map<string, { cols: number; rows: number }>(),
+  _lastSizes: new Map<string, { cols: number; rows: number; pixelWidth: number; pixelHeight: number }>(),
   _outputListeners: new Map<string, Set<() => void>>(),
   _syncFilters: new Map<string, SynchronizedOutputFilter>(),
   _writeQueues: new Map<string, Promise<void>>(),
+  _attachPromises: new Map<string, Promise<void>>(),
+  _writeTimeoutMs: 2000,
+
+  /** Test hook to inject mock Tauri IPC */
+  _setIpcForTesting(invoke: ((cmd: string, args?: Record<string, unknown>) => Promise<any>) | null, channel?: (new (...args: any[]) => any) | null): void {
+    _invoke = invoke;
+    if (channel !== undefined) _Channel = channel;
+  },
 
   setTty(sessionId: string, tty: string): void {
     const handle = TerminalManager.handles.get(sessionId);
@@ -210,6 +238,7 @@ export const TerminalManager = {
     const resolvedId = TerminalManager.resolveSessionId(id);
     const h = TerminalManager.handles.get(resolvedId) || TerminalManager.handles.get(id) || TerminalManager.handlesByTty.get(id);
     if (h) {
+      h.attached = false;
       h.host.remove();
       h.term.dispose();
       if (h.tty) {
@@ -227,6 +256,10 @@ export const TerminalManager = {
     if (_focusedId === resolvedId || _focusedId === id) _focusedId = null;
     TerminalManager._lastSizes.delete(id);
     TerminalManager._lastSizes.delete(resolvedId);
+    TerminalManager._writeQueues.delete(id);
+    TerminalManager._writeQueues.delete(resolvedId);
+    TerminalManager._attachPromises.delete(id);
+    TerminalManager._attachPromises.delete(resolvedId);
     const resizeTimer = TerminalManager._resizeTimers.get(resolvedId) || TerminalManager._resizeTimers.get(id);
     if (resizeTimer) {
       window.clearTimeout(resizeTimer);
@@ -247,89 +280,115 @@ export const TerminalManager = {
   async attachToPty(id: string, onExit?: () => void): Promise<void> {
     const resolvedId = TerminalManager.resolveSessionId(id);
     const h = TerminalManager.handles.get(resolvedId);
-    if (!h || h.attached) {
-      console.log(`[TerminalManager] attachToPty skip: id=${id} (resolved=${resolvedId}) handle=${!!h} attached=${h?.attached}`);
+    if (!h) {
+      console.log(`[TerminalManager] attachToPty skip: no handle for id=${id} (resolved=${resolvedId})`);
       return;
     }
-    h.attached = true;
-    h.onExit = onExit;
-
-    console.log(`[TerminalManager] attachToPty start: id=${id} (resolved=${resolvedId})`);
-
-    await ensureTauri();
-    if (!_Channel) {
-      console.error('[TerminalManager] _Channel is null after ensureTauri');
-      h.attached = false;
+    if (onExit) {
+      h.onExit = onExit;
+    }
+    if (h.attached) {
+      console.log(`[TerminalManager] attachToPty skip: already attached id=${id} (resolved=${resolvedId})`);
       return;
     }
+    const inFlight = TerminalManager._attachPromises.get(resolvedId);
+    if (inFlight) {
+      console.log(`[TerminalManager] attachToPty join in-flight attach for ${resolvedId}`);
+      return inFlight;
+    }
 
-    // Output channel: PTY bytes → WriteQueue → xterm
-    const outputChannel = new _Channel();
-    let chunkCount = 0;
-    outputChannel.onmessage = (data: number[]) => {
-      chunkCount++;
-      if (chunkCount <= 3) {
-        console.log(`[TerminalManager] Channel output chunk #${chunkCount} for ${resolvedId}: ${data.length} bytes`);
-      }
-      const now = Date.now();
-      h.lastOutputAt = now;
-      let filter = TerminalManager._syncFilters.get(resolvedId);
-      if (!filter) {
-        filter = new SynchronizedOutputFilter();
-        TerminalManager._syncFilters.set(resolvedId, filter);
-      }
-      const u8 = new Uint8Array(data);
-      h.queue.push(filter.filter(u8));
-    };
+    const attachPromise = (async () => {
+      console.log(`[TerminalManager] attachToPty start: id=${id} (resolved=${resolvedId})`);
 
-    // Exit channel: PTY exited → cleanup
-    const exitChannel = new _Channel();
-    exitChannel.onmessage = () => {
-      console.log(`[TerminalManager] Channel exit for ${resolvedId}`);
-      h.attached = false;
-      h.onExit?.();
-    };
-
-    // Replay scrollback FIRST before the live channel opens.
-    // This guarantees proper ordering: historical output is pushed to the queue
-    // first, and live chunks from the PTY follow via onOutput.
-    // GUARD: if the session is in a TUI alternate screen (OpenCode/Claude/
-    // vim), replaying stale MAIN-screen scrollback over the live TUI is the
-    // classic cause of a "stuck"/corrupt-looking screen — the TUI only
-    // repaints on its own events, so the stale frame can persist indefinitely.
-    // TUIs manage their own screen; skip the replay when the alt buffer is
-    // active (checked both from the renderer and from Rust-tracked meta).
-    let tuiAlt = false;
-    try { tuiAlt = h.term.buffer.active !== h.term.buffer.normal; } catch {}
-    if (tuiAlt || TerminalManager.isTui(resolvedId)) {
-      console.log(`[TerminalManager] skipping scrollback replay for ${resolvedId}: TUI alt-screen active`);
-    } else {
       try {
-        const scrollback = await cachedInvoke('terminal_get_scrollback', { id: resolvedId }) as unknown as number[];
-        console.log(`[TerminalManager] Scrollback for ${resolvedId}: ${Array.isArray(scrollback) ? scrollback.length : 'N/A'} bytes`);
-        if (Array.isArray(scrollback) && scrollback.length > 0) {
-          const now = Date.now();
-          h.lastOutputAt = now;
-          h.queue.push(new Uint8Array(scrollback));
+        await ensureTauri();
+        if (!_Channel) {
+          console.error('[TerminalManager] _Channel is null after ensureTauri');
+          h.attached = false;
+          return;
         }
-      } catch (err) {
-        console.warn(`[TerminalManager] Scrollback failed for ${resolvedId}:`, err);
-      }
-    }
 
-    try {
-      await cachedInvoke('terminal_attach', {
-        id: resolvedId,
-        // Tauri v2 #[tauri::command] uses camelCase parameter names for JSON deserialization
-        onOutput: outputChannel,
-        onExit: exitChannel,
-      });
-      console.log(`[TerminalManager] terminal_attach SUCCESS for ${resolvedId}`);
-    } catch (err) {
-      console.error(`[TerminalManager] terminal_attach FAILED for ${resolvedId}:`, err);
-      h.attached = false;
-      return;
-    }
+        // Output channel: PTY bytes → WriteQueue → xterm
+        const outputChannel = new _Channel();
+        let chunkCount = 0;
+        outputChannel.onmessage = (data: number[] | Uint8Array) => {
+          try {
+            chunkCount++;
+            if (chunkCount <= 3) {
+              console.log(`[TerminalManager] Channel output chunk #${chunkCount} for ${resolvedId}: ${data?.length ?? 0} bytes`);
+            }
+            const now = Date.now();
+            h.lastOutputAt = now;
+            let filter = TerminalManager._syncFilters.get(resolvedId);
+            if (!filter) {
+              filter = new SynchronizedOutputFilter();
+              TerminalManager._syncFilters.set(resolvedId, filter);
+            }
+            const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+            h.queue.push(filter.filter(u8));
+          } catch (err) {
+            console.warn(`[TerminalManager] Channel onmessage error for ${resolvedId}:`, err);
+          }
+        };
+
+        // Exit channel: PTY exited → cleanup
+        const exitChannel = new _Channel();
+        exitChannel.onmessage = () => {
+          console.log(`[TerminalManager] Channel exit for ${resolvedId}`);
+          h.attached = false;
+          try {
+            h.onExit?.();
+          } catch (err) {
+            console.warn(`[TerminalManager] onExit error for ${resolvedId}:`, err);
+          }
+        };
+
+        // Replay scrollback FIRST before the live channel opens.
+        // This guarantees proper ordering: historical output is pushed to the queue
+        // first, and live chunks from the PTY follow via onOutput.
+        // GUARD: if the session is in a TUI alternate screen (OpenCode/Claude/
+        // vim), replaying stale MAIN-screen scrollback over the live TUI is the
+        // classic cause of a "stuck"/corrupt-looking screen — the TUI only
+        // repaints on its own events, so the stale frame can persist indefinitely.
+        // TUIs manage their own screen; skip the replay when the alt buffer is
+        // active (checked both from the renderer and from Rust-tracked meta).
+        let tuiAlt = false;
+        try { tuiAlt = h.term.buffer.active !== h.term.buffer.normal; } catch {}
+        if (tuiAlt || TerminalManager.isTui(resolvedId)) {
+          console.log(`[TerminalManager] skipping scrollback replay for ${resolvedId}: TUI alt-screen active`);
+        } else {
+          try {
+            const scrollback = await cachedInvoke('terminal_get_scrollback', { id: resolvedId }) as unknown as number[] | Uint8Array;
+            const u8 = scrollback instanceof Uint8Array ? scrollback : Array.isArray(scrollback) ? new Uint8Array(scrollback) : null;
+            console.log(`[TerminalManager] Scrollback for ${resolvedId}: ${u8 ? u8.length : 'N/A'} bytes`);
+            if (u8 && u8.length > 0) {
+              const now = Date.now();
+              h.lastOutputAt = now;
+              h.queue.push(u8);
+            }
+          } catch (err) {
+            console.warn(`[TerminalManager] Scrollback failed for ${resolvedId}:`, err);
+          }
+        }
+
+        await cachedInvoke('terminal_attach', {
+          id: resolvedId,
+          // Tauri v2 #[tauri::command] uses camelCase parameter names for JSON deserialization
+          onOutput: outputChannel,
+          onExit: exitChannel,
+        });
+        h.attached = true;
+        console.log(`[TerminalManager] terminal_attach SUCCESS for ${resolvedId}`);
+      } catch (err) {
+        console.error(`[TerminalManager] terminal_attach FAILED for ${resolvedId}:`, err);
+        h.attached = false;
+      }
+    })().finally(() => {
+      TerminalManager._attachPromises.delete(resolvedId);
+    });
+
+    TerminalManager._attachPromises.set(resolvedId, attachPromise);
+    return attachPromise;
   },
 
   /** Legacy attach (kept for API compat) */
@@ -395,13 +454,41 @@ export const TerminalManager = {
     }
     await ensureTauri();
     const bytes = Array.from(new TextEncoder().encode(data));
+    const timeoutMs = TerminalManager._writeTimeoutMs;
     const prev = TerminalManager._writeQueues.get(resolvedId) || Promise.resolve();
     const next = prev.catch(() => {}).then(async () => {
-      try {
-        await cachedInvoke('terminal_write', { id: resolvedId, data: bytes });
-      } catch (err) {
-        console.warn(`[TerminalManager] write failed for ${resolvedId} (orig=${id}):`, err);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let timedOut = false;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(new Error(`[TerminalManager] write timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      });
+
+      const writePromise = cachedInvoke('terminal_write', { id: resolvedId, data: bytes }).catch((err) => {
+        if (timedOut) {
+          // Late rejection after timeout — suppress to avoid unhandled rejection
+          return;
+        }
         throw err;
+      });
+
+      try {
+        await Promise.race([writePromise, timeoutPromise]);
+      } catch (err: any) {
+        if (timedOut || err?.message?.includes('timed out')) {
+          console.warn(`[TerminalManager] write timed out for ${resolvedId} (orig=${id})`);
+        } else {
+          console.warn(`[TerminalManager] write failed for ${resolvedId} (orig=${id}):`, err);
+          throw err;
+        }
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }).finally(() => {
+      if (TerminalManager._writeQueues.get(resolvedId) === next) {
+        TerminalManager._writeQueues.delete(resolvedId);
       }
     });
     TerminalManager._writeQueues.set(resolvedId, next);
@@ -495,9 +582,15 @@ export const TerminalManager = {
    */
   async resize(id: string, cols: number, rows: number, immediate = false): Promise<void> {
     const resolvedId = TerminalManager.resolveSessionId(id);
+    const handle = TerminalManager.handles.get(resolvedId);
+    const px = handle ? ptyPixelSize(handle.term, cols, rows) : { pixelWidth: 0, pixelHeight: 0 };
     const last = TerminalManager._lastSizes.get(resolvedId);
     if (last && last.cols === cols && last.rows === rows) {
-      return; // Dimensions unchanged — skip redundant resize and avoid SIGWINCH thrashing
+      const samePixels = last.pixelWidth === px.pixelWidth && last.pixelHeight === px.pixelHeight;
+      const stillUnknown = px.pixelWidth === 0 && px.pixelHeight === 0;
+      if (samePixels || stillUnknown) {
+        return; // Dimensions unchanged — skip redundant resize and avoid SIGWINCH thrashing
+      }
     }
 
     const existing = TerminalManager._resizeTimers.get(resolvedId);
@@ -505,10 +598,18 @@ export const TerminalManager = {
 
     const doResize = async () => {
       TerminalManager._resizeTimers.delete(resolvedId);
-      TerminalManager._lastSizes.set(resolvedId, { cols, rows });
+      const live = TerminalManager.handles.get(resolvedId);
+      const livePx = live ? ptyPixelSize(live.term, cols, rows) : px;
+      TerminalManager._lastSizes.set(resolvedId, { cols, rows, ...livePx });
       await ensureTauri();
       try {
-        await cachedInvoke('terminal_resize', { id: resolvedId, cols, rows });
+        await cachedInvoke('terminal_resize', {
+          id: resolvedId,
+          cols,
+          rows,
+          pixelWidth: livePx.pixelWidth,
+          pixelHeight: livePx.pixelHeight,
+        });
       } catch {}
     };
 
@@ -833,9 +934,10 @@ export const TerminalManager = {
     const resolvedId = TerminalManager.resolveSessionId(id);
     try {
       await ensureTauri();
-      const scrollback = await cachedInvoke('terminal_get_scrollback', { id: resolvedId }) as unknown as number[];
-      if (Array.isArray(scrollback) && scrollback.length > 0) {
-        return new TextDecoder().decode(new Uint8Array(scrollback));
+      const scrollback = await cachedInvoke('terminal_get_scrollback', { id: resolvedId }) as unknown as number[] | Uint8Array;
+      const u8 = scrollback instanceof Uint8Array ? scrollback : Array.isArray(scrollback) ? new Uint8Array(scrollback) : null;
+      if (u8 && u8.length > 0) {
+        return new TextDecoder().decode(u8);
       }
     } catch {}
     return '';
