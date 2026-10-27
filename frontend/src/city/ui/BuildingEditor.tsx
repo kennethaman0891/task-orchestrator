@@ -67,7 +67,7 @@ export function BuildingEditor({
   const save = async () => {
     setBusy(true);
     try {
-      await patchProject(project.id, {
+      const updated = await patchProject(project.id, {
         name: name.trim() || projectDisplayName(project),
         building: {
           ...b,
@@ -77,6 +77,7 @@ export function BuildingEditor({
         },
         floors,
       });
+      useCityStore.getState().upsertProject(updated);
       onToast?.(`Building config saved for “${project.name}”`);
       onClose();
     } catch (err) {

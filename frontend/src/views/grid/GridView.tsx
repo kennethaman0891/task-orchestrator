@@ -5,7 +5,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { scrollbarStyle } from '@/lib/theme';
 import type { UnifiedTerminal } from '@/types';
 import type { Workspace, Pane, GridMode, TemplateKey, GridDensity } from '@/lib/workspace';
-import { GRID_GAP, TEMPLATES, computeGridLayout, paintedGridSlots } from '@/lib/workspace';
+import { GRID_GAP, TEMPLATES, computeGridLayout, gridTracks, paintedGridSlots } from '@/lib/workspace';
 import { TerminalAnchor } from '@/components/terminal/TerminalPool';
 import { AgentChatPanel, isAgentCli } from '@/components/terminal/AgentChatPanel';
 import { CliLogo } from '@/lib/cliLogos';
@@ -104,7 +104,6 @@ const LiveDuration = memo(function LiveDuration({
 interface EmptyGridSlotProps {
   slotIndex: number;
   paneId: string | null;
-  density: GridDensity;
   isDragOver: boolean;
   onDragOver: (e: React.DragEvent, key: string) => void;
   onDragLeave: (e: React.DragEvent, key: string) => void;
@@ -115,7 +114,6 @@ interface EmptyGridSlotProps {
 const EmptyGridSlot = memo(function EmptyGridSlot({
   slotIndex,
   paneId,
-  density,
   isDragOver,
   onDragOver,
   onDragLeave,
@@ -139,7 +137,7 @@ const EmptyGridSlot = memo(function EmptyGridSlot({
       onDrop={(e) => onDrop(e, paneId, slotIndex)}
       style={{
         height: '100%',
-        minHeight: density === 'scrollable' ? 180 : 0,
+        minHeight: '100%',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
@@ -205,7 +203,7 @@ interface GridCardProps {
   onRenameTerminal?: (idOrTty: string, newLabel: string) => void;
   entry?: UnifiedTerminal;
   cols: number;
-  density?: GridDensity;
+  denseChrome?: boolean;
   tuiActive?: boolean;
 }
 
@@ -236,7 +234,7 @@ const GridCard = memo(function GridCard({
   onRenameTerminal,
   entry,
   cols,
-  density = 'fit',
+  denseChrome = false,
   tuiActive = false,
 }: GridCardProps) {
   const { theme: t } = useTheme();
@@ -244,7 +242,7 @@ const GridCard = memo(function GridCard({
   const [isEditing, setIsEditing] = useState(false);
   const [renameDraft, setRenameDraft] = useState(displayName);
 
-  const isUltraCompact = !isExpanded && density === 'fit' && (cols >= 5 || totalPanes > 10);
+  const isUltraCompact = !isExpanded && denseChrome;
   const iconBtnSize = isUltraCompact ? 18 : 22;
   const lucideSize = 12;
 
@@ -253,7 +251,7 @@ const GridCard = memo(function GridCard({
   const shortModel = rawModel ? cleanModel(rawModel) : '';
   const logoCli = resolveLogoCli(entry?.cli || cli, agentName);
   const agentDetected = agentName !== '' && isAgentCli(entry);
-  const showStatusDot = isExpanded || isUltraCompact;
+  const showStatusDot = !isExpanded && isUltraCompact;
 
   const focusTerminal = useCallback(() => {
     onSelectPane(pane.id);
@@ -337,6 +335,7 @@ const GridCard = memo(function GridCard({
       style={{
         position: 'relative',
         minWidth: 0,
+        minHeight: 0,
         opacity: isExpanded ? 1 : isDraggingThis ? 0.35 : 1,
         transform: isExpanded ? 'none' : isDraggingThis ? 'scale(0.98)' : 'none',
         transition: isExpanded ? 'none' : 'border 0.15s ease, background 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease',
@@ -351,7 +350,11 @@ const GridCard = memo(function GridCard({
           ? { boxShadow: `0 0 0 1px ${t.colors.accent.primary}, 0 0 12px ${t.colors.accent.primary}25` }
           : {}),
         ...(isExpanded
-          ? {}
+          ? {
+              flex: 1,
+              width: '100%',
+              height: '100%',
+            }
           : {
               gridColumn: pane.sizeMode === 'large' && cols >= 2 ? 'span 2' : 'span 1',
               height: '100%',
@@ -710,6 +713,8 @@ export function GridView({
     }
   }, [expandedPane, rawPanes, onExpandPane]);
 
+  const savedScrollTopRef = useRef(0);
+
   useEffect(() => {
     const filled = rawPanes.filter((p): p is Pane & { tty: string } => Boolean(p.tty));
     const expandedTty = expandedPane
@@ -719,6 +724,39 @@ export function GridView({
       const hide = Boolean(expandedTty) && pane.tty !== expandedTty;
       TerminalManager.setVisible(pane.tty, !hide);
     }
+
+    if (expandedPane) {
+      if (gridContainerRef.current) {
+        savedScrollTopRef.current = gridContainerRef.current.scrollTop;
+        gridContainerRef.current.scrollTop = 0;
+      }
+    } else {
+      if (gridContainerRef.current && savedScrollTopRef.current > 0) {
+        gridContainerRef.current.scrollTop = savedScrollTopRef.current;
+      }
+    }
+
+    const rafId = requestAnimationFrame(() => {
+      const timer = setTimeout(() => {
+        if (expandedPane) {
+          const filled = rawPanes.find((p) => p.id === expandedPane);
+          if (filled?.tty) {
+            TerminalManager.fitNow(filled.tty);
+            TerminalManager.refresh(filled.tty, true);
+            TerminalManager.focus(filled.tty);
+          }
+        } else {
+          for (const pane of rawPanes) {
+            if (pane.tty) {
+              TerminalManager.fitNow(pane.tty);
+              TerminalManager.repaint(pane.tty);
+            }
+          }
+        }
+      }, 40);
+      return () => clearTimeout(timer);
+    });
+    return () => cancelAnimationFrame(rafId);
   }, [expandedPane, rawPanes]);
 
   useEffect(() => {
@@ -729,13 +767,57 @@ export function GridView({
     };
   }, []);
 
+  // ── Trackpad / Mousewheel Scrolling over Grid Cards ─────────────────────
+  // TerminalAnchor and xterm canvas capture wheel events by default.
+  // Using a capture-phase listener on containerRef intercepts two-finger
+  // trackpad scrolling across all cards and smoothly scrolls the grid container.
+  useEffect(() => {
+    const container = gridContainerRef.current;
+    const outer = containerRef.current;
+    if (!container || !outer) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      // In maximized single pane mode or during dragging, let terminal/browser handle normally
+      if (expandedPane || currentDraggedPaneIdRef.current) return;
+
+      const canScrollY = container.scrollHeight > container.clientHeight;
+      const canScrollX = container.scrollWidth > container.clientWidth;
+
+      if (canScrollY || canScrollX) {
+        let deltaY = canScrollY ? e.deltaY : 0;
+        let deltaX = canScrollX ? e.deltaX : 0;
+
+        if (e.deltaMode === 1) {
+          deltaY *= 24; // DOM_DELTA_LINE
+          deltaX *= 24;
+        } else if (e.deltaMode === 2) {
+          deltaY *= container.clientHeight; // DOM_DELTA_PAGE
+          deltaX *= container.clientWidth;
+        }
+
+        container.scrollTop += deltaY;
+        if (deltaX) container.scrollLeft += deltaX;
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+
+    outer.addEventListener('wheel', handleWheel, { capture: true, passive: false });
+    return () => {
+      outer.removeEventListener('wheel', handleWheel, { capture: true });
+    };
+  }, [expandedPane]);
+
+  const gapPx = currentLayoutMode === 'compact' && density === 'fit' && filledCount > 12 ? 4 : GRID_GAP;
+  const padPx = gapPx === 4 ? 5 : 12;
+  const layoutWidth = Math.max(0, containerWidth - padPx * 2);
   const seedCount = Math.min(
     MAX_GRID_TERMINALS,
     Math.max(currentTemplateKey, rawPanes.length, filledCount, 1),
   );
   const seedCols = computeGridLayout({
     paneCount: seedCount,
-    width: containerWidth,
+    width: layoutWidth,
     height: containerHeight,
     mode: currentLayoutMode,
     density,
@@ -750,7 +832,7 @@ export function GridView({
   });
   const { cols, rows: rawRows } = computeGridLayout({
     paneCount: effectiveSlots,
-    width: containerWidth,
+    width: layoutWidth,
     height: containerHeight,
     mode: currentLayoutMode,
     density,
@@ -809,34 +891,57 @@ export function GridView({
     };
   }, [cols, rows, density, containerWidth, containerHeight, paneLayoutKey]);
 
+  const tracks = useMemo(() => gridTracks({
+    mode: currentLayoutMode,
+    cols,
+    rows,
+    width: containerWidth,
+    height: containerHeight,
+    gap: gapPx,
+    pad: padPx,
+  }), [currentLayoutMode, cols, rows, containerWidth, containerHeight, gapPx, padPx]);
+
+  const denseChrome = currentLayoutMode !== 'large'
+    && currentLayoutMode !== 'grid'
+    && (cols >= 4 || filledCount > 12);
+
+  const isAnyExpanded = Boolean(expandedPane);
+
   const gridStyle = useMemo(() => {
     if (!activeWorkspace) return {};
-    const isFit = density === 'fit';
-    const isUltraCompact = isFit && filledCount > 12;
-    const minCardHeight = isUltraCompact ? 60 : 80;
-    const needsScroll = isFit && rows * minCardHeight > containerHeight;
+    if (isAnyExpanded) {
+      return {
+        display: 'flex',
+        flexDirection: 'column' as const,
+        flex: 1,
+        minHeight: 0,
+        minWidth: 0,
+        height: '100%',
+        width: '100%',
+        padding: `${padPx}px`,
+        overflow: 'hidden' as const,
+      };
+    }
     return {
       display: 'grid',
-      gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-      gridTemplateRows: isFit && !needsScroll
-        ? `repeat(${rows}, minmax(0, 1fr))`
-        : `repeat(${rows}, minmax(180px, 1fr))`,
-      gridAutoRows: isFit && !needsScroll ? 'minmax(0, 1fr)' : 'minmax(180px, 1fr)',
+      gridTemplateColumns: `repeat(${cols}, minmax(${tracks.colMin}px, 1fr))`,
+      gridTemplateRows: `repeat(${rows}, minmax(${tracks.rowMin}px, 1fr))`,
+      gridAutoRows: `minmax(${tracks.rowMin}px, 1fr)`,
       gridAutoFlow: 'dense',
       alignContent: 'stretch',
       alignItems: 'stretch',
-      gap: `${isUltraCompact ? 4 : GRID_GAP}px`,
-      padding: isUltraCompact ? '5px' : t.spacing.md,
+      gap: `${gapPx}px`,
+      padding: `${padPx}px`,
       flex: 1,
       minHeight: 0,
       minWidth: 0,
       height: '100%',
-      overflowY: (!isFit || needsScroll) ? ('auto' as const) : ('hidden' as const),
+      overflowY: 'auto' as const,
       overflowX: 'hidden' as const,
       overscrollBehavior: 'contain' as const,
-      ...((!isFit || needsScroll) ? scrollbarStyle(t) : {}),
+      ...scrollbarStyle(t),
     };
-  }, [activeWorkspace, t, cols, rows, density, filledCount, containerHeight]);
+  }, [activeWorkspace, t, cols, rows, tracks, gapPx, padPx, isAnyExpanded]);
 
   const slotRows = useMemo(
     () =>
@@ -1037,7 +1142,7 @@ export function GridView({
 
       <div
         ref={gridContainerRef}
-        className={`ws-grid${expandedPane ? ' has-expanded' : ''}${activeWorkspace?.gridFocusMode ? ' focus-mode' : ''}${density === 'scrollable' ? ' grid-scroll-container' : ''}`}
+        className={`ws-grid${expandedPane ? ' has-expanded' : ' grid-scroll-container'}${activeWorkspace?.gridFocusMode ? ' focus-mode' : ''}`}
         data-grid-mode={currentLayoutMode}
         style={gridStyle}
         onDragOver={(e) => {
@@ -1054,7 +1159,6 @@ export function GridView({
                   key={isPadding ? `ghost-${slotIndex}` : pane.id}
                   slotIndex={slotIndex}
                   paneId={isPadding ? null : pane.id}
-                  density={density}
                   isDragOver={dragOverInfo?.paneId === dropKey && draggedPaneId !== pane.id}
                   onDragOver={handleEmptyDragOver}
                   onDragLeave={handleDragLeave}
@@ -1100,7 +1204,7 @@ export function GridView({
                 onRenameTerminal={onRenameTerminal}
                 entry={entry}
                 cols={cols}
-                density={density}
+                denseChrome={denseChrome}
                 tuiActive={tuiActive}
               />
             );

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
 import { patchProject } from '@/city/api';
+import { useCityStore } from '@/city/store';
 import { projectDisplayName, PROJECT_TYPES, PROJECT_TYPE_LABELS, type Project } from '@/city/types';
 
 interface BuildingContextMenuProps {
@@ -65,10 +66,11 @@ export function BuildingContextMenu({
   const saveChanges = async () => {
     setSaving(true);
     try {
-      await patchProject(project.id, {
+      const updated = await patchProject(project.id, {
         name: name.trim() || projectDisplayName(project),
         building: { ...project.building, buildingStyle, palette },
       });
+      useCityStore.getState().upsertProject(updated);
       onToast?.(`Building config saved for "${name.trim() || projectDisplayName(project)}"`);
       onClose();
     } catch (err) {

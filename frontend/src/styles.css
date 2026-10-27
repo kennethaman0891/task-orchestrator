@@ -1185,13 +1185,20 @@ h1 {
   text-transform: uppercase;
   user-select: none;
 }
+.ws-grid.has-expanded {
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  height: 100% !important;
+  min-height: 0 !important;
+}
 .ws-grid.has-expanded .ws-pane:not(.ws-pane-expanded) {
-  display: none;
+  display: none !important;
 }
 /* ── Grid mode-specific terminal sizing ─────────────────────────────────────
-   Each mode sets different minW/minH on the grid template tracks (via
-   computeResponsiveLayout). These rules ensure the terminal fills the card
-   properly at each size, with appropriate header density. */
+   Column and row floors live in gridTracks() (workspace.ts) and are written
+   onto the grid template as minmax(min, 1fr). These rules only tune the
+   card head. Pane min-width stays 0 so a track, not the card, owns the floor. */
 /* Auto mode (default): balanced — 320×220 min pane */
 .ws-grid[data-grid-mode='auto'] .ws-pane-head {
   min-height: 32px;
@@ -1255,22 +1262,18 @@ h1 {
   width: 22px;
   height: 22px;
 }
-/* Mode-specific minimum pane widths as safety net — ensures panes never
-   shrink below usable size when JS layout is mid-reflow or stale. */
-.ws-grid[data-grid-mode='compact'] .ws-pane { min-width: 260px; }
-.ws-grid[data-grid-mode='auto']    .ws-pane { min-width: 320px; }
-.ws-grid[data-grid-mode='large']   .ws-pane { min-width: 480px; }
-.ws-grid[data-grid-mode='grid']    .ws-pane { min-width: 180px; }
-/* Grid-view tracks are computed in JS (computeGridLayout) from the live
-   container size. The safety nets above assume a fixed column count for the
-   mode, so once the layout picks more columns than the mode assumes (e.g. 16
-   terminals in Compact) they force horizontal overflow — and the grid clips
-   horizontally. Keep each mode's head density and logo sizing above, but hand
-   track sizing back to the JS layout. */
-.ws-grid[data-grid-mode] .ws-pane { min-width: 0; }
+/* Track minimums are set in JS (gridTracks). A pane min-width here used to
+   fight that math and clip the grid sideways, so the card stays shrinkable
+   and the column track holds the floor. */
 .ws-pane-expanded {
-  grid-column: 1 / -1;
-  grid-row: 1 / -1;
+  flex: 1 1 0% !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  position: relative !important;
   z-index: 2;
 }
 .ws-grid .ws-pane-ghost {
@@ -15175,20 +15178,24 @@ h1 {
 }
 
 /* ── Permanent Visible Scrollbar for Grid View ────────────── */
+.ws-grid::-webkit-scrollbar,
 .grid-scroll-container::-webkit-scrollbar {
   width: 9px;
   height: 9px;
 }
+.ws-grid::-webkit-scrollbar-track,
 .grid-scroll-container::-webkit-scrollbar-track {
   background: rgba(0, 0, 0, 0.25);
   border-radius: 4px;
 }
+.ws-grid::-webkit-scrollbar-thumb,
 .grid-scroll-container::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.28);
   border-radius: 4px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
+.ws-grid::-webkit-scrollbar-thumb:hover,
 .grid-scroll-container::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.5);
 }

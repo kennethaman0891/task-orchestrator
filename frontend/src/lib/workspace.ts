@@ -91,11 +91,43 @@ export function templateLabel(tpl: TemplateKey): string {
 
 export function gridMins(mode: GridMode): { minW: number; minH: number } {
   switch (mode) {
-    case 'compact': return { minW: 220, minH: 140 };
-    case 'large': return { minW: 420, minH: 280 };
-    case 'grid': return { minW: 300, minH: 200 };
-    default: return { minW: 280, minH: 180 };
+    // Compact fits more columns. The floor stays tall enough for a header
+    // plus several terminal rows; extra panes scroll instead of collapsing.
+    case 'compact': return { minW: 220, minH: 200 };
+    // Large is two columns at most, each at least this tall.
+    case 'large': return { minW: 420, minH: 320 };
+    case 'grid': return { minW: 260, minH: 220 };
+    default: return { minW: 280, minH: 220 };
   }
+}
+
+/** Pixel track minimums for the live grid. Rows never shrink below minH. */
+export function gridTracks(opts: {
+  mode: GridMode;
+  cols: number;
+  rows: number;
+  width: number;
+  height: number;
+  gap?: number;
+  pad?: number;
+}): { colMin: number; rowMin: number; needsScroll: boolean } {
+  const { mode, cols, rows, width, height } = opts;
+  const gap = opts.gap ?? GRID_GAP;
+  const pad = opts.pad ?? 12;
+  const { minW, minH } = gridMins(mode);
+  const safeCols = Math.max(1, cols);
+  const safeRows = Math.max(1, rows);
+  const innerW = Math.max(0, width - pad * 2);
+  const innerH = Math.max(0, height - pad * 2);
+  const gapsW = Math.max(0, safeCols - 1) * gap;
+  const gapsH = Math.max(0, safeRows - 1) * gap;
+  const share = Math.max(1, Math.floor(Math.max(0, innerW - gapsW) / safeCols));
+  // Hold the mode floor when the column is at least that wide. On a narrower
+  // window, use the share so overflow-x stays hidden and the last column is
+  // not clipped. 1fr still grows tracks when there is free width.
+  const colMin = Math.min(minW, share);
+  const needsScroll = safeRows * minH + gapsH > innerH;
+  return { colMin, rowMin: minH, needsScroll };
 }
 
 // Counter for generating sequential workspace names when no project path is given
@@ -258,13 +290,25 @@ export function computeGridLayout(opts: {
   }
 
   if (mode === 'compact') return packByMinWidth(paneCount, width, gridMins('compact').minW);
-  if (mode === 'large') return packByMinWidth(paneCount, width, gridMins('large').minW);
+  if (mode === 'large') {
+    // "Fewer, bigger terminals": never more than two columns. Further panes
+    // add rows and the view scrolls at gridMins('large').minH.
+    const packed = packByMinWidth(paneCount, width, gridMins('large').minW);
+    const cols = Math.min(2, packed.cols);
+    return { cols, rows: Math.max(1, Math.ceil(paneCount / cols)) };
+  }
   if (mode === 'grid') {
     const cols = TEMPLATES[resolveTemplate(template)]?.cols || 2;
     return { cols, rows: Math.max(1, Math.ceil(paneCount / cols)) };
   }
 
-  return autoLayout(paneCount, width, height);
+  const laid = autoLayout(paneCount, width, height);
+  const fitCols = Math.max(
+    1,
+    Math.floor((Math.max(width, 1) + GRID_GAP) / (gridMins('auto').minW + GRID_GAP)),
+  );
+  const cols = Math.max(1, Math.min(laid.cols, fitCols, paneCount));
+  return { cols, rows: Math.max(1, Math.ceil(paneCount / cols)) };
 }
 
 export function paintedGridSlots(opts: {

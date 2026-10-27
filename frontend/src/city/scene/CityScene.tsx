@@ -22,6 +22,8 @@ import { TerminalCars } from './TerminalCars';
 import { PlotRoads } from './PlotRoads';
 import { RoadObstacles } from './RoadObstacles';
 import { TrafficLights } from './TrafficLights';
+import { CityVehicles } from './CityVehicles';
+import { CityBirds } from './CityBirds';
 import { TokenTrees } from './TokenTrees';
 import { AgentStation } from './AgentStation';
 import { ParkingLots } from './ParkingLots';
@@ -36,6 +38,9 @@ export function CityScene() {
   const cityMood = useCityStore((s) => s.cityMood);
   const mood = moodById(cityMood);
   const showNature = useCityStore((s) => s.showNature);
+  const showTraffic = useCityStore((s) => s.showTraffic);
+  const showBirds = useCityStore((s) => s.showBirds);
+  const selectedProjectId = useCityStore((s) => s.selectedProjectId);
   const selectProject = useCityStore((s) => s.selectProject);
   const setCameraTarget = useCityStore((s) => s.setCameraTarget);
   const goInterior = useCityStore((s) => s.goInterior);
@@ -86,6 +91,8 @@ export function CityScene() {
 
       <CityGrid projects={visible} groundColor={groundColor} />
       <CityRoads />
+      {showTraffic && <CityVehicles />}
+      {showBirds && <CityBirds />}
       {showNature && <CityNature projects={visible} />}
       <CityAtmosphere />
       <UserAvatar />
@@ -125,6 +132,8 @@ export function CityScene() {
           agents={[]}
           agentActive={activePaths.has(p.path)}
           workspaceActive={!!activeWorkspacePath && activeWorkspacePath === p.path}
+          selected={selectedProjectId === p.id}
+          dimmed={selectedProjectId !== null && selectedProjectId !== p.id}
           onPointerDown={(e: any) => { e.stopPropagation(); focusBuilding(p); }}
           onDoubleClick={(e: any) => { e.stopPropagation(); enterBuilding(p); }}
         />

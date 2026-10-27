@@ -299,6 +299,8 @@ export function ProjectBuilding({
   const grabOffset = useRef({ x: 0, z: 0 });
   const moveToken = useRef(0);
   const detachListeners = useRef<(() => void) | null>(null);
+  const lastPointerDownAt = useRef(0);
+  const selectTimer = useRef<number | null>(null);
   const raycaster = useRef(new THREE.Raycaster());
   const ndc = useRef(new THREE.Vector2());
   const groundPlane = useRef(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0));
@@ -314,6 +316,7 @@ export function ProjectBuilding({
   useEffect(() => () => {
     detachListeners.current?.();
     detachListeners.current = null;
+    if (selectTimer.current !== null) window.clearTimeout(selectTimer.current);
     if (gesture.current.down) {
       gesture.current.down = false;
       gesture.current.dragging = false;
@@ -348,19 +351,37 @@ export function ProjectBuilding({
       onPointerDown?.(e);
       return;
     }
+    const now = performance.now();
+    const secondClick = now - lastPointerDownAt.current < 600;
+    lastPointerDownAt.current = now;
+    if (secondClick) {
+      if (selectTimer.current !== null) {
+        window.clearTimeout(selectTimer.current);
+        selectTimer.current = null;
+      }
+      e.stopPropagation?.();
+      onDoubleClick?.(e);
+      return;
+    }
     // Synthetic only — native pointerdown must still bubble so double-click
-    // can enter. Orbit is paused via controls.enabled for this press.
+    // can enter. Orbit stays on until the pointer moves past the drag threshold.
     e.stopPropagation?.();
     const native = e.nativeEvent as PointerEvent | undefined;
     const sx = native?.clientX ?? e.clientX ?? 0;
     const sy = native?.clientY ?? e.clientY ?? 0;
-    const ctl = controlsRef.current;
+    // A previous press can still be down if pointerup never reached the canvas.
+    detachListeners.current?.();
+    detachListeners.current = null;
+    if (gesture.current.down) {
+      gesture.current.down = false;
+      gesture.current.dragging = false;
+      restoreOrbit();
+    }
     gesture.current.down = true;
     gesture.current.dragging = false;
     gesture.current.sx = sx;
     gesture.current.sy = sy;
-    gesture.current.restoreControls = ctl?.enabled;
-    if (ctl) ctl.enabled = false;
+    gesture.current.restoreControls = undefined;
     grabOffset.current.x = 0;
     grabOffset.current.z = 0;
 
@@ -380,6 +401,9 @@ export function ProjectBuilding({
       if (!gesture.current.dragging) {
         if (dist <= DRAG_THRESHOLD_PX) return;
         gesture.current.dragging = true;
+        const ctlNow = controlsRef.current;
+        gesture.current.restoreControls = ctlNow?.enabled;
+        if (ctlNow) ctlNow.enabled = false;
         const origin = dragWorldRef.current ?? position;
         const hit0 = groundHit(ev.clientX, ev.clientY);
         if (hit0) {
@@ -400,9 +424,7 @@ export function ProjectBuilding({
     };
     const onUp = (ev: PointerEvent) => {
       if (ev.pointerId !== undefined && native?.pointerId !== undefined && ev.pointerId !== native.pointerId) return;
-      el.removeEventListener('pointermove', onMove, true);
-      el.removeEventListener('pointerup', onUp, true);
-      el.removeEventListener('pointercancel', onCancel, true);
+      detachListeners.current?.();
       detachListeners.current = null;
       if (!gesture.current.down) return;
       const wasDrag = gesture.current.dragging;
@@ -413,7 +435,11 @@ export function ProjectBuilding({
         try { el.releasePointerCapture(pointerId); } catch { /* already released */ }
       }
       if (!wasDrag) {
-        onPointerDown?.(e);
+        if (selectTimer.current !== null) window.clearTimeout(selectTimer.current);
+        selectTimer.current = window.setTimeout(() => {
+          selectTimer.current = null;
+          onPointerDown?.(e);
+        }, 520);
         return;
       }
       const live = dragWorldRef.current;
@@ -458,9 +484,7 @@ export function ProjectBuilding({
     };
     const onCancel = (ev: PointerEvent) => {
       if (ev.pointerId !== undefined && native?.pointerId !== undefined && ev.pointerId !== native.pointerId) return;
-      el.removeEventListener('pointermove', onMove, true);
-      el.removeEventListener('pointerup', onUp, true);
-      el.removeEventListener('pointercancel', onCancel, true);
+      detachListeners.current?.();
       detachListeners.current = null;
       gesture.current.down = false;
       gesture.current.dragging = false;
@@ -471,14 +495,14 @@ export function ProjectBuilding({
       dragWorldRef.current = null;
       setDragWorld(null);
     };
-    detachListeners.current?.();
+    const win = el.ownerDocument?.defaultView ?? window;
+    win.addEventListener('pointerup', onUp, true);
+    win.addEventListener('pointercancel', onCancel, true);
     el.addEventListener('pointermove', onMove, true);
-    el.addEventListener('pointerup', onUp, true);
-    el.addEventListener('pointercancel', onCancel, true);
     detachListeners.current = () => {
       el.removeEventListener('pointermove', onMove, true);
-      el.removeEventListener('pointerup', onUp, true);
-      el.removeEventListener('pointercancel', onCancel, true);
+      win.removeEventListener('pointerup', onUp, true);
+      win.removeEventListener('pointercancel', onCancel, true);
     };
   };
 
@@ -521,16 +545,17 @@ export function ProjectBuilding({
   const exterior = interiorFloor === null;
 
   const tower = exterior ? (
-    <group rotation={[0, rot, 0]}>
+    <group
+      rotation={[0, rot, 0]}
+      onPointerDown={handlePointerDown}
+      onContextMenu={handleContextMenu}
+    >
       {/* ── Main Tower Structural Shaft ────────────────────────── */}
       <mesh
         position={[0, spec.height / 2, 0]}
         material={mats.wall}
         castShadow
         receiveShadow
-        onPointerDown={handlePointerDown}
-        onDoubleClick={onDoubleClick}
-        onContextMenu={handleContextMenu}
         frustumCulled={false}
       >
         <boxGeometry args={[spec.width, spec.height, spec.depth]} />
@@ -649,7 +674,7 @@ export function ProjectBuilding({
           >
             <boxGeometry args={[1.4, 2, 1.4]} />
           </mesh>
-          <Html position={[0, 2.45, 0]} center distanceFactor={40} pointerEvents="none" zIndexRange={[10, 0]}>
+          <Html position={[0, 2.45, 0]} center distanceFactor={40} zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}>
             <div
               style={{
                 pointerEvents: 'none',
@@ -675,13 +700,14 @@ export function ProjectBuilding({
           {/* far LOD: single box, zero detail */}
           <group rotation={[0, rot, 0]}>
             <mesh position={[0, spec.height / 2, 0]} material={mats.wall} frustumCulled={false}
+              onPointerDown={handlePointerDown}
               onContextMenu={handleContextMenu}>
               <boxGeometry args={[spec.width, spec.height, spec.depth]} />
             </mesh>
           </group>
         </Detailed>
         {(selected || !dimmed) && (
-          <Html position={[0, spec.height + 5.4, 0]} center distanceFactor={40} zIndexRange={[10, 0]}>
+          <Html position={[0, spec.height + 5.4, 0]} center distanceFactor={40} zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}>
             <div
               style={{
                 pointerEvents: 'none', whiteSpace: 'nowrap', textAlign: 'center',

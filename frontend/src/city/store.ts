@@ -160,11 +160,14 @@ export const useCityStore = create<CityStore>((set, get) => ({
     navHistory: [...s.navHistory, s.nav],
     selectedProjectId: projectId,
   })),
-  goInterior: (projectId, floorIndex, room = null) => set((s) => ({
-    nav: { mode: 'interior', projectId, floorIndex, room },
-    navHistory: [...s.navHistory, s.nav],
-    selectedProjectId: projectId,
-  })),
+  goInterior: (projectId, floorIndex, room = null) => set((s) => {
+    const alreadyInside = s.nav.mode === 'interior' && s.nav.projectId === projectId;
+    return {
+      nav: { mode: 'interior' as const, projectId, floorIndex, room },
+      navHistory: alreadyInside ? s.navHistory : [...s.navHistory, s.nav],
+      selectedProjectId: projectId,
+    };
+  }),
   goCar: (projectId, paneId, terminalId) => set((s) => ({
     nav: { mode: 'car', projectId, paneId, terminalId },
     navHistory: [...s.navHistory, s.nav],

@@ -51,7 +51,7 @@ function ProjectSignal({
   };
 
   return (
-    <group position={[x, y, z + 3.6]}>
+    <group position={[x, y, z + 3.6]} onPointerDown={open}>
       {/* Industrial Powder-Coated Metal Mast */}
       <mesh position={[0, 0.72, 0]} castShadow>
         <cylinderGeometry args={[0.04, 0.055, 1.44, 8]} />
@@ -59,7 +59,7 @@ function ProjectSignal({
       </mesh>
 
       {/* Traffic Signal Main Enclosure */}
-      <mesh position={[0, 1.76, 0]} onPointerDown={open} castShadow>
+      <mesh position={[0, 1.76, 0]} castShadow>
         <boxGeometry args={[0.34, 0.78, 0.18]} />
         <meshStandardMaterial color="#0f172a" metalness={0.6} roughness={0.4} />
       </mesh>
