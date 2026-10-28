@@ -3,7 +3,13 @@
 
 import { useCityStore } from '@/city/store';
 
-export function CarNav() {
+export function CarNav({
+  onToggleTerminal,
+  hasTerminalOpen = false,
+}: {
+  onToggleTerminal?: () => void;
+  hasTerminalOpen?: boolean;
+} = {}) {
   const nav = useCityStore((s) => s.nav);
   const terminalCars = useCityStore((s) => s.terminalCars);
   const exitOneLevel = useCityStore((s) => s.exitOneLevel);
@@ -24,8 +30,8 @@ export function CarNav() {
         display: 'flex',
         alignItems: 'center',
         gap: 12,
-        maxWidth: 'min(440px, calc(100% - 32px))',
-        padding: '6px 12px',
+        maxWidth: 'min(480px, calc(100% - 32px))',
+        padding: '6px 14px',
         background: 'rgba(15,18,28,0.94)',
         border: '1px solid rgba(255,255,255,0.08)',
         borderRadius: 10,
@@ -38,6 +44,25 @@ export function CarNav() {
       <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {car?.name || 'Car'}
       </span>
+      {onToggleTerminal && (
+        <button
+          type="button"
+          onClick={onToggleTerminal}
+          style={{
+            flex: 'none',
+            background: hasTerminalOpen ? 'rgba(59,130,246,0.25)' : 'transparent',
+            border: hasTerminalOpen ? '1px solid #3b82f6' : '1px solid rgba(255,255,255,0.18)',
+            borderRadius: 6,
+            padding: '2px 8px',
+            color: hasTerminalOpen ? '#93c5fd' : '#e8edf5',
+            font: 'inherit',
+            fontSize: 11,
+            cursor: 'pointer',
+          }}
+        >
+          {hasTerminalOpen ? 'Hide Terminal' : 'Open Terminal'}
+        </button>
+      )}
       <button
         type="button"
         onClick={exitOneLevel}
@@ -46,7 +71,7 @@ export function CarNav() {
           background: 'transparent',
           border: 'none',
           padding: 0,
-          color: '#93c5fd',
+          color: '#f87171',
           font: 'inherit',
           cursor: 'pointer',
         }}

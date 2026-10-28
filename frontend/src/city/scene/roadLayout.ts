@@ -10,7 +10,7 @@ export interface RoadSegment {
   /** '' for the project root. */
   relativePath: string;
   depth: 0 | 1 | 2;
-  /** Offset from the plot center. Each axis stays in [-3.2, 3.2]. */
+  /** Offset from the plot center. X stays in the lot; Z sits on the avenue. */
   x: number;
   z: number;
   rotY: number;
@@ -31,9 +31,10 @@ export const SKIP_DIRS = [
 const COLONY_CAP = 8;
 const COLONY_X_MIN = -3.0;
 const COLONY_X_MAX = 3.0;
-const COLONY_Z = 5.0;
-/** Depth-2 spur sits just in front of its colony. */
-const DEPTH2_Z_STEP = 0.8;
+/** Avenue center in front of the plot. A yard at z≈5 put cars inside the tower. */
+const COLONY_Z = 7.0;
+/** Depth-2 spur stays on the avenue, still clear of the curb stalls. */
+const DEPTH2_Z_STEP = 0.2;
 
 function pathParts(relative: string | null): string[] {
   if (!relative) return [];
@@ -75,7 +76,7 @@ export function layoutDistrict(
     relativePath: '',
     depth: 0,
     x: 0,
-    z: 5.2,
+    z: COLONY_Z,
     rotY: 0,
     length: 2.4,
   };

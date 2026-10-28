@@ -39,12 +39,15 @@ export function ProjectPanel({
   const selected = useCityStore((s) => s.selectedProjectId);
   const projects = useCityStore((s) => s.projects);
   const agents = useCityStore((s) => s.agents);
+  const nav = useCityStore((s) => s.nav);
   const selectProject = useCityStore((s) => s.selectProject);
   const upsertProject = useCityStore((s) => s.upsertProject);
   const activeWorkspacePath = useCityStore((s) => s.activeWorkspacePath);
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState('');
   const [nameBusy, setNameBusy] = useState(false);
+
+  if (nav.mode === 'interior') return null;
 
   const p: Project | undefined = selected ? projects[selected] : undefined;
   if (!p) return null;

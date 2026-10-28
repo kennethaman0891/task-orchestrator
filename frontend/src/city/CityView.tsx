@@ -24,9 +24,10 @@ import { RoadGraphPanel } from '@/city/ui/RoadGraphPanel';
 import { FallbackMap } from '@/city/ui/FallbackMap';
 import { CreateProjectModal } from '@/city/ui/CreateProjectModal';
 import { BuildingContextMenu } from '@/city/ui/BuildingContextMenu';
-import { interiorTarget, buildingFocusTarget } from '@/city/scene/CameraRig';
-import { plotWorldPosition } from '@/city/scene/CityGrid';
-import { archetypeFor } from '@/city/scene/archetypes';
+import { interiorTarget, buildingFocusTarget, carCabinTarget } from '@/city/scene/CameraRig';
+import { carLocalTransform } from '@/city/scene/TerminalCars';
+import { FloatingCityTerminal } from '@/city/ui/FloatingCityTerminal';
+import { fittedArchetype } from '@/city/scene/plotFit';
 import { useWorkspaceSync } from '@/city/sync/workspaceSync';
 import { useTheme } from '@/contexts/ThemeContext';
 import type { TerminalEntry } from '@/types';
@@ -92,6 +93,7 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
   const [roadGraph, setRoadGraph] = useState<{ path: string; name: string } | null>(null);
   const [lightProjectId, setLightProjectId] = useState<string | null>(null);
   const carProjectRef = useRef<string | null>(null);
+  const interiorProjectRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (nav.mode === 'car') {
@@ -101,6 +103,18 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
     const left = carProjectRef.current;
     if (!left) return;
     carProjectRef.current = null;
+    const rec = projects[left];
+    if (rec) setCameraTarget(buildingFocusTarget(rec.plot));
+  }, [nav, projects, setCameraTarget]);
+
+  useEffect(() => {
+    if (nav.mode === 'interior') {
+      interiorProjectRef.current = nav.projectId;
+      return;
+    }
+    const left = interiorProjectRef.current;
+    if (!left) return;
+    interiorProjectRef.current = null;
     const rec = projects[left];
     if (rec) setCameraTarget(buildingFocusTarget(rec.plot));
   }, [nav, projects, setCameraTarget]);
@@ -135,15 +149,17 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
   const contextMenu = useCityStore((s) => s.contextMenu);
   const closeContextMenu = useCityStore((s) => s.closeContextMenu);
   const projectsById = useCityStore((s) => s.projects);
+  const plotDistricts = useCityStore((s) => s.plotDistricts);
   const ctxProject = contextMenu ? projectsById[contextMenu.projectId] : null;
+
+  const [floatingTerminalId, setFloatingTerminalId] = useState<string | null>(null);
 
   const { theme: t } = useTheme();
 
   const enterBuilding = (p: Project) => {
-    const base = archetypeFor(p.building.buildingStyle || p.type, p.type);
-    const k = Math.max(0.4, Math.min(2.2, p.building.scale || 1));
+    const fitted = fittedArchetype(p.building.buildingStyle || p.type, p.type, p.building.scale);
     goInterior(p.id, 0, null);
-    setCameraTarget(interiorTarget(p.plot, 0, base.floorH * k, base.depth * k));
+    setCameraTarget(interiorTarget(p.plot, 0, fitted.floorH, fitted.depth));
   };
 
   const enterCar = (carId: string) => {
@@ -152,8 +168,10 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
     goCar(car.projectId, car.id, car.terminalId);
     const project = projects[car.projectId];
     if (!project) return;
-    const [x, y, z] = plotWorldPosition(project.plot);
-    setCameraTarget({ x: x + 6, y: y + 4, z: z + 8, lookX: x, lookY: y, lookZ: z });
+    const dirs = plotDistricts[car.projectId]?.dirs ?? [];
+    const transform = carLocalTransform(car, project, dirs);
+    setCameraTarget(carCabinTarget(project.plot, transform));
+    setFloatingTerminalId(car.terminalId || car.id);
   };
 
   const renameCar = (carId: string, name: string) => {
@@ -207,7 +225,9 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
         <FallbackMap onContinue={onContinue} onEditBuilding={(p) => setEditing(p)} />
       )}
 
-      <TopBar onToast={onToast} onNewProject={() => setCreating(true)} onToggleSidebar={onToggleSidebar} />
+      {nav.mode !== 'interior' && (
+        <TopBar onToast={onToast} onNewProject={() => setCreating(true)} onToggleSidebar={onToggleSidebar} />
+      )}
 
       {webgl && (
         <>
@@ -219,9 +239,45 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
             onToast={onToast}
           />
           <FloorNav onExitToWorkspace={exitOneLevel} />
-          <AgentPanel terminals={terminals} onOpenTerminal={onOpenTerminal} />
-          <TerminalCarPanel onOpenTerminal={onOpenTerminal} onEnter={enterCar} onRename={renameCar} />
-          <CarNav />
+          {nav.mode !== 'interior' && (
+            <>
+              <AgentPanel terminals={terminals} onOpenTerminal={(tid) => setFloatingTerminalId(tid)} />
+              <TerminalCarPanel
+                onOpenTerminal={(tid) => setFloatingTerminalId(tid)}
+                onEnter={enterCar}
+                onRename={renameCar}
+              />
+              <CarNav
+                onToggleTerminal={() => {
+                  if (floatingTerminalId) {
+                    setFloatingTerminalId(null);
+                  } else if (nav.mode === 'car') {
+                    const car = Object.values(terminalCars).find((c) => c.id === nav.paneId)
+                      ?? Object.values(terminalCars).find((c) => c.terminalId === nav.terminalId || c.id === nav.terminalId);
+                    if (car) setFloatingTerminalId(car.terminalId || car.id);
+                  }
+                }}
+                hasTerminalOpen={Boolean(floatingTerminalId)}
+              />
+            </>
+          )}
+          {floatingTerminalId && (() => {
+            const floatingCar = Object.values(terminalCars).find(
+              (c) => c.terminalId === floatingTerminalId || c.id === floatingTerminalId,
+            );
+            const termEntry = terminals[floatingTerminalId];
+            return (
+              <FloatingCityTerminal
+                sessionId={floatingTerminalId}
+                title={floatingCar?.name || termEntry?.pane_title || termEntry?.session_name || 'Terminal'}
+                agentName={floatingCar?.agentName || termEntry?.agent}
+                modelName={floatingCar?.modelName || termEntry?.model}
+                status={floatingCar?.moving ? 'BUSY' : 'RUNNING'}
+                onClose={() => setFloatingTerminalId(null)}
+                onOpenInWorkspace={() => onOpenTerminal(floatingTerminalId)}
+              />
+            );
+          })()}
           {roadGraph && (
             <RoadGraphPanel
               folderPath={roadGraph.path}

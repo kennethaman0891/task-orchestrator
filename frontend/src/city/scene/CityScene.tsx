@@ -17,7 +17,7 @@ import { CitySky } from './CitySky';
 import { ProjectBuilding } from './ProjectBuilding';
 import { CameraRig, buildingFocusTarget, interiorTarget } from './CameraRig';
 import { UserAvatar } from './UserAvatar';
-import { archetypeFor } from './archetypes';
+import { fittedArchetype } from './plotFit';
 import { TerminalCars } from './TerminalCars';
 import { PlotRoads } from './PlotRoads';
 import { RoadObstacles } from './RoadObstacles';
@@ -74,80 +74,119 @@ export function CityScene() {
     setCameraTarget(buildingFocusTarget(pp.plot));
   };
   const enterBuilding = (pp: Project) => {
-    const base = archetypeFor(pp.building.buildingStyle || pp.type, pp.type);
-    const k = Math.max(0.4, Math.min(2.2, pp.building.scale || 1));
+    const fitted = fittedArchetype(pp.building.buildingStyle || pp.type, pp.type, pp.building.scale);
     goInterior(pp.id, 0, null);
-    setCameraTarget(interiorTarget(pp.plot, 0, base.floorH * k, base.depth * k));
+    setCameraTarget(interiorTarget(pp.plot, 0, fitted.floorH, fitted.depth));
   };
+
+  const isInterior = Boolean(interiorProjectId);
 
   return (
     <>
-      <color attach="background" args={[mood.sky]} />
-      <fog attach="fog" args={[mood.fog, mood.fogNear, mood.fogFar]} />
+      {isInterior ? (
+        <>
+          <color attach="background" args={['#090d16']} />
+          <ambientLight intensity={1.6} />
+          {(() => {
+            const activeProj = interiorProjectId ? projects[interiorProjectId] : null;
+            if (!activeProj) return null;
+            const pos = plotWorldPosition(activeProj.plot);
+            const fitted = fittedArchetype(
+              activeProj.building.buildingStyle || activeProj.type,
+              activeProj.type,
+              activeProj.building.scale,
+            );
+            const fy = (interiorFloorIndex ?? 0) * fitted.floorH;
+            return (
+              <group position={[pos[0], fy, pos[2]]}>
+                <directionalLight
+                  position={[4, 10, 6]}
+                  intensity={1.8}
+                  castShadow
+                  shadow-mapSize-width={1024}
+                  shadow-mapSize-height={1024}
+                />
+                <pointLight position={[-4, 5, -3]} intensity={0.9} color="#e0f2fe" />
+                <pointLight position={[3, 4, 3]} intensity={0.6} color="#fef08a" />
+              </group>
+            );
+          })()}
+        </>
+      ) : (
+        <>
+          <color attach="background" args={[mood.sky]} />
+          <fog attach="fog" args={[mood.fog, mood.fogNear, mood.fogFar]} />
+          <hemisphereLight args={[mood.hemiSky, mood.hemiGround, mood.hemiIntensity]} />
+          <ambientLight intensity={mood.ambient} />
+          <CitySky />
 
-      <hemisphereLight args={[mood.hemiSky, mood.hemiGround, mood.hemiIntensity]} />
-      <ambientLight intensity={mood.ambient} />
-      <CitySky />
+          <CityGrid projects={visible} groundColor={groundColor} />
+          <CityRoads />
+          {showTraffic && <CityVehicles />}
+          {showBirds && <CityBirds />}
+          {showNature && <CityNature projects={visible} />}
+          <CityAtmosphere />
+          <UserAvatar />
 
-      <CityGrid projects={visible} groundColor={groundColor} />
-      <CityRoads />
-      {showTraffic && <CityVehicles />}
-      {showBirds && <CityBirds />}
-      {showNature && <CityNature projects={visible} />}
-      <CityAtmosphere />
-      <UserAvatar />
+          {visible.map((p) => {
+            const rootName = p.path.split('/').filter(Boolean).pop() || p.name || 'project';
+            const position = plotWorldPosition(p.plot);
+            const district = plotDistricts[p.id];
+            const activeCar = Object.values(terminalCars).find((car) => car.projectId === p.id && car.moving)
+              ?? Object.values(terminalCars).find((car) => car.projectId === p.id);
+            const activeRelative = activeCar ? relativeToProject(p.path, activeCar.cwd || p.path) : null;
+            return (
+              <group key={`district-${p.id}`}>
+                <PlotRoads
+                  projectId={p.id}
+                  position={position}
+                  rootName={rootName}
+                  childNames={district?.dirs ?? []}
+                  activeRelative={activeRelative}
+                  onSelect={(segmentId, name, relative) => {
+                    void segmentId;
+                    const path = p.path + (relative ? `/${relative}` : '');
+                    window.dispatchEvent(new CustomEvent('tto-road', { detail: { path, name } }));
+                  }}
+                />
+                <RoadObstacles position={position} files={district?.files ?? []} />
+              </group>
+            );
+          })}
+        </>
+      )}
 
-      {visible.map((p) => {
-        const rootName = p.path.split('/').filter(Boolean).pop() || p.name || 'project';
-        const position = plotWorldPosition(p.plot);
-        const district = plotDistricts[p.id];
-        const activeCar = Object.values(terminalCars).find((car) => car.projectId === p.id && car.moving)
-          ?? Object.values(terminalCars).find((car) => car.projectId === p.id);
-        const activeRelative = activeCar ? relativeToProject(p.path, activeCar.cwd || p.path) : null;
-        return (
-          <group key={`district-${p.id}`}>
-            <PlotRoads
-              projectId={p.id}
-              position={position}
-              rootName={rootName}
-              childNames={district?.dirs ?? []}
-              activeRelative={activeRelative}
-              onSelect={(segmentId, name, relative) => {
-                void segmentId;
-                const path = p.path + (relative ? `/${relative}` : '');
-                window.dispatchEvent(new CustomEvent('tto-road', { detail: { path, name } }));
-              }}
-            />
-            <RoadObstacles position={position} files={district?.files ?? []} />
-          </group>
-        );
-      })}
+      {visible
+        .filter((p) => (!isInterior ? true : p.id === interiorProjectId))
+        .map((p) => (
+          <ProjectBuilding
+            key={p.id}
+            project={p}
+            position={plotWorldPosition(p.plot)}
+            interiorFloor={interiorProjectId === p.id ? interiorFloorIndex : null}
+            agents={[]}
+            agentActive={activePaths.has(p.path)}
+            workspaceActive={!!activeWorkspacePath && activeWorkspacePath === p.path}
+            selected={selectedProjectId === p.id}
+            dimmed={selectedProjectId !== null && selectedProjectId !== p.id}
+            onPointerDown={(e: any) => { e.stopPropagation(); focusBuilding(p); }}
+            onDoubleClick={(e: any) => { e.stopPropagation(); enterBuilding(p); }}
+          />
+        ))}
 
-      {visible.map((p) => (
-        <ProjectBuilding
-          key={p.id}
-          project={p}
-          position={plotWorldPosition(p.plot)}
-          interiorFloor={interiorProjectId === p.id ? interiorFloorIndex : null}
-          agents={[]}
-          agentActive={activePaths.has(p.path)}
-          workspaceActive={!!activeWorkspacePath && activeWorkspacePath === p.path}
-          selected={selectedProjectId === p.id}
-          dimmed={selectedProjectId !== null && selectedProjectId !== p.id}
-          onPointerDown={(e: any) => { e.stopPropagation(); focusBuilding(p); }}
-          onDoubleClick={(e: any) => { e.stopPropagation(); enterBuilding(p); }}
-        />
-      ))}
-
-      <ParkingLots />
-      <TerminalCars />
-      <TokenTrees />
-      <AgentStation />
-      <TrafficLights
-        onOpen={(projectId) => {
-          window.dispatchEvent(new CustomEvent('tto-light', { detail: { projectId } }));
-        }}
-      />
+      {!isInterior && (
+        <>
+          <ParkingLots />
+          <TerminalCars />
+          <TokenTrees />
+          <AgentStation />
+          <TrafficLights
+            onOpen={(projectId) => {
+              window.dispatchEvent(new CustomEvent('tto-light', { detail: { projectId } }));
+            }}
+          />
+        </>
+      )}
 
       <CameraRig />
     </>

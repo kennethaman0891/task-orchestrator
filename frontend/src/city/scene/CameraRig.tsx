@@ -17,7 +17,23 @@ export function CameraRig() {
   const controls = useRef<any>(null);
   const camera = useThree((s) => s.camera);
   const cameraTarget = useCityStore((s) => s.cameraTarget);
+  const nav = useCityStore((s) => s.nav);
   const pending = useRef<{ pos: THREE.Vector3; look: THREE.Vector3 } | null>(null);
+
+  const radius = cityRadius();
+  const isCarMode = nav.mode === 'car';
+  const isInteriorMode = nav.mode === 'interior';
+  const minDistance = isCarMode ? 0.05 : isInteriorMode ? 1.0 : 4;
+  const maxDistance = isCarMode ? 25 : isInteriorMode ? 16 : radius * 2.4;
+
+  useEffect(() => {
+    const c = controls.current;
+    if (c) {
+      c.minDistance = minDistance;
+      c.maxDistance = maxDistance;
+      c.update();
+    }
+  }, [minDistance, maxDistance]);
 
   useEffect(() => {
     if (!cameraTarget) return;
@@ -42,8 +58,6 @@ export function CameraRig() {
     }
   });
 
-  const radius = cityRadius();
-
   // One-time camera placement (overview orbit around the city centre).
   useEffect(() => {
     camera.position.set(radius * 0.85, radius * 0.6, radius * 0.85);
@@ -58,8 +72,8 @@ export function CameraRig() {
       makeDefault
       enableDamping
       dampingFactor={0.08}
-      minDistance={5}
-      maxDistance={radius * 2.4}
+      minDistance={minDistance}
+      maxDistance={maxDistance}
       maxPolarAngle={Math.PI / 2.05}
       target={[0, 4, 0]}
     />
@@ -130,13 +144,98 @@ export function buildingFocusTarget(plot: { x: number; y: number }) {
 }
 
 /** Fly INTO a floor of the building (interior mode). */
-export function interiorTarget(plot: { x: number; y: number }, floorIndex: number, floorH: number, buildingDepth: number) {
+export function interiorTarget(
+  plot: { x: number; y: number },
+  floorIndex: number,
+  floorH: number,
+  buildingDepth: number,
+  viewPreset: 'overview' | 'desks' | 'servers' | 'lounge' | 'topdown' = 'overview',
+) {
   const c = plotWorldPosition(plot);
-  const fy = floorIndex * floorH + 1.4;
+  const fy = floorIndex * floorH + 0.3;
+
+  if (viewPreset === 'topdown') {
+    return {
+      x: c[0],
+      y: fy + 8.6,
+      z: c[2] + 0.01,
+      lookX: c[0],
+      lookY: fy + 0.2,
+      lookZ: c[2],
+    };
+  }
+  if (viewPreset === 'desks') {
+    return {
+      x: c[0] - 1.8,
+      y: fy + 2.2,
+      z: c[2] + buildingDepth * 0.2 + 3.2,
+      lookX: c[0] - 1.8,
+      lookY: fy + 0.8,
+      lookZ: c[2] - buildingDepth * 0.1,
+    };
+  }
+  if (viewPreset === 'servers') {
+    return {
+      x: c[0] + buildingDepth * 0.28,
+      y: fy + 2.0,
+      z: c[2] + 2.8,
+      lookX: c[0] + buildingDepth * 0.28,
+      lookY: fy + 1.1,
+      lookZ: c[2] - buildingDepth * 0.2,
+    };
+  }
+  if (viewPreset === 'lounge') {
+    return {
+      x: c[0] + 1.8,
+      y: fy + 2.0,
+      z: c[2] + buildingDepth * 0.2 + 3.2,
+      lookX: c[0] + 1.8,
+      lookY: fy + 0.7,
+      lookZ: c[2] + buildingDepth * 0.1,
+    };
+  }
+
+  // Default 'overview' dollhouse view: elevated 35-40 degrees, clean perspective right into the floor!
   return {
-    x: c[0],
-    y: fy + 3.2,
-    z: c[2] + buildingDepth * 0.5 + 7,
-    lookX: c[0], lookY: fy, lookZ: c[2],
+    x: c[0] + 2.2,
+    y: fy + 4.4,
+    z: c[2] + buildingDepth * 0.5 + 4.8,
+    lookX: c[0],
+    lookY: fy + 0.8,
+    lookZ: c[2] - 0.2,
+  };
+}
+
+/** Fly INTO a car's cabin (car mode). */
+export function carCabinTarget(
+  projectPlot: { x: number; y: number },
+  carTransform: [number, number, number, number],
+): { x: number; y: number; z: number; lookX: number; lookY: number; lookZ: number } {
+  const world = plotWorldPosition(projectPlot);
+  const [dx, dy, dz, rotY] = carTransform;
+  const carX = world[0] + dx;
+  const carY = dy;
+  const carZ = world[2] + dz;
+
+  const sin = Math.sin(rotY);
+  const cos = Math.cos(rotY);
+
+  // Eye position inside car: passenger seat at eye level, looking forward at dash & windshield
+  const localCamX = 0.16;
+  const localCamY = 0.74;
+  const localCamZ = -0.30;
+
+  // Look target: front dashboard / windshield center
+  const localLookX = -0.05;
+  const localLookY = 0.58;
+  const localLookZ = 0.75;
+
+  return {
+    x: carX + (localCamX * cos + localCamZ * sin),
+    y: carY + localCamY,
+    z: carZ + (-localCamX * sin + localCamZ * cos),
+    lookX: carX + (localLookX * cos + localLookZ * sin),
+    lookY: carY + localLookY,
+    lookZ: carZ + (-localLookX * sin + localLookZ * cos),
   };
 }

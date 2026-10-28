@@ -12,8 +12,9 @@ import { CarBody } from './CarBody';
 import { CarInterior } from './CarInterior';
 import { plotWorldPosition } from './CityGrid';
 import { layoutDistrict, segmentForCwd } from './roadLayout';
+import { AVENUE_OFFSET, stallFor } from './plotFit';
 
-const PLOT_LIMIT = 5.8;
+const PLOT_LIMIT = 7.4;
 
 function clampPlot(n: number): number {
   if (n > PLOT_LIMIT) return PLOT_LIMIT;
@@ -27,24 +28,13 @@ function normPath(path: string): string {
 
 /**
  * Returns [dx, dy, dz, rotY] offset from the plot centre.
- * Parked: dedicated parking bays in the front plaza (Z = 5.2) or east wing (X = 5.2),
- * safely outside the building footprint.
- * Moving: the folder road segment for this terminal's cwd.
+ * Parked: parallel to the curb, outside the tower and off the travel lane.
+ * Moving: the avenue in front of the plot, not the front yard.
  */
-function carLocalTransform(car: TerminalCar, project: Project, dirs: string[]): [number, number, number, number] {
+export function carLocalTransform(car: TerminalCar, project: Project, dirs: string[]): [number, number, number, number] {
   if (!car.moving) {
-    const slot = Math.max(0, Math.trunc(Number(car.slotIndex)) || 0);
-    if (slot < 4) {
-      // 4 Front Parking Bays facing the road (Z = 5.2, X in [-2.7, -0.9, 0.9, 2.7])
-      const x = ((slot % 4) - 1.5) * 1.8;
-      const z = 5.2;
-      return [clampPlot(x), 0, clampPlot(z), 0];
-    }
-    // East Wing Parking Bays (X = 5.2, Z in [-2.7, -0.9, 0.9, 2.7])
-    const sideSlot = slot - 4;
-    const x = 5.2;
-    const z = ((sideSlot % 4) - 1.5) * 1.8;
-    return [clampPlot(x), 0, clampPlot(z), Math.PI / 2];
+    const stall = stallFor(car.slotIndex);
+    return [clampPlot(stall.x), 0, clampPlot(stall.z), stall.rotY];
   }
 
   const projectPath = project.path || car.projectPath;
@@ -52,7 +42,7 @@ function carLocalTransform(car: TerminalCar, project: Project, dirs: string[]): 
   const relative = relativeToProject(projectPath, car.cwd || projectPath);
   const segments = layoutDistrict(project.id, rootName, dirs, relative);
   const seg = segmentForCwd(projectPath, normPath(car.cwd || projectPath), segments);
-  if (!seg) return [0, 0, 5.0, 0];
+  if (!seg) return [0, 0, AVENUE_OFFSET, 0];
   return [clampPlot(seg.x), 0, clampPlot(seg.z), seg.rotY];
 }
 
@@ -169,7 +159,7 @@ function TerminalCarNode({
     <group position={[world[0] + dx, dy, world[2] + dz]} rotation={[0, rotY, 0]}>
       <group ref={roll}>
       {inside ? <CarInterior car={car} /> : <CarBody color={car.color} spec={spec} moving={car.moving} />}
-      <CarNameBoards name={car.name} />
+      {!inside && <CarNameBoards name={car.name} />}
       {selected && (
         <mesh position={[0, 0.04, 0]} rotation={[-Math.PI / 2, 0, 0]}>
           <ringGeometry args={[1.2, 1.42, 28]} />
