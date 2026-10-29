@@ -18,7 +18,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE-APACHE)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL_v3-red.svg)](LICENSE-GPL-3.0)
 
-<img src="frontend/public/screenshots/hero_banner.png" alt="Task Orchestrator Terminal Task Orchestrator" width="600" />
+<img src="docs/city-overview.png" alt="Task Orchestrator — Developer City overview" width="800" />
 
 </div>
 
