@@ -9,6 +9,12 @@ export interface Pane {
   tty: string | null;
   label?: string;
   sizeMode?: GridMode;
+  /** Chat session: catalog id (claude, antigravity, …). */
+  cliId?: string;
+  /** Chat session: model id chosen in the dropdown. */
+  modelId?: string;
+  /** Shell line injected into this pane's PTY. Wins over Workspace.command on boot. */
+  launchCommand?: string;
 }
 
 export interface Workspace {
@@ -31,7 +37,7 @@ export interface Workspace {
   skipWelcomeBanner?: boolean;
 }
 
-export type View = 'workspace' | 'city' | 'colab' | 'grid' | 'dashboard' | 'ide' | 'kanban' | 'cards' | 'planner' | 'agent' | 'devices' | 'django-reviewer' | 'wizard' | 'settings';
+export type View = 'workspace' | 'city' | 'colab' | 'grid' | 'dashboard' | 'ide' | 'kanban' | 'cards' | 'planner' | 'agent' | 'devices' | 'django-reviewer' | 'wizard' | 'settings' | 'chat';
 
 export type GridMode = 'auto' | 'grid' | 'compact' | 'large';
 

@@ -4,6 +4,7 @@
 // paint replaces the conversation with the splash and keeps permission menus
 // that have already left the screen. This store appends turns as the viewport
 // changes and opens a permission card only while the live tail still shows one.
+// Block glyphs, the shell prompt, and the splash screen are chrome, not turns.
 
 import type { DetectedTerminalPrompt, PromptOption as DetectedOption } from '@/jarvis/terminalPromptDetector';
 import { detectTerminalPrompt } from '@/jarvis/terminalPromptDetector';
@@ -80,8 +81,35 @@ export function promptNeedsEnter(viewportLines: string[], cli: string): boolean 
   return name === 'claude' || name === 'claude-code' || name === 'codex' || name === 'codex-cli';
 }
 
+// Logo rows paint block, box-drawing, and braille glyphs in front of the text.
+const LEADING_ART = /^(?:[\u2500-\u257F\u2580-\u259F\u25A0-\u25FF\u2800-\u28FF]+[ \t]*)+/u;
+
+function stripLeadingArt(line: string): string {
+  return line.trim().replace(LEADING_ART, '').trim();
+}
+
+function isShellPrompt(text: string): boolean {
+  return /^\S+@\S+(?:\s+\S+)*\s+[%#$](?:\s+\S+)*$/.test(text);
+}
+
+function isRealUserReply(line: string): boolean {
+  const text = stripLeadingArt(line);
+  const match = text.match(/^[>❯]\s+(.+)/);
+  if (!match) return false;
+  const echoed = match[1].trim();
+  if (!echoed || /^(?:try\s+["']|try asking)/i.test(echoed) || /^\d+[.)]\s+/.test(echoed)) return false;
+  return true;
+}
+
+function hasSplashSignature(line: string): boolean {
+  const text = stripLeadingArt(line);
+  return /^antigravity\s+cli\s+v?\d/i.test(text)
+    || /^gemini\s+cli\b/i.test(text)
+    || /^\? for shortcuts\b/i.test(text);
+}
+
 function isChromeLine(line: string, cli: string): boolean {
-  const text = line.trim();
+  const text = stripLeadingArt(line);
   if (!text) return true;
   if (/^[─━═┄┈┌┐└┘├┤┬┴┼╭╮╯╰│┃┆┇┊┋\s]+$/.test(text)) return true;
   if (/^[>❯]\s*$/.test(text)) return true;
@@ -90,17 +118,34 @@ function isChromeLine(line: string, cli: string): boolean {
   if (/^claude\s+code\s+v?\d+/i.test(text)) return true;
   if (/^opencode\s+v?\d+/i.test(text)) return true;
   if (!usesLiveTranscript(cli)) return false;
+  if (isShellPrompt(text)) return true;
   if (/^antigravity\s+cli\s+v?\d/i.test(text)) return true;
   if (/^gemini\s+cli\b/i.test(text)) return true;
   if (/^gemini\s+\d[\w.\s()-]*$/i.test(text)) return true;
   if (/^[\w.+-]+@[\w.-]+\.[a-z]{2,}(?:\s+\([^)]+\))?$/i.test(text)) return true;
   if (/^~\/[A-Za-z0-9._-]+$/.test(text)) return true;
-  if (/^\/(?:Users|home|opt|var|tmp)\/[A-Za-z0-9._/-]+$/.test(text)) return true;
+  if (/^\/(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+\/?$/.test(text)) return true;
   return false;
 }
 
 export function stripTerminalChrome(lines: string[], cli: string): string[] {
-  return lines.map((line) => line.trim()).filter((line) => !isChromeLine(line, cli));
+  return lines.map((line) => stripLeadingArt(line)).filter((line) => !isChromeLine(line, cli));
+}
+
+function isSplashOnlyText(text: string, cli: string): boolean {
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  return lines.length > 0 && lines.every((line) => isChromeLine(line, cli));
+}
+
+/** Version line or "? for shortcuts", and no echoed user reply in this paint. */
+function isUnansweredSplash(viewportLines: string[], cli: string): boolean {
+  if (!usesLiveTranscript(cli)) return false;
+  let signed = false;
+  for (const line of viewportLines) {
+    if (isRealUserReply(line)) return false;
+    if (hasSplashSignature(line)) signed = true;
+  }
+  return signed;
 }
 
 function stripPromptLines(lines: string[], detected: DetectedTerminalPrompt | null): string[] {
@@ -240,15 +285,35 @@ function applyEchoes(session: Session, lines: string[]): string[] {
   return body;
 }
 
-function applyBody(session: Session, body: string): void {
-  if (!body) {
+function dropMessage(session: Session, message: UnifiedChatMessage): void {
+  const index = session.messages.findIndex((item) => item.id === message.id);
+  if (index >= 0) session.messages.splice(index, 1);
+  if (session.openAssistantId === message.id) {
+    session.openAssistantId = null;
+    session.lastBody = '';
+  }
+}
+
+function dropSplashAssistant(session: Session, cli: string): void {
+  const stale = [...session.messages].reverse().find((item) => item.role === 'assistant' && !item.interactivePrompt);
+  if (!stale || !isSplashOnlyText(stale.textParts.join('\n'), cli)) return;
+  dropMessage(session, stale);
+}
+
+function applyBody(session: Session, body: string, cli: string): void {
+  if (!body || isSplashOnlyText(body, cli)) {
+    if (body) dropSplashAssistant(session, cli);
     session.openAssistantId = null;
     session.lastBody = '';
     return;
   }
-  const open = session.openAssistantId
+  let open = session.openAssistantId
     ? session.messages.find((item) => item.id === session.openAssistantId)
     : undefined;
+  if (open && isSplashOnlyText(open.textParts.join('\n'), cli)) {
+    dropMessage(session, open);
+    open = undefined;
+  }
   if (open && session.lastBody && (body === session.lastBody || body.startsWith(session.lastBody) || session.lastBody.startsWith(body))) {
     if (open.textParts[0] !== body) open.textParts = [body];
     session.lastBody = body;
@@ -262,6 +327,9 @@ function applyBody(session: Session, body: string): void {
     session.openAssistantId = lastAssistant.id;
     session.lastBody = body;
     return;
+  }
+  if (lastAssistant && isSplashOnlyText(lastAssistant.textParts.join('\n'), cli)) {
+    dropMessage(session, lastAssistant);
   }
   const message = createMessage(session, 'assistant', body);
   session.messages.push(message);
@@ -292,6 +360,7 @@ export function markPromptSelected(sessionId: string, promptId: string, selected
  */
 export function snapshotTranscript(sessionId: string, viewportLines: string[], cli: string): UnifiedChatMessage[] {
   const session = ensure(sessionId);
+  const unansweredSplash = isUnansweredSplash(viewportLines, cli);
   const content = stripTerminalChrome(viewportLines, cli);
   const detected = detectTerminalPrompt(content, cli);
 
@@ -302,7 +371,8 @@ export function snapshotTranscript(sessionId: string, viewportLines: string[], c
     }
     const prose = applyEchoes(session, stripPromptLines(content, detected).filter((line) => line !== detected.command));
     const body = prose.join('\n').trim();
-    if (body) applyBody(session, body);
+    if (unansweredSplash) dropSplashAssistant(session, cli);
+    else if (body) applyBody(session, body, cli);
     const selected = session.held?.promptId === detected.id ? session.held.selectedKey : undefined;
     upsertPrompt(session, detected, selected);
     session.livePromptId = detected.id;
@@ -322,6 +392,12 @@ export function snapshotTranscript(sessionId: string, viewportLines: string[], c
   }
 
   const prose = applyEchoes(session, stripPromptLines(content, null));
-  applyBody(session, prose.join('\n').trim());
+  if (unansweredSplash) {
+    // Idle splash must not clear the open answer. The next real paint
+    // still extends that same card.
+    dropSplashAssistant(session, cli);
+  } else {
+    applyBody(session, prose.join('\n').trim(), cli);
+  }
   return publish(session);
 }

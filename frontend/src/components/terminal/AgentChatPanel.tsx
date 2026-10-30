@@ -15,6 +15,7 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
+import { isLightTheme } from '@/lib/theme';
 import type { UnifiedTerminal, Task } from '@/types';
 import { TerminalManager } from '@/terminal/TerminalManager';
 import { CliLogo } from '@/lib/cliLogos';
@@ -91,6 +92,15 @@ export const AGENT_CLIS = new Set([
   'python',
   'node',
 ]);
+
+function formatChatUptime(seconds: number): string {
+  const s = Math.floor(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${s}s`;
+}
 
 export function isAgentCli(entry?: UnifiedTerminal, _lines?: string[]): boolean {
   // Chat UI is supported for all live terminal sessions (Claude Code, OpenCode, Gemini, Codex, Aider, Ollama, Python, Shell, etc.)
@@ -859,11 +869,25 @@ interface Props {
   /** Live sidecar entry for that terminal. */
   entry: UnifiedTerminal;
   onClose: () => void;
-  /** Panel width (320 default; grid cards use a narrower 280). */
+  /** Panel width (320 default; grid cards use a narrower 280). Ignored for `page`. */
   width?: number;
+  /** `dock` is the side panel. `page` fills the Chat view. */
+  variant?: 'dock' | 'page';
+  /** Model id chosen for this pane. The splash line is not the source. */
+  modelLabel?: string;
+  /** Catalog cli id, used until the process scan catches up. */
+  cliHint?: string;
 }
 
-export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props) {
+export function AgentChatPanel({
+  sessionId,
+  entry,
+  onClose,
+  width = 320,
+  variant = 'dock',
+  modelLabel,
+  cliHint,
+}: Props) {
   const { theme: t } = useTheme();
   const [draft, setDraft] = useState('');
   const [sentFlash, setSentFlash] = useState(false);
@@ -871,7 +895,7 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(true);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const syncGen = useRef(0);
 
@@ -879,7 +903,7 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
   const recentLines = TerminalManager.lastLines(sessionId, 40);
   const detected = detectCLI(recentLines, entry.cli, entry.agent);
 
-  const effectiveCli =
+  const detectedCli =
     entry.antigravity_running || entry.cli === 'antigravity' || entry.agent === 'antigravity'
       ? 'antigravity'
       : entry.claude_running
@@ -889,6 +913,11 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
       : detected.cli && detected.cli !== 'unknown'
       ? detected.cli
       : (entry.cli || entry.agent || '').toLowerCase().trim() || 'shell';
+  const hint = (cliHint || '').toLowerCase().trim();
+  const effectiveCli =
+    hint && (detectedCli === 'shell' || detectedCli === 'zsh' || detectedCli === 'bash')
+      ? hint
+      : detectedCli;
 
   const displayName =
     effectiveCli === 'claude' || effectiveCli === 'claude-code'
@@ -911,6 +940,8 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
       ? 'Cursor'
       : effectiveCli === 'antigravity'
       ? 'Antigravity'
+      : effectiveCli === 'grok'
+      ? 'Grok'
       : effectiveCli === 'copilot' || effectiveCli === 'gh-copilot'
       ? 'GitHub Copilot'
       : effectiveCli === 'python'
@@ -1094,10 +1125,10 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
 
   // Auto-scroll to latest message
   useEffect(() => {
-    if (showHistory && messages.length > 0) {
+    if ((variant === 'page' || showHistory) && messages.length > 0) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages.length, showHistory]);
+  }, [messages.length, showHistory, variant]);
 
   // Sent flash timer
   useEffect(() => {
@@ -1195,14 +1226,21 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
     return null;
   }, [messages]);
 
+  const page = variant === 'page';
+  const uptime = entry.registered_at
+    ? formatChatUptime(Math.max(0, Date.now() / 1000 - entry.registered_at))
+    : '';
+
   return (
     <div
       style={{
-        width: `${width}px`,
-        flexShrink: 0,
+        width: page ? undefined : `${width}px`,
+        flex: page ? 1 : undefined,
+        flexShrink: page ? 1 : 0,
+        minWidth: 0,
         display: 'flex',
         flexDirection: 'column',
-        borderLeft: `1px solid ${t.colors.border.subtle}`,
+        borderLeft: page ? 'none' : `1px solid ${t.colors.border.subtle}`,
         background: t.colors.bg.secondary,
         height: '100%',
         overflow: 'hidden',
@@ -1255,6 +1293,7 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
         >
           {state.label}
         </span>
+        {page ? null : (
         <button
           onClick={onClose}
           title="Hide chat panel"
@@ -1283,6 +1322,7 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
         >
           <X size={12} />
         </button>
+        )}
       </div>
 
       {/* ── Same-session identity strip ── */}
@@ -1306,21 +1346,33 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
             height: 6,
             borderRadius: '50%',
             flexShrink: 0,
-            background: entry.is_live ? '#22c55e' : '#6b7280',
-            boxShadow: entry.is_live ? '0 0 5px #22c55e88' : 'none',
+            background: entry.is_live ? t.colors.success.primary : t.colors.text.muted,
+            boxShadow: entry.is_live ? `0 0 5px ${t.colors.success.primary}` : 'none',
           }}
         />
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           live session · {sessionId}
         </span>
+        {modelLabel ? (
+          <span style={{ opacity: 0.9, flexShrink: 0 }}>{modelLabel}</span>
+        ) : null}
+        {entry.cwd ? (
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+            {entry.cwd}
+          </span>
+        ) : null}
+        {uptime ? <span style={{ flexShrink: 0 }}>up {uptime}</span> : null}
         {entry.claude_pid ? (
           <span style={{ opacity: 0.75, flexShrink: 0 }}>pid {entry.claude_pid}</span>
         ) : entry.opencode_pid ? (
           <span style={{ opacity: 0.75, flexShrink: 0 }}>pid {entry.opencode_pid}</span>
+        ) : entry.antigravity_pid ? (
+          <span style={{ opacity: 0.75, flexShrink: 0 }}>pid {entry.antigravity_pid}</span>
         ) : null}
       </div>
 
-      {/* ── Chat history toggle ── */}
+      {/* Docked chat can collapse to the latest turn. The Chat page always shows the session. */}
+      {page ? null : (
       <button
         onClick={() => setShowHistory(!showHistory)}
         style={{
@@ -1345,10 +1397,11 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
           ({messages.length} messages)
         </span>
       </button>
+      )}
 
       {/* ── Conversation Feed / Messages ── */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '10px 12px' }}>
-        {showHistory ? (
+      <div className="chat-transcript-scroll" style={{ flex: 1, overflowY: 'auto', padding: '10px 12px' }}>
+        {(page || showHistory) ? (
           <>
             {loadingMessages && messages.length === 0 && (
               <div
@@ -1740,12 +1793,13 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
           display: 'flex',
           gap: '6px',
           flexShrink: 0,
-          alignItems: 'center',
+          alignItems: 'flex-end',
         }}
       >
-        <input
+        <textarea
           ref={inputRef}
           value={draft}
+          rows={page ? 3 : 1}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -1757,12 +1811,16 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
           style={{
             flex: 1,
             minWidth: 0,
-            fontSize: 11,
+            fontSize: page ? 13 : 11,
+            lineHeight: 1.4,
             padding: '7px 9px',
+            resize: 'none',
+            maxHeight: page ? 160 : 72,
             background: t.colors.bg.elevated,
             border: `1px solid ${t.colors.border.subtle}`,
             borderRadius: '6px',
             color: t.colors.text.primary,
+            colorScheme: isLightTheme(t) ? 'light' : 'dark',
             outline: 'none',
             fontFamily: t.fontFamily.sans,
           }}
@@ -1794,11 +1852,11 @@ export function AgentChatPanel({ sessionId, entry, onClose, width = 320 }: Props
         <div
           style={{
             fontSize: '9.5px',
-            color: '#22c55e',
+            color: t.colors.success.primary,
             textAlign: 'center',
             padding: '4px 0 6px',
             borderTop: `1px solid ${t.colors.border.subtle}`,
-            background: 'rgba(34, 197, 94, 0.08)',
+            background: t.colors.success.light,
             flexShrink: 0,
           }}
         >

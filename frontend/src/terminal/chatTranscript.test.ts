@@ -96,4 +96,47 @@ assert.equal(grownMore.length, 1);
 assert.equal(grownMore[0].id, grown[0].id);
 assert.match(grownMore[0].textParts[0], /panes overlap/);
 
+const splashBetween = [
+  'kennethaman@Kenneths-MacBook-Pro region5 % agy',
+  'Antigravity CLI 1.4.11',
+  '/Applications/XAMPP/xamppfiles/htdocs/region5',
+];
+snapshotTranscript('stream-hold', ['Checking the grid.'], 'antigravity');
+snapshotTranscript('stream-hold', splashBetween, 'antigravity');
+const heldAnswer = snapshotTranscript('stream-hold', ['Checking the grid.', 'The panes overlap.'], 'antigravity');
+assert.equal(heldAnswer.length, 1);
+assert.equal(heldAnswer[0].role, 'assistant');
+assert.match(heldAnswer[0].textParts[0], /panes overlap/);
+
+const art = '█┌⠁● ';
+const paintedSplash = [
+  'kennethaman@Kenneths-MacBook-Pro region5 % agy',
+  `${art}Antigravity CLI 1.4.11`,
+  `${art}vkjames1963@gmail.com`,
+  `${art}/Applications/XAMPP/xamppfiles/htdocs/region5`,
+];
+const paintedGrown = [
+  paintedSplash[0],
+  paintedSplash[1],
+  paintedSplash[2],
+  `${art}Gemini 3.8 Flash (High)`,
+  `${art}vkjames1963@gmail.com (Google AI Pro)`,
+  paintedSplash[3],
+];
+
+assert.deepEqual(stripTerminalChrome(paintedSplash, 'antigravity'), []);
+assert.deepEqual(stripTerminalChrome(paintedGrown, 'antigravity'), []);
+const paintedFirst = snapshotTranscript('painted', paintedSplash, 'antigravity');
+assert.equal(paintedFirst.length, 0);
+const paintedSecond = snapshotTranscript('painted', paintedGrown, 'antigravity');
+assert.equal(paintedSecond.length, paintedFirst.length);
+assert.equal(getTranscript('painted').length, 0);
+
+appendUserMessage('painted-keep', 'fix the layout');
+const paintedKept = snapshotTranscript('painted-keep', paintedGrown, 'antigravity');
+assert.equal(paintedKept.length, 1);
+assert.equal(paintedKept[0].role, 'user');
+assert.equal(paintedKept[0].textParts[0], 'fix the layout');
+assert.equal(paintedKept.some((message) => message.role === 'assistant'), false);
+
 console.log('chatTranscript tests passed');

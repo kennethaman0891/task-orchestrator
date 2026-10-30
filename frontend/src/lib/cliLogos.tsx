@@ -125,6 +125,7 @@ const BADGE_COLORS: Record<string, string> = {
   kubernetes: '#326CE5',
   vscode: '#007ACC',
   cursor: '#ffffff',
+  grok: '#e6e6e6',
   freebuff: '#10B981',
   'atomic-agent': '#6366F1',
   codeium: '#3B82F6',

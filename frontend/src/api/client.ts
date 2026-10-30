@@ -344,6 +344,27 @@ export async function fetchModels(): Promise<ModelsResponse> {
   };
 }
 
+export interface CliModelRow {
+  id: string;
+  label: string;
+}
+
+export async function fetchCliInstalled(): Promise<Record<string, boolean>> {
+  const r = await fetchWithTimeout(api('/api/cli-models'), {}, 15000);
+  const d = await handle<{ installed?: Record<string, boolean> }>(r);
+  return d.installed || {};
+}
+
+export async function fetchCliModelRows(cliId: string): Promise<CliModelRow[]> {
+  const r = await fetchWithTimeout(
+    api(`/api/cli-models?cli=${encodeURIComponent(cliId)}`),
+    {},
+    30000,
+  );
+  const d = await handle<{ models?: CliModelRow[] }>(r);
+  return Array.isArray(d.models) ? d.models.filter((m) => m && m.id) : [];
+}
+
 export function setTerminalModel(tty: string, model: string): Promise<{ ok: boolean }> {
   return fetch(api(`/api/terminals/${tty}/model?model=${encodeURIComponent(model)}`), {
     method: 'PATCH',

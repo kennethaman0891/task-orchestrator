@@ -46,6 +46,7 @@ fn detect_agent(command: &str) -> String {
         ("gemini", &["gemini", "gemini-cli"][..]),
         ("cursor", &["cursor", "cursor-agent"][..]),
         ("aider", &["aider"][..]),
+        ("grok", &["grok"][..]),
     ];
     let tokens: Vec<&str> = lower.split_whitespace().collect();
     for (name, keys) in candidates {
@@ -59,6 +60,24 @@ fn detect_agent(command: &str) -> String {
         }
     }
     String::new()
+}
+
+/// Directories the PTY adds to PATH for a GUI launch. The inject check has to
+/// see the same places, or `agy` / `claude` / `grok` in ~/.local/bin are
+/// skipped and the shell starts empty.
+fn cli_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        let home = PathBuf::from(home);
+        dirs.push(home.join(".local/bin"));
+        dirs.push(home.join(".cargo/bin"));
+    }
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    if let Ok(path_var) = std::env::var("PATH") {
+        dirs.extend(std::env::split_paths(&path_var));
+    }
+    dirs
 }
 
 /// Checks whether the primary executable token exists on disk or in PATH.
@@ -76,12 +95,10 @@ fn is_executable_available(command: &str) -> bool {
     if first.contains('/') {
         return std::path::Path::new(first).exists();
     }
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            let p = dir.join(first);
-            if p.is_file() {
-                return true;
-            }
+    for dir in cli_search_dirs() {
+        let p = dir.join(first);
+        if p.is_file() {
+            return true;
         }
     }
     false
@@ -169,6 +186,9 @@ fn detect_cli(command: &str) -> String {
         ("ssh", "ssh"), ("curl", "curl"), ("wget", "curl"),
         ("php", "php"), ("artisan", "php"),
         ("prime-agent", "prime"), ("primeagent", "prime"), ("prime", "prime"),
+        ("grok", "grok"),
+        // Cursor's agent CLI is installed as `agent`, not `cursor`.
+        ("agent", "cursor"),
     ];
     for (key, id) in table {
         if *key == base {

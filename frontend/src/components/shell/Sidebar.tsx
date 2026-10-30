@@ -32,6 +32,7 @@ import {
   ExternalLink,
   Search,
   Bot,
+  MessageSquare,
 } from 'lucide-react';
 import { listFiles, renameFile, searchProjectFiles, type FileEntry, type FileSearchResult } from '@/lib/api';
 import { isTauri as checkTauri, tauri } from '@/lib/tauri';
@@ -96,6 +97,7 @@ const VIEW_TABS: { key: View; label: string; icon: React.ReactNode }[] = [
   { key: 'city', label: 'City', icon: <Building2 size={13} /> },
   { key: 'colab', label: 'Colab', icon: <Users size={13} /> },
   { key: 'dashboard', label: 'Dashboard', icon: <Activity size={13} /> },
+  { key: 'chat', label: 'Chat', icon: <MessageSquare size={13} /> },
 ];
 
 /* Curated jewel-tone avatar palettes for distinct, professional workspace identities */
