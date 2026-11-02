@@ -36,8 +36,18 @@ pub fn run_checks(project_path: &str) -> Result<CheckResults, String> {
     let settings_module = find_settings_module(root);
 
     let system_check = run_manage_py(&python, root, &settings_module, &["check"]);
-    let migration_check = run_manage_py(&python, root, &settings_module, &["migrate", "--run-syncdb", "--check"]);
-    let test_results = run_manage_py(&python, root, &settings_module, &["test", "--no-input", "--verbosity=0"]);
+    let migration_check = run_manage_py(
+        &python,
+        root,
+        &settings_module,
+        &["migrate", "--run-syncdb", "--check"],
+    );
+    let test_results = run_manage_py(
+        &python,
+        root,
+        &settings_module,
+        &["test", "--no-input", "--verbosity=0"],
+    );
 
     let all_passed = system_check.contains("System check identified no issues")
         || system_check.to_lowercase().contains("ok");
@@ -116,7 +126,9 @@ fn find_settings_module(root: &Path) -> String {
                 .replace('\\', ".");
             // Validate: settings module must match safe charset [a-zA-Z0-9_.]
             // This prevents environment variable injection via malicious paths
-            if module_path.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+            if module_path
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
                 && !module_path.starts_with('.')
                 && !module_path.contains("..")
             {

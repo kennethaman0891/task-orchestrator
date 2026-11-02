@@ -140,7 +140,8 @@ pub async fn run_connection(
                 // Exponential backoff with jitter: 2s, 4s, 8s, ... capped at 60s.
                 // Race the sleep against a toggle change so disabling remote
                 // access takes effect promptly even mid-backoff.
-                let backoff = Duration::from_secs((2u64 << attempt.min(5)) + rand::random::<u64>() % 2);
+                let backoff =
+                    Duration::from_secs((2u64 << attempt.min(5)) + rand::random::<u64>() % 2);
                 tokio::select! {
                     _ = tokio::time::sleep(backoff) => {}
                     _ = rx.changed() => {}
@@ -275,8 +276,16 @@ async fn handle_message(
         "terminal.input" => {
             // Remote client typed into a terminal. ACK the result instead of
             // silently dropping — a wrong/stale sessionId must be visible.
-            let session_id = env.payload.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
-            let data = env.payload.get("data").and_then(|v| v.as_str()).unwrap_or("");
+            let session_id = env
+                .payload
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let data = env
+                .payload
+                .get("data")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let bytes = decode_b64(data);
             match manager.write(&session_id, &bytes) {
                 Ok(()) => {
@@ -294,9 +303,21 @@ async fn handle_message(
         "terminal.send_command" | "task.dispatch" => {
             // Shared dispatch path: run a command in an existing session, or
             // create a NEW session when only a command is given (task.dispatch).
-            let session_id = env.payload.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
-            let command = env.payload.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            let cwd = env.payload.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+            let session_id = env
+                .payload
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let command = env
+                .payload
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let cwd = env
+                .payload
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let is_task_dispatch = env.kind == "task.dispatch";
 
             if command.is_empty() {
@@ -309,11 +330,27 @@ async fn handle_message(
             // task.dispatch with no sessionId → start a fresh terminal session
             // and run the command there, then hand the id back to the client.
             let target_session = if is_task_dispatch && session_id.is_empty() {
-                let cols = env.payload.get("cols").and_then(|v| v.as_u64()).unwrap_or(120) as u16;
-                let rows = env.payload.get("rows").and_then(|v| v.as_u64()).unwrap_or(40) as u16;
-                let ws = env.payload.get("workspaceId").and_then(|v| v.as_str()).unwrap_or("remote").to_string();
-                let cwd_owned: Option<String> =
-                    if cwd.is_empty() { None } else { Some(cwd.to_string()) };
+                let cols = env
+                    .payload
+                    .get("cols")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(120) as u16;
+                let rows = env
+                    .payload
+                    .get("rows")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(40) as u16;
+                let ws = env
+                    .payload
+                    .get("workspaceId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("remote")
+                    .to_string();
+                let cwd_owned: Option<String> = if cwd.is_empty() {
+                    None
+                } else {
+                    Some(cwd.to_string())
+                };
                 match manager.create(cwd_owned, ws, cols, rows, None) {
                     Ok(meta) => Some(meta.id.clone()),
                     Err(e) => {
@@ -350,9 +387,21 @@ async fn handle_message(
             }
         }
         "terminal.resize" => {
-            let session_id = env.payload.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
-            let cols = env.payload.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
-            let rows = env.payload.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
+            let session_id = env
+                .payload
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let cols = env
+                .payload
+                .get("cols")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(80) as u16;
+            let rows = env
+                .payload
+                .get("rows")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(24) as u16;
             // 0 keeps the pixel size last reported by the desktop renderer.
             match manager.resize(&session_id, cols, rows, 0, 0) {
                 Ok(()) => {
@@ -368,8 +417,16 @@ async fn handle_message(
             }
         }
         "terminal.signal" => {
-            let session_id = env.payload.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
-            let signal = env.payload.get("signal").and_then(|v| v.as_str()).unwrap_or("");
+            let session_id = env
+                .payload
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let signal = env
+                .payload
+                .get("signal")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let result = match signal {
                 "SIGINT" => manager.write(&session_id, b"\x03"),
                 "SIGQUIT" => manager.write(&session_id, b"\x1c"),
@@ -396,7 +453,11 @@ async fn handle_message(
             }
         }
         "terminal.attach" => {
-            let session_id = env.payload.get("sessionId").and_then(|v| v.as_str()).unwrap_or("");
+            let session_id = env
+                .payload
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             // Send current scrollback so the remote client can render history.
             if let Ok(scrollback) = manager.get_scrollback(session_id) {
                 let resp = json!({
@@ -408,13 +469,21 @@ async fn handle_message(
             }
         }
         "file.list" => {
-            let path = env.payload.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let path = env
+                .payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let resp = handle_file_list(path);
             let out = json!({ "v": 1, "id": env.id, "type": "file.meta", "payload": resp });
             let _ = write.send(Message::Text(out.to_string())).await;
         }
         "file.read" => {
-            let path = env.payload.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let path = env
+                .payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let resp = handle_file_read(path);
             let out = json!({ "v": 1, "id": env.id, "type": "file.meta", "payload": resp });
             let _ = write.send(Message::Text(out.to_string())).await;
@@ -456,7 +525,9 @@ const GATEWAY_BLOCKED_FRAGMENTS: &[&str] = &[
 /// not be returned to a remote gateway client.
 fn is_gateway_blocked(path: &std::path::Path) -> bool {
     let s = path.to_string_lossy().to_lowercase();
-    GATEWAY_BLOCKED_FRAGMENTS.iter().any(|frag| s.contains(frag))
+    GATEWAY_BLOCKED_FRAGMENTS
+        .iter()
+        .any(|frag| s.contains(frag))
 }
 
 /// Validate and canonicalize a path, enforcing that it resides strictly within $HOME.
@@ -476,9 +547,7 @@ fn safe_resolve_path(raw_path: &str) -> Result<std::path::PathBuf, &'static str>
         std::path::PathBuf::from(raw_path)
     };
 
-    let canonical = candidate
-        .canonicalize()
-        .map_err(|_| "not_found")?;
+    let canonical = candidate.canonicalize().map_err(|_| "not_found")?;
 
     if !canonical.starts_with(&home) {
         return Err("access_denied");
@@ -517,7 +586,8 @@ fn handle_file_list(path: &str) -> serde_json::Value {
     entries.sort_by(|a, b| {
         let ad = a["isDir"].as_bool().unwrap_or(false);
         let bd = b["isDir"].as_bool().unwrap_or(false);
-        bd.cmp(&ad).then(a["name"].as_str().cmp(&b["name"].as_str()))
+        bd.cmp(&ad)
+            .then(a["name"].as_str().cmp(&b["name"].as_str()))
     });
     json!({ "ok": true, "path": dir.to_string_lossy(), "entries": entries })
 }
@@ -540,7 +610,10 @@ fn handle_file_read(path: &str) -> serde_json::Value {
     }
     match std::fs::read(&p) {
         Ok(bytes) => {
-            if bytes.iter().all(|b| b.is_ascii() || *b >= 0x20 || *b == b'\n' || *b == b'\r' || *b == b'\t') {
+            if bytes
+                .iter()
+                .all(|b| b.is_ascii() || *b >= 0x20 || *b == b'\n' || *b == b'\r' || *b == b'\t')
+            {
                 json!({ "ok": true, "path": p.to_string_lossy(), "text": String::from_utf8_lossy(&bytes).to_string() })
             } else {
                 json!({ "ok": true, "path": p.to_string_lossy(), "base64": encode_b64(&bytes), "binary": true })

@@ -1,19 +1,37 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
 import { scrollbarStyle, buttonBase } from '@/lib/theme';
 import type { UnifiedTerminal, TokenUsage } from '@/types';
 import type { Workspace } from '@/lib/workspace';
 import { TerminalAnchor } from '@/components/terminal/TerminalPool';
-import { isClosed, termName, formatUptime } from '@/lib/format';
-import { deriveTaskStatus, statusLabel, minTerminal } from '@/lib/status';
-import { TerminalSquare, Terminal, Plus, X, Pencil, MessageSquare } from 'lucide-react';
+import { isClosed, formatUptime } from '@/lib/format';
+import {
+  deriveTaskStatus,
+  statusLabel,
+  minTerminal,
+  getTerminalWorkDuration,
+} from '@/lib/status';
+import {
+  TerminalSquare,
+  Terminal,
+  Plus,
+  X,
+  Pencil,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
+  Check,
+} from 'lucide-react';
 import { DropChipStrip, type DropChip } from '@/components/DroppedFileChip';
 import { extractDropPaths } from '@/terminal/dropPaths';
 import { CliLogo } from '@/lib/cliLogos';
-import { AgentChatPanel, isAgentCli } from '@/components/terminal/AgentChatPanel';
 import { TerminalInput } from '@/terminal/TerminalInput';
+import { TerminalManager } from '@/terminal/TerminalManager';
+import { detectCLI } from '@/jarvis/adapters';
+import { NotificationPopover } from '@/components/notifications/NotificationPopover';
+import { useWorkspaceNotifications } from '@/hooks/useWorkspaceNotifications';
 
 interface Props {
   activeWorkspace?: Workspace;
@@ -35,17 +53,21 @@ interface Props {
   onDismissChip?: (id: number) => void;
   onClearChips?: (sessionId: string) => void;
   onRenameTerminal?: (tty: string, currentLabel: string) => void;
+  onSelectWorkspace?: (workspaceId: string) => void;
 }
 
 export function WorkspaceView({
   activeWorkspace,
+  workspaces,
   terminals,
   focusedTerminal,
   viewMode: _viewMode,
+  onSelectWorkspace,
   onSelectTerminal,
   onAddPane,
   onRemovePane,
   onDropToTerminal,
+  onToast,
   dropChips,
   onDismissChip,
   onClearChips,
@@ -54,7 +76,6 @@ export function WorkspaceView({
   const { theme: t } = useTheme();
   const [tick, setTick] = useState(0);
   const [dragOverTerminal, setDragOverTerminal] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
 
   // Per-terminal rename state
   const [editingTty, setEditingTty] = useState<string | null>(null);
@@ -62,36 +83,127 @@ export function WorkspaceView({
   // Which tab the pointer is over — reveals rename/close actions
   const [hoveredTty, setHoveredTty] = useState<string | null>(null);
 
+  // Tab scrolling & quick switcher state
+  const tabsContainerRef = useRef<HTMLDivElement>(null);
+  const tabRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+  const [tabDropdownOpen, setTabDropdownOpen] = useState(false);
+  const tabDropdownRef = useRef<HTMLDivElement>(null);
+
   // Poll status every 500ms so status dots stay current
   useEffect(() => {
     const id = window.setInterval(() => setTick((v) => v + 1), 500);
     return () => window.clearInterval(id);
   }, []);
 
+  // ── Unified Notifications across all workspaces ──
+  const notificationsState = useWorkspaceNotifications({
+    workspaces,
+    terminals,
+    activeWorkspaceId: activeWorkspace?.id,
+    onToast,
+    onNavigate: (wsId, tty) => {
+      onSelectWorkspace?.(wsId);
+      onSelectTerminal(tty);
+    },
+  });
+
+  // Dynamic Terminal List with live process & buffer detection
   const terminalList = useMemo(() => {
     if (!activeWorkspace) return [];
     return activeWorkspace.panes
       .filter((p) => p.tty)
-      .map((p) => {
+      .map((p, idx) => {
         const entry = terminals[p.tty!];
         const closed = isClosed(entry || minTerminal(p.tty!));
-        const status = deriveTaskStatus(p.tty!, entry, closed);
+        const meta = TerminalManager.getTerminalMetadata(
+          p.tty!,
+          entry,
+          closed,
+          detectCLI,
+          deriveTaskStatus,
+          getTerminalWorkDuration,
+          'shell'
+        );
+
+        // Format clean dynamic name: Priority is user rename (p.label), then detected CLI Name + Index, then clean session name
+        const rawDefaultName =
+          meta.cliName && meta.cli !== 'shell'
+            ? `${meta.cliName} · ${idx + 1}`
+            : entry?.session_name || entry?.pane_title || `Terminal ${idx + 1}`;
+        const cleanDefaultName = rawDefaultName.replace(/^tto\s*[·•-]\s*/i, '');
+        const label = p.label || cleanDefaultName;
+
         return {
           paneId: p.id,
           tty: p.tty!,
           entry,
-          status,
-          paneLabel: p.label,
+          status: meta.status,
+          label,
+          cli: meta.cli,
+          cliName: meta.cliName,
           registeredAt: entry?.registered_at,
+          index: idx,
         };
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWorkspace, terminals, tick]);
 
-  const displayLabel = (entry: UnifiedTerminal | undefined, paneLabel?: string): string => {
-    if (paneLabel) return paneLabel;
-    return termName(entry || ({ tty: '', agent: '', cli: '', session_name: '' } as any));
+  // Auto-scroll active tab into view whenever focusedTerminal changes
+  useEffect(() => {
+    if (!focusedTerminal) return;
+    const activeEl = tabRefs.current[focusedTerminal];
+    if (activeEl) {
+      activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }, [focusedTerminal]);
+
+  // Tab scroll overflow measurement
+  const updateScrollButtons = useCallback(() => {
+    const el = tabsContainerRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 2);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 2);
+  }, []);
+
+  useEffect(() => {
+    updateScrollButtons();
+    const el = tabsContainerRef.current;
+    if (!el) return;
+    el.addEventListener('scroll', updateScrollButtons, { passive: true });
+    window.addEventListener('resize', updateScrollButtons);
+    return () => {
+      el.removeEventListener('scroll', updateScrollButtons);
+      window.removeEventListener('resize', updateScrollButtons);
+    };
+  }, [updateScrollButtons, terminalList.length]);
+
+  const scrollTabs = (dir: 'left' | 'right') => {
+    const el = tabsContainerRef.current;
+    if (!el) return;
+    const delta = dir === 'left' ? -200 : 200;
+    el.scrollBy({ left: delta, behavior: 'smooth' });
   };
+
+  // Close tab switcher dropdown on outside click or Escape
+  useEffect(() => {
+    if (!tabDropdownOpen) return;
+    const handleDown = (e: MouseEvent) => {
+      if (tabDropdownRef.current && !tabDropdownRef.current.contains(e.target as Node)) {
+        setTabDropdownOpen(false);
+      }
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setTabDropdownOpen(false);
+    };
+    document.addEventListener('mousedown', handleDown);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleDown);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [tabDropdownOpen]);
 
   const startRename = (tty: string, label: string) => {
     setEditingTty(tty);
@@ -106,16 +218,13 @@ export function WorkspaceView({
   };
 
   // ── Status-row data for the focused terminal ──
+  const focusedActiveItem = terminalList.find((t) => t.tty === focusedTerminal);
   const focusedEntry = focusedTerminal ? terminals[focusedTerminal] : undefined;
-  const focusedStatus = focusedTerminal
-    ? statusLabel(deriveTaskStatus(focusedTerminal, focusedEntry, isClosed(focusedEntry || minTerminal(focusedTerminal))))
-    : null;
-  const focusedCli = (focusedEntry?.cli || '').toLowerCase().trim();
+  const focusedStatus = focusedActiveItem ? statusLabel(focusedActiveItem.status) : null;
+  const focusedCli = focusedActiveItem?.cli || '';
   const focusedUptime = focusedEntry?.registered_at
     ? formatUptime(Math.max(0, Date.now() / 1000 - focusedEntry.registered_at))
     : '';
-
-  const agentDetected = focusedEntry ? isAgentCli(focusedEntry) : false;
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -129,10 +238,36 @@ export function WorkspaceView({
           height: '34px',
           flexShrink: 0,
           userSelect: 'none',
+          position: 'relative',
         }}
       >
-        {/* Scrollable Tabs */}
+        {/* Scroll Left Button (visible when scrolled right) */}
+        {canScrollLeft && (
+          <button
+            onClick={() => scrollTabs('left')}
+            aria-label="Scroll tabs left"
+            style={{
+              width: '20px',
+              height: '100%',
+              background: 'linear-gradient(90deg, rgba(18,18,22,0.95) 60%, rgba(18,18,22,0) 100%)',
+              border: 'none',
+              color: t.colors.text.muted,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 0,
+              zIndex: 5,
+              flexShrink: 0,
+            }}
+          >
+            <ChevronLeft size={13} />
+          </button>
+        )}
+
+        {/* Scrollable Tabs Container */}
         <div
+          ref={tabsContainerRef}
           style={{
             display: 'flex',
             alignItems: 'stretch',
@@ -140,19 +275,23 @@ export function WorkspaceView({
             ...scrollbarStyle(t, false),
             flex: 1,
             minWidth: 0,
+            scrollBehavior: 'smooth',
           }}
         >
-          {terminalList.map(({ paneId, tty, entry, status, paneLabel }, idx) => {
+          {terminalList.map(({ paneId, tty, status, label, cli, index }) => {
             const { color } = statusLabel(status);
-            const label = displayLabel(entry, paneLabel);
             const isEditing = editingTty === tty;
             const isActive = tty === focusedTerminal;
             const isHovered = hoveredTty === tty;
-            const cliVal = (entry?.cli || '').toLowerCase().trim();
-            const shortcutKey = idx < 9 ? `⌘${idx + 1}` : null;
+            const isShell = ['zsh', 'bash', 'sh'].includes(cli);
+            const shortcutKey = index < 9 ? `⌘${index + 1}` : null;
+
             return (
               <div
                 key={tty}
+                ref={(el) => {
+                  tabRefs.current[tty] = el;
+                }}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -160,11 +299,13 @@ export function WorkspaceView({
                   borderRight: `1px solid ${t.colors.border.subtle}`,
                   borderBottom: `2px solid ${isActive ? t.colors.accent.primary : 'transparent'}`,
                   background: isActive ? t.colors.bg.primary : isHovered ? t.colors.bg.hover : 'transparent',
-                  maxWidth: '190px',
+                  maxWidth: '200px',
+                  minWidth: '95px',
                   height: '100%',
                   flexShrink: 0,
                   transition: 'background 0.12s ease',
                   cursor: 'pointer',
+                  position: 'relative',
                 }}
                 onClick={() => onSelectTerminal(tty)}
                 onMouseEnter={() => setHoveredTty(tty)}
@@ -179,7 +320,7 @@ export function WorkspaceView({
                     fontSize: '11px',
                     whiteSpace: 'nowrap',
                     minWidth: 0,
-                    maxWidth: '145px',
+                    maxWidth: '150px',
                     overflow: 'hidden',
                     height: '100%',
                     flexShrink: 1,
@@ -187,7 +328,16 @@ export function WorkspaceView({
                   onDoubleClick={() => startRename(tty || paneId, label)}
                   title={`${label} — ${statusLabel(status).text}${shortcutKey ? ` · ${shortcutKey}` : ''} (double-click to rename)`}
                 >
-                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                  <span
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      background: color,
+                      boxShadow: status === 'asking' ? '0 0 6px #a855f7' : status === 'running' ? '0 0 5px #22c55e' : 'none',
+                      flexShrink: 0,
+                    }}
+                  />
                   {shortcutKey && (
                     <span
                       style={{
@@ -205,10 +355,10 @@ export function WorkspaceView({
                       {shortcutKey}
                     </span>
                   )}
-                  {cliVal && (['zsh', 'bash', 'sh'].includes(cliVal) ? (
+                  {cli && (isShell ? (
                     <Terminal size={11} style={{ opacity: 0.75, color: isActive ? t.colors.accent.primary : t.colors.text.muted, flexShrink: 0 }} />
                   ) : (
-                    <CliLogo cli={cliVal} size={11} />
+                    <CliLogo cli={cli} size={11} />
                   ))}
                   {isEditing ? (
                     <input
@@ -364,12 +514,6 @@ export function WorkspaceView({
               e.currentTarget.style.boxShadow = '0 1px 2px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.06)';
               e.currentTarget.style.transform = 'scale(1)';
             }}
-            onMouseDown={(e) => {
-              e.currentTarget.style.transform = 'scale(0.96)';
-            }}
-            onMouseUp={(e) => {
-              e.currentTarget.style.transform = 'scale(1)';
-            }}
           >
             <Plus size={12} />
             <span
@@ -389,7 +533,31 @@ export function WorkspaceView({
           </button>
         </div>
 
-        {/* Right-side tab bar controls */}
+        {/* Scroll Right Button (visible when overflow exists to the right) */}
+        {canScrollRight && (
+          <button
+            onClick={() => scrollTabs('right')}
+            aria-label="Scroll tabs right"
+            style={{
+              width: '20px',
+              height: '100%',
+              background: 'linear-gradient(270deg, rgba(18,18,22,0.95) 60%, rgba(18,18,22,0) 100%)',
+              border: 'none',
+              color: t.colors.text.muted,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 0,
+              zIndex: 5,
+              flexShrink: 0,
+            }}
+          >
+            <ChevronRight size={13} />
+          </button>
+        )}
+
+        {/* ── Right-Side Controls: Active Pill, Quick Switcher, Notifications ── */}
         <div
           style={{
             display: 'flex',
@@ -398,68 +566,163 @@ export function WorkspaceView({
             padding: '0 10px',
             flexShrink: 0,
             borderLeft: `1px solid ${t.colors.border.subtle}`,
+            position: 'relative',
           }}
         >
-          {agentDetected && (
+          {/* Quick Tab Switcher Button & Dropdown */}
+          <div ref={tabDropdownRef} style={{ position: 'relative' }}>
             <button
-              onClick={() => setChatOpen((prev) => !prev)}
-              title={chatOpen ? 'Hide Agent Chat' : 'Open Live Agent Chat'}
+              onClick={() => setTabDropdownOpen((prev) => !prev)}
+              aria-label="Open tab switcher"
+              aria-expanded={tabDropdownOpen}
+              title="Click to jump to any terminal in this workspace"
               style={{
-                ...buttonBase(t),
-                display: 'inline-flex',
+                display: 'flex',
                 alignItems: 'center',
                 gap: '5px',
-                height: '24px',
-                padding: '0 8px',
-                borderRadius: '5px',
-                background: chatOpen
-                  ? 'linear-gradient(180deg, rgba(56, 189, 248, 0.22) 0%, rgba(56, 189, 248, 0.12) 100%)'
-                  : 'linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.02) 100%)',
-                border: `1px solid ${chatOpen ? 'rgba(56, 189, 248, 0.4)' : t.colors.border.subtle}`,
-                color: chatOpen ? '#38bdf8' : t.colors.text.secondary,
-                cursor: 'pointer',
-                fontSize: '10.5px',
+                fontSize: '10px',
+                padding: '2px 8px',
+                borderRadius: '6px',
+                background: tabDropdownOpen ? t.colors.bg.elevated : 'rgba(255, 255, 255, 0.04)',
+                border: `1px solid ${tabDropdownOpen ? t.colors.accent.primary : t.colors.border.subtle}`,
+                color: t.colors.text.secondary,
                 fontWeight: 600,
-                boxShadow: chatOpen ? '0 0 8px rgba(56, 189, 248, 0.25)' : 'none',
-                transition: 'all 0.14s cubic-bezier(0.16, 1, 0.3, 1)',
+                cursor: 'pointer',
+                transition: 'all 0.12s ease',
               }}
               onMouseEnter={(e) => {
-                if (!chatOpen) {
-                  e.currentTarget.style.color = t.colors.text.primary;
-                  e.currentTarget.style.borderColor = t.colors.border.primary;
-                }
+                e.currentTarget.style.color = t.colors.text.primary;
+                e.currentTarget.style.borderColor = t.colors.border.primary;
               }}
               onMouseLeave={(e) => {
-                if (!chatOpen) {
+                if (!tabDropdownOpen) {
                   e.currentTarget.style.color = t.colors.text.secondary;
                   e.currentTarget.style.borderColor = t.colors.border.subtle;
                 }
               }}
             >
-              <MessageSquare size={12} />
-              <span>Agent Chat</span>
+              <span>
+                {terminalList.length} {terminalList.length === 1 ? 'tab' : 'tabs'}
+              </span>
+              <ChevronDown size={11} style={{ opacity: 0.7 }} />
             </button>
-          )}
 
-          {focusedTerminal && (
-            <span
-              style={{
-                fontSize: '10px',
-                padding: '2px 8px',
-                borderRadius: '10px',
-                background: t.colors.bg.elevated,
-                border: `1px solid ${t.colors.border.subtle}`,
-                color: t.colors.text.muted,
-                fontWeight: 600,
-              }}
-            >
-              {terminalList.length} {terminalList.length === 1 ? 'tab' : 'tabs'}
-            </span>
-          )}
+            {/* Tab Switcher Dropdown */}
+            {tabDropdownOpen && (
+              <div
+                role="menu"
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 6px)',
+                  right: 0,
+                  width: '240px',
+                  maxHeight: '320px',
+                  background: 'rgba(22, 22, 26, 0.95)',
+                  backdropFilter: 'blur(16px)',
+                  WebkitBackdropFilter: 'blur(16px)',
+                  border: `1px solid ${t.colors.border.subtle}`,
+                  borderRadius: '8px',
+                  boxShadow: '0 12px 30px rgba(0,0,0,0.5)',
+                  zIndex: 900,
+                  padding: '4px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '2px',
+                  overflowY: 'auto',
+                }}
+              >
+                <div
+                  style={{
+                    padding: '5px 8px 4px',
+                    fontSize: '9.5px',
+                    fontWeight: 700,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                    color: t.colors.text.muted,
+                  }}
+                >
+                  Workspace Terminals
+                </div>
+                {terminalList.map(({ tty, label, cli, status, index }) => {
+                  const isActive = tty === focusedTerminal;
+                  const { color } = statusLabel(status);
+                  const isShell = ['zsh', 'bash', 'sh'].includes(cli);
+                  const shortcut = index < 9 ? `⌘${index + 1}` : null;
+
+                  return (
+                    <button
+                      key={tty}
+                      role="menuitem"
+                      onClick={() => {
+                        onSelectTerminal(tty);
+                        setTabDropdownOpen(false);
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '6px 8px',
+                        borderRadius: '5px',
+                        background: isActive ? `${t.colors.accent.primary}22` : 'transparent',
+                        border: `1px solid ${isActive ? `${t.colors.accent.primary}44` : 'transparent'}`,
+                        color: isActive ? t.colors.text.primary : t.colors.text.secondary,
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        fontSize: '11px',
+                        width: '100%',
+                        transition: 'background 0.1s ease',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isActive) e.currentTarget.style.background = t.colors.bg.elevated;
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isActive) e.currentTarget.style.background = 'transparent';
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                        {cli && (isShell ? <Terminal size={11} style={{ opacity: 0.7 }} /> : <CliLogo cli={cli} size={11} />)}
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {label}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                        {shortcut && (
+                          <span
+                            style={{
+                              fontSize: '9px',
+                              fontFamily: t.fontFamily.mono,
+                              color: t.colors.text.muted,
+                              padding: '1px 3px',
+                              borderRadius: '3px',
+                              background: t.colors.bg.elevated,
+                            }}
+                          >
+                            {shortcut}
+                          </span>
+                        )}
+                        {isActive && <Check size={11} color={t.colors.accent.primary} />}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Fixed Notifications Bell & Popover ("Poplar") */}
+          <NotificationPopover
+            notifications={notificationsState.notifications}
+            unreadCount={notificationsState.unreadCount}
+            hasAsking={notificationsState.hasAsking}
+            onClearAll={notificationsState.clearAll}
+            onDismiss={notificationsState.dismissNotification}
+            onNavigate={notificationsState.onNavigate}
+          />
         </div>
       </div>
 
-      {/* ── Main Terminal Body (Terminal + Optional Agent Chat side-by-side) ── */}
+      {/* ── Main Terminal Body ── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'row', minHeight: 0, minWidth: 0 }}>
         {focusedTerminal ? (
           <div
@@ -537,17 +800,6 @@ export function WorkspaceView({
             <div style={{ fontSize: t.fontSize.xs }}>Create a workspace or select a terminal</div>
           </div>
         )}
-
-        {/* Side-by-side Agent Chat Panel */}
-        {agentDetected && chatOpen && focusedTerminal && focusedEntry && (
-          <AgentChatPanel
-            key={focusedTerminal}
-            sessionId={focusedTerminal}
-            entry={focusedEntry}
-            onClose={() => setChatOpen(false)}
-            width={340}
-          />
-        )}
       </div>
 
       {/* ── Sleek Bottom Status Bar ── */}
@@ -600,8 +852,12 @@ export function WorkspaceView({
                 color: t.colors.text.secondary,
               }}
             >
-              <CliLogo cli={focusedCli} size={10} />
-              {focusedCli}
+              {['zsh', 'bash', 'sh'].includes(focusedCli) ? (
+                <Terminal size={10} style={{ opacity: 0.7 }} />
+              ) : (
+                <CliLogo cli={focusedCli} size={10} />
+              )}
+              {focusedActiveItem?.cliName || focusedCli}
             </span>
           )}
           {focusedUptime && (

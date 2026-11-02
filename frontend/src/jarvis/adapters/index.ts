@@ -142,6 +142,7 @@ function scoreBufferMatch(adapterId: string, bufferLines: string[]): number {
       return 0;
     }
     const patterns = [
+      /claude\s*>/i,
       /claude\s+code\b/i,
       /anthropics?\/claude\b/i,
       /@anthropic-ai\/claude/i,

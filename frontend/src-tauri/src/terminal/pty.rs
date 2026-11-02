@@ -84,9 +84,7 @@ pub fn tty_for_pid(pid: u32) -> String {
             .output()
             .ok();
         match out {
-            Some(o) if o.status.success() => {
-                String::from_utf8_lossy(&o.stdout).trim().to_string()
-            }
+            Some(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
             _ => String::new(),
         }
     }
@@ -125,7 +123,16 @@ pub fn active_child_process(shell_pid: u32) -> Option<String> {
                 let name = cmd.rsplit('/').next().unwrap_or(cmd).to_lowercase();
                 if name != "zsh" && name != "bash" && name != "sh" && name != "login" {
                     // If the child is a runner like node, python, bun, npx, pnpm, etc., inspect its full args
-                    if name == "node" || name == "python" || name == "python3" || name == "bun" || name == "npx" || name == "pnpm" || name == "bunx" || name == "yarn" || name == "uvx" {
+                    if name == "node"
+                        || name == "python"
+                        || name == "python3"
+                        || name == "bun"
+                        || name == "npx"
+                        || name == "pnpm"
+                        || name == "bunx"
+                        || name == "yarn"
+                        || name == "uvx"
+                    {
                         if let Ok(args_out) = std::process::Command::new("ps")
                             .args(["-o", "args=", "-p", child_pid_str])
                             .stdin(std::process::Stdio::null())
@@ -141,7 +148,10 @@ pub fn active_child_process(shell_pid: u32) -> Option<String> {
                                 return Some("codex".to_string());
                             } else if args.contains("opencode") {
                                 return Some("opencode".to_string());
-                            } else if args.contains("prime-agent") || args.contains("prime_agent") || args.contains("prime") {
+                            } else if args.contains("prime-agent")
+                                || args.contains("prime_agent")
+                                || args.contains("prime")
+                            {
                                 return Some("prime".to_string());
                             } else if args.contains("agy") || args.contains("antigravity") {
                                 return Some("antigravity".to_string());

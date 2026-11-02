@@ -53,8 +53,6 @@ import { getCollabSession, type CollabUser, type OwnerProfile } from '@/lib/coll
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { SettingsView } from '@/views/settings/SettingsView';
 import { CallOverlay } from '@/opendots/components/CallOverlay';
-import { ChatView } from '@/views/chat/ChatView';
-import { buildLaunchCommand, cliById } from '@/chat/cliCatalog';
 
 const INITIAL_TERMINAL_COLS = 120;
 const INITIAL_TERMINAL_ROWS = 40;
@@ -76,7 +74,6 @@ export default function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>(() => loadWorkspaces());
   const [activeWsId, setActiveWsId] = useState<string>(() => loadActiveWsId());
   const [view, setView] = useState<View>('workspace');
-  const [chatCreateNonce, setChatCreateNonce] = useState(0);
   const previousViewRef = useRef<View>('workspace');
 
   const handleSetView = useCallback((nextView: View) => {
@@ -266,13 +263,6 @@ export default function App() {
   // Inactive workspaces keep their panes unspawned until switched to, preventing
   // 40+ concurrent zsh fork storms, pre-exec crashes, and main-thread freezes.
   const bootCreated = useRef(new Set<string>());
-  const cancelledChatPanes = useRef(new Set<string>());
-  // cli id -> pane id for a start that has not returned yet. A second switch
-  // to that CLI retargets this pane instead of spawning another PTY.
-  const chatInflightCli = useRef(new Map<string, string>());
-  // The pane that may take focus when its PTY comes up. Cleared when the
-  // user focuses a different terminal, so a slower start cannot steal it.
-  const chatFocusPaneId = useRef<string | null>(null);
   const isSpawningRef = useRef(false);
 
   useEffect(() => {
@@ -772,7 +762,6 @@ export default function App() {
 
   // ── Close a terminal card (grid tile / pane tab) ───────────────────
   const handleRemovePane = useCallback((paneId: string) => {
-    cancelledChatPanes.current.add(paneId);
     setExpandedPane((ep) => (ep === paneId ? null : ep));
     setSelectedPane((sp) => (sp === paneId ? null : sp));
     const pane = workspaces
@@ -996,119 +985,6 @@ export default function App() {
     }
   }, [activeWorkspace, view]);
 
-  // Chat's CLI + model pair is one pane. An existing live pair is focused.
-  // New always spawns another PTY. The boot effect skips this pane id.
-  const handleCreateChatSession = useCallback(async (
-    cliId: string,
-    modelId: string,
-    forceNew: boolean,
-    commandOverride?: string,
-    reusePending?: boolean,
-  ) => {
-    const ws = activeWorkspace;
-    if (!ws || !isTauri()) {
-      showToast('Open a workspace first', true);
-      return;
-    }
-    const override = (commandOverride || '').trim();
-    const command = override || buildLaunchCommand(cliId, modelId);
-    if (!command) {
-      showToast('Pick a CLI and a model', true);
-      return;
-    }
-    if (!forceNew) {
-      const existing = ws.panes.find((p) => p.tty && p.cliId === cliId && p.modelId === modelId);
-      if (existing?.tty) {
-        chatFocusPaneId.current = null;
-        setFocusedTerminal(existing.tty);
-        setSelectedPane(existing.id);
-        return;
-      }
-    }
-    if (reusePending) {
-      const already = chatInflightCli.current.get(cliId);
-      if (already && !cancelledChatPanes.current.has(already)) {
-        chatFocusPaneId.current = already;
-        return;
-      }
-      if (already) chatInflightCli.current.delete(cliId);
-    }
-    const paneId = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    const releaseInflight = () => {
-      if (chatInflightCli.current.get(cliId) === paneId) chatInflightCli.current.delete(cliId);
-      if (chatFocusPaneId.current === paneId) chatFocusPaneId.current = null;
-    };
-    const dropUnstarted = () => {
-      releaseInflight();
-      bootCreated.current.delete(paneId);
-      setWorkspaces((prev) => {
-        const next = prev.map((w) =>
-          w.id === ws.id
-            ? { ...w, panes: w.panes.filter((p) => p.id !== paneId || p.tty) }
-            : w);
-        saveWorkspaces(next);
-        return next;
-      });
-    };
-    chatInflightCli.current.set(cliId, paneId);
-    chatFocusPaneId.current = paneId;
-    const cli = cliById(cliId);
-    const trimmedModel = (modelId || '').trim();
-    const shortModel = trimmedModel.split('/').pop() || trimmedModel;
-    const label = cli
-      ? (trimmedModel ? `${cli.label} · ${shortModel}` : cli.label)
-      : shortModel;
-    bootCreated.current.add(paneId);
-    setWorkspaces((prev) => {
-      const next = prev.map((w) =>
-        w.id === ws.id
-          ? { ...w, panes: [...w.panes, { id: paneId, tty: null, cliId, modelId, launchCommand: command, label }] }
-          : w);
-      saveWorkspaces(next);
-      return next;
-    });
-    try {
-      const created = await tauri.create(
-        ws.projectPath || undefined, ws.id, INITIAL_TERMINAL_COLS, INITIAL_TERMINAL_ROWS, command);
-      const sid = (created as { id?: string; tty?: string })?.id ||
-                  (created as { tty?: string })?.tty;
-      if (!sid) {
-        dropUnstarted();
-        showToast('The session did not start', true);
-        return;
-      }
-      if (cancelledChatPanes.current.has(paneId)) {
-        cancelledChatPanes.current.delete(paneId);
-        releaseInflight();
-        tauri.close(sid).catch((err) =>
-          console.error('[App] closed a chat session whose tab was already gone', err));
-        return;
-      }
-      if (chatInflightCli.current.get(cliId) === paneId) chatInflightCli.current.delete(cliId);
-      const stillWanted = chatFocusPaneId.current === paneId;
-      setWorkspaces((prev) => {
-        const owner = prev.find((w) => w.id === ws.id);
-        if (!owner?.panes.some((p) => p.id === paneId)) return prev;
-        const next = prev.map((w) =>
-          w.id === ws.id
-            ? { ...w, panes: w.panes.map((p) => (p.id === paneId ? { ...p, tty: sid } : p)) }
-            : w);
-        saveWorkspaces(next);
-        return next;
-      });
-      if (stillWanted) {
-        setFocusedTerminal(sid);
-        setSelectedPane(paneId);
-      }
-      const refreshed = await tauri.list();
-      if (Array.isArray(refreshed)) setNativeSessions(refreshed as unknown as NativeSessionEntry[]);
-    } catch (err) {
-      console.error('[App] handleCreateChatSession failed:', err);
-      dropUnstarted();
-      showToast('Could not start that session', true);
-    }
-  }, [activeWorkspace]);
-
   // ── Dedicated IDE Terminal Handlers ─────────────────────────────────
   const handleAddIdeTerminal = useCallback(async (): Promise<string | undefined> => {
     const ws = activeWorkspace;
@@ -1214,7 +1090,6 @@ export default function App() {
     onAddPane: handleAddPane,
     onRemovePane: handleRemovePane,
     onAddIdeTerminal: handleAddIdeTerminal,
-    onRequestChatCreate: () => setChatCreateNonce((n) => n + 1),
     onToast: showToast,
   });
 
@@ -1484,23 +1359,6 @@ export default function App() {
               </Suspense>
             </ErrorBoundary>
           )}
-          {view === 'chat' && (
-            <ChatView
-              activeWorkspace={activeWorkspace}
-              terminals={unifiedTerminals}
-              focusedTerminal={focusedTerminal}
-              createNonce={chatCreateNonce}
-              onSelectTerminal={(id) => {
-                chatFocusPaneId.current = null;
-                setFocusedTerminal(id);
-              }}
-              onSelectPane={setSelectedPane}
-              onRemovePane={handleRemovePane}
-              onRenameTerminal={handleRenameTerminalDirect}
-              onCreateSession={handleCreateChatSession}
-              onToast={showToast}
-            />
-          )}
           {view === 'dashboard' && (
             <DashboardView
               activeWorkspace={activeWorkspace}
@@ -1540,6 +1398,7 @@ export default function App() {
               focusedTerminal={focusedTerminal}
               viewMode={viewMode}
               gotoNonce={gotoNonce}
+              onSelectWorkspace={setActiveWsId}
               onSelectTerminal={setFocusedTerminal}
               onSetViewMode={setViewMode}
               onSetGotoNonce={setGotoNonce}

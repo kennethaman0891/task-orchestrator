@@ -37,7 +37,7 @@ export interface Workspace {
   skipWelcomeBanner?: boolean;
 }
 
-export type View = 'workspace' | 'city' | 'colab' | 'grid' | 'dashboard' | 'ide' | 'kanban' | 'cards' | 'planner' | 'agent' | 'devices' | 'django-reviewer' | 'wizard' | 'settings' | 'chat';
+export type View = 'workspace' | 'city' | 'colab' | 'grid' | 'dashboard' | 'ide' | 'kanban' | 'cards' | 'planner' | 'agent' | 'devices' | 'django-reviewer' | 'wizard' | 'settings';
 
 export type GridMode = 'auto' | 'grid' | 'compact' | 'large';
 

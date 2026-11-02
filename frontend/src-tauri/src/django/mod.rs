@@ -2,10 +2,10 @@
 //!
 //! Pipeline: extract → analyze → fix → test → package
 
-pub mod extractor;
 pub mod analyzer;
-pub mod fixer;
 pub mod executor;
+pub mod extractor;
+pub mod fixer;
 pub mod packager;
 
 use serde::{Deserialize, Serialize};

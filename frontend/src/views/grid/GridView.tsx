@@ -7,7 +7,6 @@ import type { UnifiedTerminal } from '@/types';
 import type { Workspace, Pane, GridMode, TemplateKey, GridDensity } from '@/lib/workspace';
 import { GRID_GAP, TEMPLATES, computeGridLayout, gridTracks, paintedGridSlots } from '@/lib/workspace';
 import { TerminalAnchor } from '@/components/terminal/TerminalPool';
-import { AgentChatPanel, isAgentCli } from '@/components/terminal/AgentChatPanel';
 import { CliLogo } from '@/lib/cliLogos';
 import { isClosed, cleanModel } from '@/lib/format';
 import { deriveTaskStatus, statusLabel, minTerminal, getTerminalWorkDuration, type TermStatus } from '@/lib/status';
@@ -17,7 +16,6 @@ import { isTauri, tauri } from '@/lib/tauri';
 import {
   Plus,
   GripVertical,
-  MessageSquare,
   Maximize2,
   Minimize2,
   X,
@@ -250,7 +248,6 @@ const GridCard = memo(function GridCard({
   const rawModel = entry?.model || entry?.tokens?.model || entry?.opencode_model || '';
   const shortModel = rawModel ? cleanModel(rawModel) : '';
   const logoCli = resolveLogoCli(entry?.cli || cli, agentName);
-  const agentDetected = agentName !== '' && isAgentCli(entry);
   const showStatusDot = !isExpanded && isUltraCompact;
 
   const focusTerminal = useCallback(() => {
@@ -265,31 +262,6 @@ const GridCard = memo(function GridCard({
       });
     }
   }, [onSelectPane, onSelectTerminal, pane.id, pane.tty]);
-
-  const [chatOpen, setChatOpen] = useState<boolean>(() => {
-    if (!pane.tty) return false;
-    try {
-      const open = JSON.parse(localStorage.getItem('tto-grid-chat-open') || '[]') as string[];
-      return open.includes(pane.tty);
-    } catch {
-      return false;
-    }
-  });
-  const toggleChat = () => {
-    setChatOpen((prev) => {
-      const next = !prev;
-      if (pane.tty) {
-        try {
-          const cur = JSON.parse(localStorage.getItem('tto-grid-chat-open') || '[]') as string[];
-          const arr = next
-            ? cur.includes(pane.tty) ? cur : [...cur, pane.tty]
-            : cur.filter((x) => x !== pane.tty);
-          localStorage.setItem('tto-grid-chat-open', JSON.stringify(arr));
-        } catch { /* noop */ }
-      }
-      return next;
-    });
-  };
 
   useEffect(() => {
     if (!isEditing) setRenameDraft(displayName);
@@ -510,21 +482,6 @@ const GridCard = memo(function GridCard({
           />
         )}
 
-        {agentDetected && !isExpanded && (
-          <button
-            type="button"
-            className="ws-pane-icon-btn"
-            style={{ width: iconBtnSize, height: iconBtnSize, color: chatOpen ? t.colors.accent.primary : undefined }}
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleChat();
-            }}
-            title={chatOpen ? 'Hide agent chat' : 'Open live agent chat'}
-          >
-            <MessageSquare size={lucideSize} />
-          </button>
-        )}
-
         {isExpanded ? (
           <button
             type="button"
@@ -598,15 +555,6 @@ const GridCard = memo(function GridCard({
           >
             <TerminalAnchor sessionId={pane.tty} />
           </div>
-          {agentDetected && chatOpen && !isExpanded && entry && (
-            <AgentChatPanel
-              key={pane.tty}
-              sessionId={pane.tty}
-              entry={entry}
-              onClose={toggleChat}
-              width={260}
-            />
-          )}
         </div>
       ) : null}
     </div>

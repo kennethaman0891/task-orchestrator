@@ -50,7 +50,7 @@ pub struct SessionDiag {
     pub queue_len: usize,
     pub dropped_bytes: u64,
     pub chunks_sent: u64,
-    pub mode: String, // focused | visible | background
+    pub mode: String,      // focused | visible | background
     pub grid_mode: String, // auto | grid | compact | large
 }
 
@@ -96,7 +96,11 @@ pub struct TerminalSession {
 pub const SCROLLBACK_CAP: usize = 16 * 1024 * 1024;
 
 impl TerminalSession {
-    pub fn new(meta: SessionMeta, pty: PtyHandle, rx: tokio::sync::mpsc::Receiver<OutputChunk>) -> Self {
+    pub fn new(
+        meta: SessionMeta,
+        pty: PtyHandle,
+        rx: tokio::sync::mpsc::Receiver<OutputChunk>,
+    ) -> Self {
         Self {
             meta: Mutex::new(meta),
             pty: Mutex::new(pty),

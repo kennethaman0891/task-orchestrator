@@ -9,7 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "npx tsx src/lib/workspace.test.ts && npx tsx src/views/grid/gridLayout.test.ts && npx tsx src/jarvis/callDelivery.test.ts && npx tsx src/terminal/chatTranscript.test.ts && npx tsx src/components/terminal/terminalPoolLifecycle.test.ts && npx tsx src/terminal/TerminalManager.test.ts && npx tsx src/views/agent/qwenWorkspaceTerminals.test.ts && npx tsx src/city/scene/cityClearance.test.ts",
+    "test": "npx tsx src/lib/workspace.test.ts && npx tsx src/views/grid/gridLayout.test.ts && npx tsx src/card-grid/GridEngine.test.ts && npx tsx src/jarvis/callDelivery.test.ts && npx tsx src/components/terminal/terminalPoolLifecycle.test.ts && npx tsx src/terminal/TerminalManager.test.ts && npx tsx src/views/agent/qwenWorkspaceTerminals.test.ts && npx tsx src/city/scene/cityClearance.test.ts && npx tsx src/terminal/cliDetectionAndNotifications.test.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

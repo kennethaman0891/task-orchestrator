@@ -40,7 +40,11 @@ pub fn spawn_scheduler(manager: Arc<TerminalManager>) {
                             "focused" => 64,
                             "visible" => {
                                 let m = s.meta.lock();
-                                if m.grid_mode == "compact" { 24 } else { 16 }
+                                if m.grid_mode == "compact" {
+                                    24
+                                } else {
+                                    16
+                                }
                             }
                             _ => {
                                 // Background & detached sessions: drain smoothly every 4th tick (≈64ms)

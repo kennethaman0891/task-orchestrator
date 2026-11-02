@@ -34,7 +34,7 @@ export class ClaudeCodeAdapter implements ICLIAdapter {
       return false;
     }
     // Only match strictly Claude-specific signatures (never generic terms like 'thought for' or 'bypass permissions')
-    return /claude\s+code\b|anthropics?\/claude\b|welcome to claude\b|@anthropic-ai\/claude|\bauto mode on\b|shift\+tab to cycle\b|api usage billing\b/i.test(text);
+    return /claude\s*>|claude\s+code\b|anthropics?\/claude\b|welcome to claude\b|@anthropic-ai\/claude|\bauto mode on\b|shift\+tab to cycle\b|api usage billing\b/i.test(text);
   }
 
 

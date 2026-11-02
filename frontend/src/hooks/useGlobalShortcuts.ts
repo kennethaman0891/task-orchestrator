@@ -15,8 +15,6 @@ interface GlobalShortcutsOptions {
   onAddPane: (targetSlotIndex?: number) => void | Promise<void>;
   onRemovePane: (paneId: string) => void;
   onAddIdeTerminal?: () => Promise<string | undefined>;
-  /** Chat view: ⌘T focuses the CLI + model creator instead of a bare shell. */
-  onRequestChatCreate?: () => void;
   onToast?: (msg: string, error?: boolean) => void;
 }
 
@@ -48,7 +46,6 @@ export function useGlobalShortcuts({
   onAddPane,
   onRemovePane,
   onAddIdeTerminal,
-  onRequestChatCreate,
   onToast,
 }: GlobalShortcutsOptions) {
   const stateRef = useRef({
@@ -64,7 +61,6 @@ export function useGlobalShortcuts({
     onAddPane,
     onRemovePane,
     onAddIdeTerminal,
-    onRequestChatCreate,
     onToast,
   });
 
@@ -82,7 +78,6 @@ export function useGlobalShortcuts({
       onAddPane,
       onRemovePane,
       onAddIdeTerminal,
-      onRequestChatCreate,
       onToast,
     };
   });
@@ -148,12 +143,6 @@ export function useGlobalShortcuts({
           return;
         }
 
-        if (current.view === 'chat') {
-          current.onRequestChatCreate?.();
-          current.onToast?.('Choose a CLI and a model (⌘T)');
-          return;
-        }
-
         // Grid view: fill next available empty slot or append to expand grid
         if (current.view === 'grid') {
           if (!ws) {
@@ -211,7 +200,7 @@ export function useGlobalShortcuts({
           return;
         }
 
-        if ((current.view === 'workspace' || current.view === 'chat') && current.focusedTerminal) {
+        if (current.view === 'workspace' && current.focusedTerminal) {
           const pane = ws.panes.find((p) => p.tty === current.focusedTerminal);
           if (pane) {
             current.onRemovePane(pane.id);

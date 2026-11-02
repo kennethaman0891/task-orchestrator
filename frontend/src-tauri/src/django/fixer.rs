@@ -105,13 +105,12 @@ fn fix_urls(root: &Path, issue: &Issue) -> Result<String, String> {
     if issue.message.contains("No urlpatterns") {
         let urls_path = root.join(&issue.file);
         if urls_path.exists() {
-            let content = fs::read_to_string(&urls_path)
-                .map_err(|e| format!("Cannot read: {e}"))?;
+            let content =
+                fs::read_to_string(&urls_path).map_err(|e| format!("Cannot read: {e}"))?;
             if !content.contains("urlpatterns") {
-                let new_content = content
-                    + "\nurlpatterns = [\n    # Add your URL patterns here\n]\n";
-                fs::write(&urls_path, new_content)
-                    .map_err(|e| format!("Cannot write: {e}"))?;
+                let new_content =
+                    content + "\nurlpatterns = [\n    # Add your URL patterns here\n]\n";
+                fs::write(&urls_path, new_content).map_err(|e| format!("Cannot write: {e}"))?;
                 return Ok(format!("Added empty urlpatterns to {}", issue.file));
             }
         }
@@ -131,15 +130,13 @@ fn fix_models(root: &Path, issue: &Issue) -> Result<String, String> {
         // Add __str__ method to model
         let models_path = root.join(&issue.file);
         if models_path.exists() {
-            let content = fs::read_to_string(&models_path)
-                .map_err(|e| format!("Cannot read: {e}"))?;
+            let content =
+                fs::read_to_string(&models_path).map_err(|e| format!("Cannot read: {e}"))?;
             // Find the model class and add __str__ if missing
             if !content.contains("def __str__(self)") {
                 // Append a note — actual insertion requires AST manipulation
-                let new_content = content
-                    + "\n# TODO: Add __str__ methods to your models\n";
-                fs::write(&models_path, new_content)
-                    .map_err(|e| format!("Cannot write: {e}"))?;
+                let new_content = content + "\n# TODO: Add __str__ methods to your models\n";
+                fs::write(&models_path, new_content).map_err(|e| format!("Cannot write: {e}"))?;
                 return Ok(format!("Added __str__ TODO to {}", issue.file));
             }
         }
@@ -152,14 +149,13 @@ fn fix_settings(root: &Path, issue: &Issue) -> Result<String, String> {
     if issue.message.contains("SECRET_KEY") {
         let settings_path = root.join(&issue.file);
         if settings_path.exists() {
-            let content = fs::read_to_string(&settings_path)
-                .map_err(|e| format!("Cannot read: {e}"))?;
+            let content =
+                fs::read_to_string(&settings_path).map_err(|e| format!("Cannot read: {e}"))?;
             if !content.contains("SECRET_KEY") {
                 let new_content = "SECRET_KEY = 'django-insecure-change-me-in-production'\n\n"
                     .to_string()
                     + &content;
-                fs::write(&settings_path, new_content)
-                    .map_err(|e| format!("Cannot write: {e}"))?;
+                fs::write(&settings_path, new_content).map_err(|e| format!("Cannot write: {e}"))?;
                 return Ok("Added SECRET_KEY to settings.py".to_string());
             }
         }
@@ -167,15 +163,14 @@ fn fix_settings(root: &Path, issue: &Issue) -> Result<String, String> {
     if issue.message.contains("ALLOWED_HOSTS") {
         let settings_path = root.join(&issue.file);
         if settings_path.exists() {
-            let content = fs::read_to_string(&settings_path)
-                .map_err(|e| format!("Cannot read: {e}"))?;
+            let content =
+                fs::read_to_string(&settings_path).map_err(|e| format!("Cannot read: {e}"))?;
             let new_content = content.replace(
                 "ALLOWED_HOSTS = []",
                 "ALLOWED_HOSTS = ['localhost', '127.0.0.1']",
             );
             if new_content != content {
-                fs::write(&settings_path, new_content)
-                    .map_err(|e| format!("Cannot write: {e}"))?;
+                fs::write(&settings_path, new_content).map_err(|e| format!("Cannot write: {e}"))?;
                 return Ok("Updated ALLOWED_HOSTS in settings.py".to_string());
             }
         }
@@ -192,11 +187,9 @@ fn fix_admin(root: &Path, issue: &Issue) -> Result<String, String> {
                 let model_name = &issue.message[start + 1..start + 1 + end];
                 let admin_path = root.join(&issue.file);
                 if admin_path.exists() {
-                    let content = fs::read_to_string(&admin_path)
-                        .map_err(|e| format!("Cannot read: {e}"))?;
-                    let registration = format!(
-                        "\nadmin.site.register({model_name})\n"
-                    );
+                    let content =
+                        fs::read_to_string(&admin_path).map_err(|e| format!("Cannot read: {e}"))?;
+                    let registration = format!("\nadmin.site.register({model_name})\n");
                     let new_content = content + &registration;
                     fs::write(&admin_path, new_content)
                         .map_err(|e| format!("Cannot write: {e}"))?;
@@ -224,8 +217,7 @@ fn fix_migrations(root: &Path, issue: &Issue) -> Result<String, String> {
     if issue.message.contains("missing __init__.py") {
         if let Some(app_dir) = issue.file.split('/').next() {
             let init_path = root.join(app_dir).join("migrations").join("__init__.py");
-            fs::write(&init_path, "")
-                .map_err(|e| format!("Cannot write __init__.py: {e}"))?;
+            fs::write(&init_path, "").map_err(|e| format!("Cannot write __init__.py: {e}"))?;
             return Ok(format!("Created migrations/__init__.py for {}", app_dir));
         }
     }

@@ -143,9 +143,12 @@ codesign --force --deep --sign - "$STAGE"
 codesign -vv "$STAGE"
 
 step "8/9 install into macOS bundle and /Applications"
-pkill -f "Task Orchestrator.app/Contents/MacOS/tto" 2>/dev/null || true
-pkill -x tto 2>/dev/null || true
-pkill -f "backend/main.py" 2>/dev/null || true
+# Stop only this install. The executable inside the bundle is named `tto`,
+# and so is Terminal Task Orchestrator.app — `pkill -x tto` kills that other
+# app mid-session. `pkill -f backend/main.py` also kills the clone sidecar
+# on :8775. Port 8765 is this app's sidecar only.
+pkill -f "/Applications/Task Orchestrator.app/Contents/MacOS/tto" 2>/dev/null || true
+pkill -f "/Applications/tto.app/Contents/MacOS/tto" 2>/dev/null || true
 lsof -tiTCP:8765 -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
 sleep 1
 

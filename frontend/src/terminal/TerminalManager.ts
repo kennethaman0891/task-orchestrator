@@ -4,9 +4,13 @@
 // `tauri.attach()` is the ONLY source of terminal streaming.
 
 import type { Terminal } from '@xterm/xterm';
-import { menuKeystrokes } from './chatTranscript';
 import { WriteQueue } from './writeQueue';
 import { SynchronizedOutputFilter } from './synchronizedOutputFilter';
+
+function menuKeystrokes(value: string, opts: { enter: boolean }): string[] {
+  if (value.toLowerCase() === 'escape') return ['\x1b'];
+  return opts.enter ? [value, '\r'] : [value];
+}
 
 /** Whole-window device pixels for TIOCSWINSZ. 0 means the cell grid is not measured yet. */
 function ptyPixelSize(term: Terminal, cols: number, rows: number): { pixelWidth: number; pixelHeight: number } {
@@ -1036,25 +1040,27 @@ export const TerminalManager = {
 
     // Strict truth-based resolution:
     // 1. High-fidelity active buffer detection (what is visibly rendered on screen)
-    // 2. OS process detection from Rust PTY inspection (what process is actively running in PTY)
+    // 2. Active antigravity execution (explicit antigravity_running or entryCli)
     // 3. Fallback to user-specified initial command (only if not generic default)
-    // 4. Fallback to shell (NEVER random guess or workspace command default)
+    // 4. Fallback to detected non-empty cli
+    // 5. Fallback to defaultCli
+    // 6. Fallback to shell (NEVER random guess or workspace command default)
     let cli = 'shell';
     let cliName = 'Terminal';
 
-    if ((entry as any)?.antigravity_running || entryCli === 'antigravity' || entryCli === 'agy') {
-      cli = 'antigravity';
-      cliName = 'Antigravity';
-      if (entry) {
-        entry.cli = 'antigravity';
-        entry.agent = 'antigravity';
-      }
-    } else if (detected.detected && detected.cli && detected.cli !== 'unknown' && detected.cli !== 'shell') {
+    if (detected.detected && detected.cli && detected.cli !== 'unknown' && detected.cli !== 'shell') {
       cli = detected.cli.toLowerCase().trim();
       cliName = detected.cliName || CLI_DISPLAY_NAMES[cli] || (cli.charAt(0).toUpperCase() + cli.slice(1));
       if (entry) {
         entry.cli = cli;
         entry.agent = cli;
+      }
+    } else if ((entry as any)?.antigravity_running || entryCli === 'antigravity' || entryCli === 'agy') {
+      cli = 'antigravity';
+      cliName = 'Antigravity';
+      if (entry) {
+        entry.cli = 'antigravity';
+        entry.agent = 'antigravity';
       }
     } else if (entryCli && entryCli !== 'shell' && entryCli !== 'unknown' && entryCli !== 'zsh' && entryCli !== 'bash') {
       cli = entryCli.toLowerCase().trim();

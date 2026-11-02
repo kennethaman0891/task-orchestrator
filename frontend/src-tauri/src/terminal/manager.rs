@@ -53,7 +53,9 @@ fn detect_agent(command: &str) -> String {
         for key in *keys {
             if tokens.iter().any(|tok| {
                 let base = tok.rsplit('/').next().unwrap_or(tok);
-                base == *key || base.starts_with(&format!("{key}-")) || base.starts_with(&format!("{key}_"))
+                base == *key
+                    || base.starts_with(&format!("{key}-"))
+                    || base.starts_with(&format!("{key}_"))
             }) {
                 return name.to_string();
             }
@@ -173,19 +175,36 @@ fn detect_cli(command: &str) -> String {
         .trim_start_matches('-')
         .to_lowercase();
     let table: &[(&str, &str)] = &[
-        ("vim", "vim"), ("nvim", "nvim"), ("neovim", "nvim"),
-        ("htop", "htop"), ("top", "top"), ("btop", "btop"),
+        ("vim", "vim"),
+        ("nvim", "nvim"),
+        ("neovim", "nvim"),
+        ("htop", "htop"),
+        ("top", "top"),
+        ("btop", "btop"),
         ("tmux", "tmux"),
-        ("python", "python"), ("python3", "python"),
-        ("node", "node"), ("nodejs", "node"),
-        ("npm", "npm"), ("npx", "npm"), ("yarn", "npm"), ("pnpm", "npm"),
+        ("python", "python"),
+        ("python3", "python"),
+        ("node", "node"),
+        ("nodejs", "node"),
+        ("npm", "npm"),
+        ("npx", "npm"),
+        ("yarn", "npm"),
+        ("pnpm", "npm"),
         ("git", "git"),
         ("docker", "docker"),
-        ("zsh", "zsh"), ("bash", "bash"), ("sh", "bash"), ("fish", "bash"),
+        ("zsh", "zsh"),
+        ("bash", "bash"),
+        ("sh", "bash"),
+        ("fish", "bash"),
         ("cargo", "cargo"),
-        ("ssh", "ssh"), ("curl", "curl"), ("wget", "curl"),
-        ("php", "php"), ("artisan", "php"),
-        ("prime-agent", "prime"), ("primeagent", "prime"), ("prime", "prime"),
+        ("ssh", "ssh"),
+        ("curl", "curl"),
+        ("wget", "curl"),
+        ("php", "php"),
+        ("artisan", "php"),
+        ("prime-agent", "prime"),
+        ("primeagent", "prime"),
+        ("prime", "prime"),
         ("grok", "grok"),
         // Cursor's agent CLI is installed as `agent`, not `cursor`.
         ("agent", "cursor"),
@@ -209,7 +228,9 @@ impl TerminalManager {
     }
 
     fn next_id(&self) -> String {
-        let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let n = self
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         format!("t-{n}-{}", self.salt)
     }
 
@@ -223,7 +244,12 @@ impl TerminalManager {
         initial_command: Option<String>,
     ) -> Result<SessionMeta, String> {
         let id = self.next_id();
-        eprintln!("[MANAGER] create() id={}, cwd={:?}, ws={}", id, cwd, workspace_id);
+        crate::safe_eprintln!(
+            "[MANAGER] create() id={}, cwd={:?}, ws={}",
+            id,
+            cwd,
+            workspace_id
+        );
         let shell = pty::user_shell();
         let cwd_path = {
             let raw = cwd
@@ -258,11 +284,15 @@ impl TerminalManager {
             };
             // Validate the path exists and is a directory; fall back to HOME.
             if !expanded.is_empty() && p.is_dir() {
-                eprintln!("[MANAGER] using resolved cwd: {:?}", p);
+                crate::safe_eprintln!("[MANAGER] using resolved cwd: {:?}", p);
                 p
             } else {
                 if !raw.is_empty() {
-                    eprintln!("[MANAGER] cwd {:?} is not a directory or invalid; falling back to {:?}", raw, crate::home_dir());
+                    crate::safe_eprintln!(
+                        "[MANAGER] cwd {:?} is not a directory or invalid; falling back to {:?}",
+                        raw,
+                        crate::home_dir()
+                    );
                 }
                 crate::home_dir()
             }
@@ -318,7 +348,7 @@ impl TerminalManager {
         if let Some(cmd) = cmd_to_inject {
             *session.pending_command.lock() = Some(cmd);
         }
-        eprintln!("[MANAGER] insert session={} tty={}", id, meta.tty);
+        crate::safe_eprintln!("[MANAGER] insert session={} tty={}", id, meta.tty);
         self.sessions.lock().insert(id.clone(), session.clone());
         let _ = self.app.emit("terminal-updated", ());
 
@@ -339,7 +369,11 @@ impl TerminalManager {
             }
             if !meta.tty.is_empty() && !id.is_empty() {
                 let clean_tty = meta.tty.strip_prefix("/dev/").unwrap_or(&meta.tty);
-                if meta.tty == id || clean_tty == clean_id || meta.tty == clean_id || clean_tty == id {
+                if meta.tty == id
+                    || clean_tty == clean_id
+                    || meta.tty == clean_id
+                    || clean_tty == id
+                {
                     return Ok(session.clone());
                 }
             }
@@ -355,10 +389,10 @@ impl TerminalManager {
         on_output: Channel<Vec<u8>>,
         on_exit: Channel<()>,
     ) -> Result<(), String> {
-        eprintln!("[MANAGER] attach() id={}", id);
+        crate::safe_eprintln!("[MANAGER] attach() id={}", id);
         let session = self.get_session(id)?;
         recovery::attach(&session, on_output, on_exit);
-        eprintln!("[MANAGER] attach() id={} -> OK", id);
+        crate::safe_eprintln!("[MANAGER] attach() id={} -> OK", id);
 
         // If this session has a pending initial command, execute it now that the
         // frontend has attached and established the real terminal geometry!
@@ -374,9 +408,17 @@ impl TerminalManager {
                 // Use newline instead of carriage return for better compatibility
                 let cmd_with_nl = format!("{}\n", cmd);
                 if let Err(e) = session_clone.write(cmd_with_nl.as_bytes()) {
-                    eprintln!("[MANAGER] attach() failed to inject pending command for {}: {}", id_clone, e);
+                    crate::safe_eprintln!(
+                        "[MANAGER] attach() failed to inject pending command for {}: {}",
+                        id_clone,
+                        e
+                    );
                 } else {
-                    eprintln!("[MANAGER] attach() injected pending command '{}' into {}", cmd, id_clone);
+                    crate::safe_eprintln!(
+                        "[MANAGER] attach() injected pending command '{}' into {}",
+                        cmd,
+                        id_clone
+                    );
                 }
             });
         }
@@ -394,7 +436,12 @@ impl TerminalManager {
     }
 
     /// Register a secondary read-only mirror subscriber (Space view renderer).
-    pub fn subscribe(&self, id: &str, sub_id: u64, channel: Channel<Vec<u8>>) -> Result<(), String> {
+    pub fn subscribe(
+        &self,
+        id: &str,
+        sub_id: u64,
+        channel: Channel<Vec<u8>>,
+    ) -> Result<(), String> {
         let session = self.get_session(id)?;
         recovery::subscribe(&session, sub_id, channel);
         Ok(())
@@ -415,7 +462,7 @@ impl TerminalManager {
 
     pub fn send_command(&self, id: &str, command: &str) -> Result<(), String> {
         let session = self.get_session(id)?;
-        eprintln!("[MANAGER] send_command id={} cmd={:?}", id, command);
+        crate::safe_eprintln!("[MANAGER] send_command id={} cmd={:?}", id, command);
         let agent = detect_agent(command);
         // Auto-append --no-banner only when the command *invokes* claude
         // (not when it merely mentions it, e.g. `grep -r claude .`).
@@ -425,7 +472,7 @@ impl TerminalManager {
                 c.push(' ');
             }
             c.push_str("--no-banner");
-            eprintln!("[MANAGER] Appended --no-banner to claude command");
+            crate::safe_eprintln!("[MANAGER] Appended --no-banner to claude command");
             c
         } else {
             command.to_string()
@@ -438,7 +485,7 @@ impl TerminalManager {
             session.meta.lock().cli = cli;
         }
         let r = session.send_command(&cmd_to_send);
-        eprintln!("[MANAGER] send_command id={} -> {:?}", id, r.as_ref().err());
+        crate::safe_eprintln!("[MANAGER] send_command id={} -> {:?}", id, r.as_ref().err());
         r
     }
 
@@ -473,7 +520,7 @@ impl TerminalManager {
                 c.push(' ');
             }
             c.push_str("--no-banner");
-            eprintln!("[MANAGER] Appended --no-banner to claude command");
+            crate::safe_eprintln!("[MANAGER] Appended --no-banner to claude command");
             c
         } else {
             command.to_string()
@@ -558,8 +605,16 @@ impl TerminalManager {
         // A 0 from the caller means "unknown", not "clear the pixel grid".
         let (pixel_width, pixel_height) = {
             let m = session.meta.lock();
-            let pw = if pixel_width == 0 { m.pixel_width } else { pixel_width };
-            let ph = if pixel_height == 0 { m.pixel_height } else { pixel_height };
+            let pw = if pixel_width == 0 {
+                m.pixel_width
+            } else {
+                pixel_width
+            };
+            let ph = if pixel_height == 0 {
+                m.pixel_height
+            } else {
+                pixel_height
+            };
             if !rz::changed(m.cols, m.rows, cols, rows)
                 && m.pixel_width == pw
                 && m.pixel_height == ph
@@ -597,7 +652,11 @@ impl TerminalManager {
                     }
                     if !meta.tty.is_empty() && !id.is_empty() {
                         let clean_tty = meta.tty.strip_prefix("/dev/").unwrap_or(&meta.tty);
-                        if meta.tty == id || clean_tty == clean_id || meta.tty == clean_id || clean_tty == id {
+                        if meta.tty == id
+                            || clean_tty == clean_id
+                            || meta.tty == clean_id
+                            || clean_tty == id
+                        {
                             return Some(k.clone());
                         }
                     }
@@ -918,19 +977,25 @@ pub fn spawn_detector(manager: Arc<TerminalManager>) {
 
             let mut updates = Vec::new();
             for (id, pid, current_cli) in targets {
-                let active = tokio::task::spawn_blocking(move || {
-                    pty::active_child_process(pid)
-                })
-                .await
-                .unwrap_or(None);
+                let active = tokio::task::spawn_blocking(move || pty::active_child_process(pid))
+                    .await
+                    .unwrap_or(None);
 
                 if let Some(active_cmd) = active {
                     let detected = detect_cli(&active_cmd);
-                    let cli_to_set = if !detected.is_empty() { detected } else { active_cmd };
+                    let cli_to_set = if !detected.is_empty() {
+                        detected
+                    } else {
+                        active_cmd
+                    };
                     if cli_to_set != current_cli {
                         updates.push((id, cli_to_set));
                     }
-                } else if !current_cli.is_empty() && current_cli != "zsh" && current_cli != "bash" && current_cli != "sh" {
+                } else if !current_cli.is_empty()
+                    && current_cli != "zsh"
+                    && current_cli != "bash"
+                    && current_cli != "sh"
+                {
                     updates.push((id, "zsh".to_string()));
                 }
             }
@@ -941,7 +1006,11 @@ pub fn spawn_detector(manager: Arc<TerminalManager>) {
                     for (id, cli_name) in updates {
                         if let Some(session) = sessions.get(&id) {
                             let mut m = session.meta.lock();
-                            let agent_name = if cli_name == "zsh" { "shell".to_string() } else { cli_name.clone() };
+                            let agent_name = if cli_name == "zsh" {
+                                "shell".to_string()
+                            } else {
+                                cli_name.clone()
+                            };
                             m.cli = cli_name;
                             m.agent = agent_name;
                         }
@@ -981,4 +1050,3 @@ mod tests {
         assert_eq!(detect_cli("cargo test"), "cargo");
     }
 }
-

@@ -20,13 +20,11 @@ pub fn package_project(project_path: &str, output_dir: Option<&str>) -> Result<S
         .unwrap_or("project");
 
     let default_dir = std::env::temp_dir();
-    let out_dir = output_dir
-        .map(Path::new)
-        .unwrap_or(&default_dir);
+    let out_dir = output_dir.map(Path::new).unwrap_or(&default_dir);
     let zip_path = out_dir.join(format!("{project_name}-fixed.zip"));
 
-    let zip_file = fs::File::create(&zip_path)
-        .map_err(|e| format!("Cannot create zip file: {e}"))?;
+    let zip_file =
+        fs::File::create(&zip_path).map_err(|e| format!("Cannot create zip file: {e}"))?;
     let mut writer = ZipWriter::new(zip_file);
     let options = FileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)

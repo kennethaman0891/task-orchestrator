@@ -246,11 +246,7 @@ fn analyze_models(
     let re_field = Regex::new(r#"^\s+(\w+)\s*=\s*(\w+)\.(\w+)"#).unwrap();
 
     // Extract app name from file path (e.g., "myapp/models.py" → "myapp")
-    let app_name = file
-        .split('/')
-        .next()
-        .unwrap_or("unknown")
-        .to_string();
+    let app_name = file.split('/').next().unwrap_or("unknown").to_string();
 
     let mut current_model: Option<String> = None;
 
@@ -294,7 +290,8 @@ fn analyze_models(
 
     // Check for missing __str__ methods
     for model in models.iter() {
-        if !content.contains(&format!("def __str__")) {                issues.push(Issue {
+        if !content.contains(&format!("def __str__")) {
+            issues.push(Issue {
                 severity: IssueSeverity::Info,
                 file: file.to_string(),
                 line: 0,
@@ -306,9 +303,7 @@ fn analyze_models(
     }
 
     // Check for migrations
-    let migrations_dir = Path::new(&project.path)
-        .join(&app_name)
-        .join("migrations");
+    let migrations_dir = Path::new(&project.path).join(&app_name).join("migrations");
     if models.is_empty() {
         // No models — no migration check needed
     } else if !migrations_dir.exists() {
@@ -316,10 +311,7 @@ fn analyze_models(
             severity: IssueSeverity::Error,
             file: format!("{}/migrations/", app_name),
             line: 0,
-            message: format!(
-                "App '{}' has models but no migrations directory",
-                app_name
-            ),
+            message: format!("App '{}' has models but no migrations directory", app_name),
             fixable: true,
             category: "migrations".to_string(),
         });
@@ -461,8 +453,15 @@ fn analyze_generic_py(content: &str, lines: &[&str], file: &str, issues: &mut Ve
                 severity: IssueSeverity::Info,
                 file: file.to_string(),
                 line: i + 1,
-                message: format!("Contains {}: {}", 
-                    if line.contains("TODO") { "TODO" } else if line.contains("FIXME") { "FIXME" } else { "HACK" },
+                message: format!(
+                    "Contains {}: {}",
+                    if line.contains("TODO") {
+                        "TODO"
+                    } else if line.contains("FIXME") {
+                        "FIXME"
+                    } else {
+                        "HACK"
+                    },
                     line.trim().chars().take(80).collect::<String>()
                 ),
                 fixable: false,
@@ -502,11 +501,7 @@ fn cross_reference_urls_views(
 }
 
 /// Cross-reference models used in views.
-fn cross_reference_models_views(
-    models: &[ModelInfo],
-    views: &[ViewInfo],
-    issues: &mut Vec<Issue>,
-) {
+fn cross_reference_models_views(models: &[ModelInfo], views: &[ViewInfo], issues: &mut Vec<Issue>) {
     let model_names: Vec<&str> = models.iter().map(|m| m.name.as_str()).collect();
 
     for view in views {
@@ -585,8 +580,10 @@ fn extract_model_refs(_line: &str, lines: &[&str], idx: usize) -> Vec<String> {
         for caps in re.captures_iter(line) {
             let name = caps.get(1).unwrap().as_str().to_string();
             // Filter out common non-model names
-            if !["self", "request", "response", "form", "context", "User", "os", "json"]
-                .contains(&name.as_str())
+            if ![
+                "self", "request", "response", "form", "context", "User", "os", "json",
+            ]
+            .contains(&name.as_str())
             {
                 if !models.contains(&name) {
                     models.push(name);

@@ -120,7 +120,11 @@ pub async fn gateway_pair(
 
     let (device_id, device_name, public_key) = {
         let id = ident.lock();
-        (id.device_id.clone(), id.device_name.clone(), id.public_key_der.clone())
+        (
+            id.device_id.clone(),
+            id.device_name.clone(),
+            id.public_key_der.clone(),
+        )
     };
 
     // POST /api/pairing/create
@@ -133,7 +137,11 @@ pub async fn gateway_pair(
     let v: serde_json::Value = serde_json::from_str(&resp).map_err(|e| e.to_string())?;
 
     if v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false) {
-        let code = v.get("code").and_then(|c| c.as_str()).unwrap_or("").to_string();
+        let code = v
+            .get("code")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
         let expires = v.get("expiresAt").and_then(|e| e.as_u64()).unwrap_or(0);
         Ok(PairStart {
             code,
@@ -143,7 +151,11 @@ pub async fn gateway_pair(
             public_key,
         })
     } else {
-        Err(v.get("error").and_then(|e| e.as_str()).unwrap_or("pairing_failed").to_string())
+        Err(v
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("pairing_failed")
+            .to_string())
     }
 }
 
@@ -157,7 +169,11 @@ pub async fn gateway_pair_status(
     let device_id = state.gateway_identity.lock().device_id.clone();
     let resp = http_get(&url, &format!("/api/pairing/status?deviceId={device_id}")).await?;
     let v: serde_json::Value = serde_json::from_str(&resp).map_err(|e| e.to_string())?;
-    let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("pending").to_string();
+    let status = v
+        .get("status")
+        .and_then(|s| s.as_str())
+        .unwrap_or("pending")
+        .to_string();
     Ok(PairStatus { status, device_id })
 }
 
@@ -177,7 +193,11 @@ pub async fn gateway_pair_claim(
     let body = serde_json::json!({ "deviceId": device_id });
     let resp = http_post(&url, "/api/pairing/challenge", &body.to_string()).await?;
     let cv: serde_json::Value = serde_json::from_str(&resp).map_err(|e| e.to_string())?;
-    let nonce = cv.get("nonce").and_then(|n| n.as_str()).ok_or("no_nonce")?.to_string();
+    let nonce = cv
+        .get("nonce")
+        .and_then(|n| n.as_str())
+        .ok_or("no_nonce")?
+        .to_string();
 
     // 2. Sign the nonce with the device private key.
     let sig = {
@@ -195,9 +215,17 @@ pub async fn gateway_pair_claim(
     let rv: serde_json::Value = serde_json::from_str(&resp).map_err(|e| e.to_string())?;
 
     if rv.get("ok").and_then(|o| o.as_bool()).unwrap_or(false) {
-        let credential = rv.get("credential").and_then(|c| c.as_str()).unwrap_or("").to_string();
+        let credential = rv
+            .get("credential")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
         if credential.is_empty() {
-            return Ok(PairClaim { ok: false, error: Some("empty_credential".into()), credential: None });
+            return Ok(PairClaim {
+                ok: false,
+                error: Some("empty_credential".into()),
+                credential: None,
+            });
         }
         // Persist the credential + URL so the worker can connect.
         {
@@ -208,11 +236,20 @@ pub async fn gateway_pair_claim(
         }
         // Bump the worker: it will pick up the new credential on its next loop.
         *state.gateway.attempts.lock() = 0;
-        Ok(PairClaim { ok: true, error: None, credential: Some(credential) })
+        Ok(PairClaim {
+            ok: true,
+            error: None,
+            credential: Some(credential),
+        })
     } else {
         Ok(PairClaim {
             ok: false,
-            error: Some(rv.get("error").and_then(|e| e.as_str()).unwrap_or("claim_failed").to_string()),
+            error: Some(
+                rv.get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("claim_failed")
+                    .to_string(),
+            ),
             credential: None,
         })
     }
@@ -220,7 +257,10 @@ pub async fn gateway_pair_claim(
 
 /// Set the gateway URL only (persisted). Does not pair.
 #[tauri::command]
-pub async fn gateway_set_url(state: State<'_, Arc<AppState>>, gateway_url: String) -> Result<(), String> {
+pub async fn gateway_set_url(
+    state: State<'_, Arc<AppState>>,
+    gateway_url: String,
+) -> Result<(), String> {
     let url = normalize_gateway_url(&gateway_url)?;
     let mut id = state.gateway_identity.lock();
     id.gateway_url = url.clone();
@@ -258,7 +298,8 @@ async fn http_request(method: &str, url: &str, body: Option<&str>) -> Result<Str
     // Run the blocking reqwest-less call on a dedicated thread so we don't hold
     // the async runtime. We use tokio::net::TcpStream + a minimal HTTP client
     // to avoid adding reqwest (keeps the dependency surface small).
-    tauri::async_runtime::spawn_blocking(move || minimal_http(method, url, body)).await
+    tauri::async_runtime::spawn_blocking(move || minimal_http(method, url, body))
+        .await
         .map_err(|e| e.to_string())?
 }
 
@@ -267,9 +308,12 @@ async fn http_request(method: &str, url: &str, body: Option<&str>) -> Result<Str
 fn minimal_http(method: String, url: String, body: Option<String>) -> Result<String, String> {
     let parsed = parse_url(&url).ok_or("bad_url")?;
 
-    let tcp = std::net::TcpStream::connect((parsed.host.as_str(), parsed.port)).map_err(|e| e.to_string())?;
-    tcp.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
-    tcp.set_write_timeout(Some(std::time::Duration::from_secs(10))).ok();
+    let tcp = std::net::TcpStream::connect((parsed.host.as_str(), parsed.port))
+        .map_err(|e| e.to_string())?;
+    tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .ok();
+    tcp.set_write_timeout(Some(std::time::Duration::from_secs(10)))
+        .ok();
 
     let req = build_http_request(&method, &parsed.host, &parsed.path, body.as_deref());
 
@@ -278,14 +322,20 @@ fn minimal_http(method: String, url: String, body: Option<String>) -> Result<Str
         // TLS: wrap the stream, then write + read from the single TlsStream
         // (native_tls::TlsStream is not Clone, so no separate read/write halves).
         let connector = native_tls::TlsConnector::new().map_err(|e| e.to_string())?;
-        let mut tls_stream = connector.connect(&parsed.host, tcp).map_err(|e| e.to_string())?;
-        tls_stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+        let mut tls_stream = connector
+            .connect(&parsed.host, tcp)
+            .map_err(|e| e.to_string())?;
+        tls_stream
+            .write_all(req.as_bytes())
+            .map_err(|e| e.to_string())?;
         tls_stream.flush().map_err(|e| e.to_string())?;
         read_to_end(&mut tls_stream, &mut buf)?;
     } else {
         // Plain TCP: write + read from the single TcpStream.
         let mut stream = tcp;
-        stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+        stream
+            .write_all(req.as_bytes())
+            .map_err(|e| e.to_string())?;
         stream.flush().map_err(|e| e.to_string())?;
         read_to_end(&mut stream, &mut buf)?;
     }
@@ -306,7 +356,12 @@ fn read_to_end<R: std::io::Read>(reader: &mut R, buf: &mut Vec<u8>) -> Result<()
         match reader.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => break,
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break
+            }
             Err(_) => break,
         }
         if buf.len() > 4 * 1024 * 1024 {
@@ -348,7 +403,12 @@ fn parse_url(url: &str) -> Option<ParsedUrl> {
         Some((h, p)) => (h.to_string(), p.parse().unwrap_or(default_port)),
         None => (hostport.to_string(), default_port),
     };
-    Some(ParsedUrl { host, port, path: path.to_string(), tls })
+    Some(ParsedUrl {
+        host,
+        port,
+        path: path.to_string(),
+        tls,
+    })
 }
 
 #[allow(dead_code)]

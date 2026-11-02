@@ -22,7 +22,14 @@ pub async fn terminal_create(
     rows: Option<u16>,
     command: Option<String>,
 ) -> Result<SessionMeta, String> {
-    eprintln!("[IPC] terminal_create cwd={:?} ws_id={:?} cols={} rows={} cmd={:?}", cwd, workspace_id, cols.unwrap_or(120), rows.unwrap_or(40), command);
+    crate::safe_eprintln!(
+        "[IPC] terminal_create cwd={:?} ws_id={:?} cols={} rows={} cmd={:?}",
+        cwd,
+        workspace_id,
+        cols.unwrap_or(120),
+        rows.unwrap_or(40),
+        command
+    );
     // Async command: runs on the Tauri worker runtime, NOT the main (UI) thread.
     // This keeps PTY process spawn + the `ps` tty lookup (pty::tty_for_pid)
     // from blocking the webview and causing "Not Responding" freezes on create.
@@ -33,7 +40,13 @@ pub async fn terminal_create(
         rows.unwrap_or(40),
         command,
     );
-    eprintln!("[IPC] terminal_create result: {:?}", result.as_ref().map(|m| &m.id).unwrap_or(&"ERROR".to_string()));
+    crate::safe_eprintln!(
+        "[IPC] terminal_create result: {:?}",
+        result
+            .as_ref()
+            .map(|m| &m.id)
+            .unwrap_or(&"ERROR".to_string())
+    );
     result
 }
 
@@ -44,9 +57,9 @@ pub async fn terminal_attach(
     on_output: Channel<Vec<u8>>,
     on_exit: Channel<()>,
 ) -> Result<(), String> {
-    eprintln!("[IPC] terminal_attach id={}", id);
+    crate::safe_eprintln!("[IPC] terminal_attach id={}", id);
     let r = state.manager.attach(&id, on_output, on_exit);
-    eprintln!("[IPC] terminal_attach id={} -> {:?}", id, r.as_ref().err());
+    crate::safe_eprintln!("[IPC] terminal_attach id={} -> {:?}", id, r.as_ref().err());
     r
 }
 
@@ -230,7 +243,9 @@ pub async fn terminal_drop_files(
 }
 
 #[tauri::command]
-pub async fn terminal_diagnostics(state: State<'_, Arc<AppState>>) -> Result<Vec<SessionDiag>, String> {
+pub async fn terminal_diagnostics(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<SessionDiag>, String> {
     Ok(state.manager.diagnostics())
 }
 
@@ -242,7 +257,9 @@ pub async fn workspace_index_set(
     workspace_id: String,
     session_ids: Vec<String>,
 ) -> Result<(), String> {
-    state.workspaces.set_workspace_sessions(&workspace_id, session_ids);
+    state
+        .workspaces
+        .set_workspace_sessions(&workspace_id, session_ids);
     Ok(())
 }
 
@@ -310,17 +327,13 @@ pub async fn pick_file(app: tauri::AppHandle) -> Result<Option<String>, String> 
     app.dialog().file().pick_file(move |p| {
         let _ = tx.send(p);
     });
-    let picked = rx
-        .await
-        .map_err(|_| "file picker failed".to_string())?;
+    let picked = rx.await.map_err(|_| "file picker failed".to_string())?;
     Ok(picked.map(|p| match p {
         tauri_plugin_dialog::FilePath::Path(s) => s.to_string_lossy().to_string(),
-        tauri_plugin_dialog::FilePath::Url(u) => {
-            match u.to_file_path() {
-                Ok(pb) => pb.to_string_lossy().to_string(),
-                Err(_) => u.to_string(),
-            }
-        }
+        tauri_plugin_dialog::FilePath::Url(u) => match u.to_file_path() {
+            Ok(pb) => pb.to_string_lossy().to_string(),
+            Err(_) => u.to_string(),
+        },
     }))
 }
 
@@ -333,9 +346,7 @@ pub async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String
     app.dialog().file().pick_folder(move |p| {
         let _ = tx.send(p);
     });
-    let picked = rx
-        .await
-        .map_err(|_| "folder picker failed".to_string())?;
+    let picked = rx.await.map_err(|_| "folder picker failed".to_string())?;
     Ok(picked.map(|p| match p {
         tauri_plugin_dialog::FilePath::Path(s) => s.to_string_lossy().to_string(),
         tauri_plugin_dialog::FilePath::Url(u) => {
@@ -353,7 +364,9 @@ pub async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String
 pub async fn get_home_dir() -> Option<String> {
     let home = super::home_dir();
     let s = home.to_string_lossy().to_string();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     Some(s)
 }
 
@@ -397,7 +410,9 @@ pub async fn ego_lite_status() -> EgoLiteStatus {
         // Traditional Program Files locations
         "C:\\Program Files\\ego-lite".to_string(),
         "C:\\Program Files (x86)\\ego-lite".to_string(),
-    ].iter().any(|p| std::path::Path::new(p).exists());
+    ]
+    .iter()
+    .any(|p| std::path::Path::new(p).exists());
 
     // Check for the ego-browser skill in common agent skill directories
     let skill_dirs = [
@@ -416,7 +431,11 @@ pub async fn ego_lite_status() -> EgoLiteStatus {
         }
     }
 
-    EgoLiteStatus { app_installed, skill_installed, skill_path }
+    EgoLiteStatus {
+        app_installed,
+        skill_installed,
+        skill_path,
+    }
 }
 
 // --- Launch CWD (the directory the user ran `tto` from) ---
@@ -449,7 +468,11 @@ pub async fn django_analyze(project_path: String) -> Result<crate::django::Analy
         crate::django::extractor::extract_zip(&project_path)?
     } else {
         crate::django::ProjectInfo {
-            name: root.file_name().and_then(|n| n.to_str()).unwrap_or("project").to_string(),
+            name: root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("project")
+                .to_string(),
             path: project_path.clone(),
             file_tree: crate::django::extractor::build_file_tree(root, root).unwrap_or_default(),
             has_manage_py: root.join("manage.py").exists(),
@@ -462,23 +485,28 @@ pub async fn django_analyze(project_path: String) -> Result<crate::django::Analy
 }
 
 #[tauri::command]
-pub async fn django_fix(project_path: String) -> Result<crate::django::FixReport, String> {    let info = crate::django::ProjectInfo {
-            name: "fix-target".to_string(),
-            path: project_path.clone(),
-            file_tree: vec![],
-            has_manage_py: std::path::Path::new(&project_path).join("manage.py").exists(),
-            has_settings_py: true,
-            python_files: crate::django::extractor::find_python_files(
-                std::path::Path::new(&project_path)
-            ),
-            total_files: 0,
-        };
+pub async fn django_fix(project_path: String) -> Result<crate::django::FixReport, String> {
+    let info = crate::django::ProjectInfo {
+        name: "fix-target".to_string(),
+        path: project_path.clone(),
+        file_tree: vec![],
+        has_manage_py: std::path::Path::new(&project_path)
+            .join("manage.py")
+            .exists(),
+        has_settings_py: true,
+        python_files: crate::django::extractor::find_python_files(std::path::Path::new(
+            &project_path,
+        )),
+        total_files: 0,
+    };
     let report = crate::django::analyzer::analyze_project(&info)?;
     crate::django::fixer::fix_project(&report)
 }
 
 #[tauri::command]
-pub async fn django_run_checks(project_path: String) -> Result<crate::django::CheckResults, String> {
+pub async fn django_run_checks(
+    project_path: String,
+) -> Result<crate::django::CheckResults, String> {
     crate::django::executor::run_checks(&project_path)
 }
 
@@ -511,7 +539,10 @@ pub async fn open_url(url: String) -> Result<(), String> {
         return Err("Only http:// and https:// URLs are allowed".to_string());
     }
     // Strict validation: disallow control characters, quotes, and command separators
-    if trimmed.chars().any(|c| c.is_control() || "&|;`\"'<>^% \t\r\n".contains(c)) {
+    if trimmed
+        .chars()
+        .any(|c| c.is_control() || "&|;`\"'<>^% \t\r\n".contains(c))
+    {
         return Err("URL contains illegal characters".to_string());
     }
     #[cfg(target_os = "macos")]

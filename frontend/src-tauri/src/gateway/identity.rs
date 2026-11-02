@@ -25,9 +25,16 @@ pub fn default_device_name() -> String {
 fn hostname() -> Option<String> {
     #[cfg(target_os = "macos")]
     {
-        let out = std::process::Command::new("hostname").arg("-s").output().ok()?;
+        let out = std::process::Command::new("hostname")
+            .arg("-s")
+            .output()
+            .ok()?;
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if s.is_empty() { None } else { Some(s) }
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
     }
     #[cfg(target_os = "windows")]
     {
@@ -37,13 +44,21 @@ fn hostname() -> Option<String> {
             .output()
             .ok()?;
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if s.is_empty() { None } else { Some(s) }
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let out = std::process::Command::new("hostname").output().ok()?;
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if s.is_empty() { None } else { Some(s) }
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
     }
 }
 
@@ -110,11 +125,17 @@ pub fn identity_path() -> PathBuf {
     let home = crate::home_dir();
     #[cfg(target_os = "windows")]
     {
-        home.join("AppData").join("Roaming").join("tto").join("gateway-identity.json")
+        home.join("AppData")
+            .join("Roaming")
+            .join("tto")
+            .join("gateway-identity.json")
     }
     #[cfg(not(target_os = "windows"))]
     {
-        home.join(".local").join("share").join("tto").join("gateway-identity.json")
+        home.join(".local")
+            .join("share")
+            .join("tto")
+            .join("gateway-identity.json")
     }
 }
 

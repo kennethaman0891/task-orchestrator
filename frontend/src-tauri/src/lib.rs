@@ -4,24 +4,51 @@
 //! scheduler and workspace session index. The Python FastAPI server remains a
 //! local sidecar for tasks / token usage / file browser / LLM suggestions.
 
+mod django;
 mod gateway;
 mod ipc;
 mod relay;
 mod sidecar;
 mod terminal;
 mod workspace;
-mod django;
 
 pub use gateway::ipc as gateway_ipc;
 
 /// Safe stderr writer that silently swallows broken-pipe errors instead of
 /// panicking. The `.app` bundle runs without an attached terminal, so stderr
-/// is closed and the default `eprintln!` triggers a main-thread abort.
+/// is closed and the default `eprintln!` panics with "failed printing to
+/// stderr: Broken pipe". On the main thread that panic used to abort the
+/// process (see `install_panic_hook`).
+#[macro_export]
 macro_rules! safe_eprintln {
     ($($arg:tt)*) => {{
         use std::io::Write;
         let _ = writeln!(std::io::stderr(), $($arg)*);
     }};
+}
+
+/// Run `f` on the UI thread without letting a panic escape.
+///
+/// AppKit delivers window and IPC callbacks through `extern "C"` frames.
+/// A panic that unwinds into one of those frames becomes
+/// "panic in a function that cannot unwind" and aborts the process — the
+/// macOS "quit unexpectedly" dialog. `catch_unwind` has to sit in its own
+/// non-inlined function so LTO cannot fold it into that `extern "C"` frame.
+/// `tao`'s event loop also stops NSApplication on any panic it catches, so
+/// swallowing here keeps a single bad callback from closing the session.
+#[inline(never)]
+fn isolate_panic(f: impl FnOnce()) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+}
+
+/// Same boundary as `isolate_panic`, but for the IPC invoke handler, which
+/// must still report whether the command name was recognized.
+#[inline(never)]
+fn isolate_invoke(f: impl FnOnce() -> bool) -> bool {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(handled) => handled,
+        Err(_) => true,
+    }
 }
 
 use std::path::PathBuf;
@@ -68,21 +95,26 @@ pub struct AppState {
     pub gateway_identity: Arc<Mutex<gateway::identity::DeviceIdentity>>,
 }
 
-/// Install a non-aborting global panic hook.
+/// Install a panic hook that records the panic and returns.
 ///
-/// A panic on a background tokio worker (e.g. the sidecar command relay or a
-/// terminal auto-create task) would otherwise run the default hook, which calls
-/// `abort()` and takes down the whole app with SIGABRT at launch — exactly the
-/// intermittent crash signature we saw. Instead we log the full panic
-/// (file:line + message + backtrace) to `~/.local/share/tto/rust-panics.log`
-/// and swallow it, so a single misbehaving background task can never crash the
-/// process. Real bugs are still visible to us through the log.
+/// The previous hook called `eprintln!` and then `std::process::abort()` on
+/// the main thread. Two things followed, and both showed up as
+/// "Task Orchestrator quit unexpectedly":
+///
+/// * The `.app` has no terminal. stderr is a closed pipe, so that `eprintln!`
+///   panics again inside the hook. A panic while panicking aborts.
+/// * `abort()` runs before `catch_unwind` can catch the original panic, so
+///   every main-thread panic became SIGABRT in the middle of a session
+///   (crash at 2026-11-02 23:40:50, `rust-panics.log`).
+///
+/// The hook now only appends to `~/.local/share/tto/rust-panics.log`. It must
+/// not touch stderr and must not abort. `isolate_panic` keeps UI and IPC
+/// panics from reaching AppKit.
 fn install_panic_hook() {
     use std::io::Write;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    // Only the main thread may abort the process; background workers must not.
     let main_thread = std::thread::current().id();
 
     std::panic::set_hook(Box::new(move |info| {
@@ -93,15 +125,11 @@ fn install_panic_hook() {
         let thread = std::thread::current();
         let is_worker = thread.id() != main_thread;
         let backtrace = std::backtrace::Backtrace::force_capture();
-        let mut msg = String::new();
-        msg.push_str(&format!(
-            "[panic-hook] ts={ts} worker={is_worker} thread={:?}\n  {}\n  {backtrace}\n",
-            thread.name().unwrap_or("<unnamed>"),
-            info
-        ));
-        // Persistent log so we can always diagnose panics later.
-        let log_path: PathBuf =
-            home_dir().join(".local/share/tto/rust-panics.log");
+        let msg = format!(
+            "[panic-hook] ts={ts} worker={is_worker} thread={:?}\n  {info}\n  {backtrace}\n",
+            thread.name().unwrap_or("<unnamed>")
+        );
+        let log_path: PathBuf = home_dir().join(".local/share/tto/rust-panics.log");
         if let Some(parent) = log_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -111,15 +139,6 @@ fn install_panic_hook() {
             .open(&log_path)
         {
             let _ = writeln!(f, "{msg}");
-        }
-        if is_worker {
-            // Swallow background-worker panics: never let them abort the app.
-            eprintln!("[tto] background worker panicked (continuing):\n{msg}");
-        } else {
-            // Main-thread panic still aborts so the failure is not silently
-            // swallowed — but the message is now captured for diagnosis.
-            eprintln!("[tto] main-thread panic:\n{msg}");
-            std::process::abort();
         }
     }));
 }
@@ -137,32 +156,20 @@ pub fn run() {
         // which already listens for the `tauri://drag-drop` event and routes
         // them into the focused terminal / command line.
         .on_window_event(|window, event| {
-            safe_eprintln!("[TTO DRAG] WindowEvent: {:?}", event);
-            if let WindowEvent::DragDrop(dnd) = event {
-                safe_eprintln!("[TTO DRAG] DragDropEvent received: {:?}", dnd);
-                use tauri::DragDropEvent;
-                match dnd {
-                    DragDropEvent::Drop { paths, position: _ } => {
-                        safe_eprintln!("[TTO DRAG] Drop paths: {:?}", paths);
+            isolate_panic(|| {
+                if let WindowEvent::DragDrop(dnd) = event {
+                    use tauri::DragDropEvent;
+                    if let DragDropEvent::Drop { paths, position: _ } = dnd {
                         let payload = serde_json::json!({ "paths": paths });
-                        safe_eprintln!("[TTO DRAG] Emitting payload: {}", payload);
                         let _ = window.emit("tto://drag-drop", payload);
                     }
-                    DragDropEvent::Enter { paths, position: _ } => {
-                        safe_eprintln!("[TTO DRAG] Enter paths: {:?}", paths);
-                    }
-                    DragDropEvent::Over { position: _ } => {
-                        safe_eprintln!("[TTO DRAG] Over");
-                    }
-                    DragDropEvent::Leave => {
-                        safe_eprintln!("[TTO DRAG] Leave");
-                    }
-                    _ => {}
                 }
-            }
+            });
         })
         .setup(|app| {
-            let manager = Arc::new(terminal::manager::TerminalManager::new(app.handle().clone()));
+            let manager = Arc::new(terminal::manager::TerminalManager::new(
+                app.handle().clone(),
+            ));
             terminal::scheduler::spawn_scheduler(manager.clone());
             terminal::manager::spawn_detector(manager.clone());
             // Kill all PTY children on exit so shells/TUIs (opencode, etc.) are
@@ -177,25 +184,21 @@ pub fn run() {
             // runs even when the UI is closed so the device stays ONLINE (and
             // remote terminal/file access keeps working).
             let gateway_client = Arc::new(gateway::GatewayClient::new());
-            let gateway_identity = Arc::new(Mutex::new(
-                gateway::identity::load_or_create(&gateway::identity::default_device_name()),
-            ));
+            let gateway_identity = Arc::new(Mutex::new(gateway::identity::load_or_create(
+                &gateway::identity::default_device_name(),
+            )));
             tauri::async_runtime::spawn(gateway::run_connection(
                 app.handle().clone(),
                 manager.clone(),
                 gateway_client.clone(),
                 gateway_identity.clone(),
             ));
-// Set the window title-bar icon to match the app icon.
+            // Set the window title-bar icon to match the app icon.
             if let Some(window) = app.get_webview_window("main") {
                 let icon_bytes = include_bytes!("../icons/icon.png");
                 if let Ok(icon) = tauri::image::Image::from_bytes(icon_bytes) {
                     let _ = window.set_icon(icon);
                 }
-                // Debug: listen for webview-level DragDrop events (separate from window events)
-                let _ = window.on_webview_event(|event| {
-                    safe_eprintln!("[TTO DRAG] WebviewEvent: {:?}", event);
-                });
                 // ---- Webview page-load diagnostic (white-screen tracing) ----
                 // 2s after launch, evaluate JS inside the webview and write the
                 // resulting DOM state to rust-diag.log. This tells us whether
@@ -215,7 +218,12 @@ pub fn run() {
                         hasReact: !!(window.__REACT_DEVTOOLS_GLOBAL_HOOK__),
                         bodyBg: getComputedStyle(document.body).backgroundColor
                     })"#;
-                    let ts = || SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+                    let ts = || {
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0)
+                    };
                     let w = window.clone();
                     let _ = window.eval_with_callback(js, move |result| {
                         let mut f = std::fs::OpenOptions::new()
@@ -266,87 +274,101 @@ pub fn run() {
             {
                 use std::io::Write;
                 use std::time::{SystemTime, UNIX_EPOCH};
-                let ts = || SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+                let ts = || {
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0)
+                };
                 let log_path = crate::home_dir().join(".local/share/tto/rust-diag.log");
                 if let Some(parent) = log_path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                {
                     let _ = writeln!(f, "{} | setup done", ts());
                 }
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            ipc::terminal_create,
-            ipc::terminal_attach,
-            ipc::terminal_detach,
-            ipc::terminal_get_scrollback,
-            ipc::terminal_subscribe,
-            ipc::terminal_unsubscribe,
-            ipc::terminal_write,
-            ipc::terminal_drop_files,
-            ipc::terminal_send_command,
-            ipc::terminal_resize,
-            ipc::terminal_close,
-            ipc::terminal_restart,
-            ipc::terminal_list,
-            ipc::terminal_set_title,
-            ipc::terminal_set_tui,
-            ipc::terminal_set_focus,
-            ipc::terminal_set_visible,
-            ipc::terminal_set_grid_mode,
-            ipc::terminal_batch_resize,
-            ipc::terminal_diagnostics,
-            ipc::workspace_index_set,
-            ipc::workspace_index_get,
-            ipc::sidecar_status,
-            ipc::sidecar_port,
-            ipc::session_token,
-            ipc::collab_restart_sidecar,
-            ipc::open_devtools,
-            gateway_ipc::gateway_status,
-            gateway_ipc::gateway_enabled,
-            gateway_ipc::gateway_set_enabled,
-            gateway_ipc::gateway_pair,
-            gateway_ipc::gateway_pair_status,
-            gateway_ipc::gateway_pair_claim,
-            gateway_ipc::gateway_set_url,
-            gateway_ipc::gateway_identity,
-            ipc::pick_file,
-            ipc::pick_folder,
-            ipc::get_home_dir,
-            ipc::path_exists,
-            ipc::get_launch_cwd,
-            ipc::ego_lite_status,
-            ipc::django_extract_zip,
-            ipc::django_analyze,
-            ipc::django_fix,
-            ipc::django_run_checks,
-            ipc::django_package,
-            ipc::django_cleanup_old_projects,
-            ipc::django_check_python,
-            ipc::open_url,
-            ipc::reveal_in_finder,
-            ipc::open_app,
-            ipc::is_app_running,
-        ])
+        .invoke_handler({
+            let inner: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                ipc::terminal_create,
+                ipc::terminal_attach,
+                ipc::terminal_detach,
+                ipc::terminal_get_scrollback,
+                ipc::terminal_subscribe,
+                ipc::terminal_unsubscribe,
+                ipc::terminal_write,
+                ipc::terminal_drop_files,
+                ipc::terminal_send_command,
+                ipc::terminal_resize,
+                ipc::terminal_close,
+                ipc::terminal_restart,
+                ipc::terminal_list,
+                ipc::terminal_set_title,
+                ipc::terminal_set_tui,
+                ipc::terminal_set_focus,
+                ipc::terminal_set_visible,
+                ipc::terminal_set_grid_mode,
+                ipc::terminal_batch_resize,
+                ipc::terminal_diagnostics,
+                ipc::workspace_index_set,
+                ipc::workspace_index_get,
+                ipc::sidecar_status,
+                ipc::sidecar_port,
+                ipc::session_token,
+                ipc::collab_restart_sidecar,
+                ipc::open_devtools,
+                gateway_ipc::gateway_status,
+                gateway_ipc::gateway_enabled,
+                gateway_ipc::gateway_set_enabled,
+                gateway_ipc::gateway_pair,
+                gateway_ipc::gateway_pair_status,
+                gateway_ipc::gateway_pair_claim,
+                gateway_ipc::gateway_set_url,
+                gateway_ipc::gateway_identity,
+                ipc::pick_file,
+                ipc::pick_folder,
+                ipc::get_home_dir,
+                ipc::path_exists,
+                ipc::get_launch_cwd,
+                ipc::ego_lite_status,
+                ipc::django_extract_zip,
+                ipc::django_analyze,
+                ipc::django_fix,
+                ipc::django_run_checks,
+                ipc::django_package,
+                ipc::django_cleanup_old_projects,
+                ipc::django_check_python,
+                ipc::open_url,
+                ipc::reveal_in_finder,
+                ipc::open_app,
+                ipc::is_app_running,
+            ];
+            move |invoke| isolate_invoke(|| inner(invoke))
+        })
         .build(tauri::generate_context!())
         .expect("error while building tto")
         .run(|app_handle, event| {
             // Kill all PTY children on exit so shells/TUIs (opencode, etc.) are
             // never orphaned with a dead terminal — orphaned TUIs spin at 100%
             // CPU and can crash their runtime (Bun SIGTRAP in the renderer).
-            if let tauri::RunEvent::Exit = event {
-                if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
-                    state.manager.kill_all();
-                    // Gracefully stop the sidecar WE spawned (SIGTERM so it can
-                    // flush state on shutdown; externally-started servers are
-                    // left alone).
-                    if let Some(mut child) = state.backend.lock().take() {
-                        sidecar::stop(&mut child);
+            isolate_panic(|| {
+                if let tauri::RunEvent::Exit = event {
+                    if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
+                        state.manager.kill_all();
+                        // Gracefully stop the sidecar WE spawned (SIGTERM so it can
+                        // flush state on shutdown; externally-started servers are
+                        // left alone).
+                        if let Some(mut child) = state.backend.lock().take() {
+                            sidecar::stop(&mut child);
+                        }
                     }
                 }
-            }
+            });
         });
 }

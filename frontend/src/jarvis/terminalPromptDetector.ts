@@ -35,6 +35,231 @@ export function stripAnsi(str: string): string {
   return str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 }
 
+// Box-drawing, blocks, and braille are frame chrome. Selection markers (❯ › ●) are not.
+const BORDER = /[\u2500-\u257F\u2580-\u259F\u2800-\u28FF|❘❙❚\u23B8\u23B9]/u;
+const LEADING_BORDER = new RegExp(`^(?:${BORDER.source}+\\s*)+`, 'u');
+const TRAILING_BORDER = new RegExp(`(?:\\s*${BORDER.source}+)+$`, 'u');
+const MARKER = '[>❯›▸*●◯○]';
+const CURSOR_MARKER = /[>❯›▸*●]/u;
+const NUMBERED_RE = new RegExp(`^(?:(${MARKER})\\s*)?(\\d+)[.)]\\s+(.+)$`, 'u');
+const MARKED_LABEL_RE = new RegExp(`^(${MARKER})\\s*(.+)$`, 'u');
+
+export function normalizePromptLine(raw: string): string {
+  let line = stripAnsi(raw).replace(/\u00a0/g, ' ').trim();
+  for (let i = 0; i < 8; i++) {
+    const next = line.replace(LEADING_BORDER, '').replace(TRAILING_BORDER, '').trim();
+    if (next === line) break;
+    line = next;
+  }
+  return line;
+}
+
+export function isPromptHintLine(line: string): boolean {
+  const text = normalizePromptLine(line);
+  if (!text) return false;
+  if (/\? for shortcuts|\bpress\s+\?/i.test(text)) return true;
+  if (/^(?:esc to cancel|enter to confirm|tab to amend|press enter|enter to select)\b/i.test(text)) return true;
+  return text.length <= 80 && /(?:esc to cancel|enter to confirm|tab to amend)/i.test(text);
+}
+
+export function isPermissionHeaderLine(line: string): boolean {
+  const text = normalizePromptLine(line);
+  return /^(?:requesting permission\b|bash command\b|run this command\b|do you want to proceed\b|allow this\b|allow tool\b|authorize\b|permission request\b|apply this change\b|approve this\b)/i.test(text);
+}
+
+export function isBinaryPromptLine(line: string): boolean {
+  return /(?:\[[yYnN]\/[yYnN]\]|\([yYnN]\/[yYnN]\)|\(yes\/no\))/i.test(normalizePromptLine(line));
+}
+
+export function isQuestionLine(line: string): boolean {
+  const text = normalizePromptLine(line);
+  if (!/\?\s*$/.test(text)) return false;
+  if (/^\?\s*$/.test(text)) return false;
+  if (isPromptHintLine(text)) return false;
+  if (/\b(?:shortcuts|hints)\b/i.test(text)) return false;
+  return true;
+}
+
+interface ParsedOption {
+  key: string;
+  label: string;
+  selected: boolean;
+}
+
+function markerSelected(marker: string | undefined): boolean {
+  return Boolean(marker && CURSOR_MARKER.test(marker));
+}
+
+export function parseNumberedOption(line: string): ParsedOption | null {
+  const match = normalizePromptLine(line).match(NUMBERED_RE);
+  if (!match) return null;
+  return {
+    key: match[2],
+    label: match[3].trim(),
+    selected: markerSelected(match[1]),
+  };
+}
+
+export function isNumberedPromptOption(line: string): boolean {
+  return parseNumberedOption(line) !== null;
+}
+
+function isChoiceLabel(label: string): boolean {
+  const text = label.trim();
+  if (!text || text.length > 120 || /\?\s*$/.test(text)) return false;
+  if (/^(?:yes|no|always allow|allow once|always|allow|deny|proceed|skip|cancel|approve|reject)$/i.test(text)) {
+    return true;
+  }
+  return /^(?:yes|no|allow|deny)\b/i.test(text) && !/[.!?]$/.test(text);
+}
+
+export function parseUnnumberedChoice(line: string): { label: string; selected: boolean } | null {
+  const normalized = normalizePromptLine(line);
+  if (!normalized || parseNumberedOption(normalized)) return null;
+  let selected = false;
+  let label = normalized;
+  const marked = normalized.match(MARKED_LABEL_RE);
+  if (marked) {
+    selected = markerSelected(marked[1]);
+    label = marked[2].trim();
+  }
+  if (!isChoiceLabel(label)) return null;
+  return { label, selected };
+}
+
+export function isUnnumberedPromptChoice(line: string): boolean {
+  return parseUnnumberedChoice(line) !== null;
+}
+
+function polarity(label: string): 'y' | 'n' | null {
+  if (/^(?:yes|allow|proceed|approve|always)\b/i.test(label)) return 'y';
+  if (/^(?:no|deny|cancel|reject)\b/i.test(label)) return 'n';
+  return null;
+}
+
+function toOptions(rows: ParsedOption[], binaryValues: boolean): PromptOption[] {
+  let values = rows.map((row) => row.key);
+  if (binaryValues && rows.length === 2) {
+    const left = polarity(rows[0].label);
+    const right = polarity(rows[1].label);
+    if (left && right && left !== right) values = [left, right];
+  }
+  return rows.map((row, index) => ({
+    key: row.key,
+    label: row.label,
+    value: values[index],
+    selected: row.selected,
+  }));
+}
+
+function extractCommand(tail: string[]): string {
+  for (let i = 0; i < tail.length; i++) {
+    const line = tail[i];
+    const permMatch = line.match(/requesting permission for:\s*(.*)/i);
+    if (permMatch) {
+      if (permMatch[1] && permMatch[1].trim()) return permMatch[1].trim();
+      if (tail[i + 1] && !tail[i + 1].includes('Run this command')) return tail[i + 1].trim();
+      return '';
+    }
+    if (/^bash command\b/i.test(line) && tail[i + 1]) return tail[i + 1].trim();
+  }
+  return '';
+}
+
+function findQuestion(tail: string[]): string {
+  for (let i = tail.length - 1; i >= 0; i--) {
+    if (!isQuestionLine(tail[i]) || parseNumberedOption(tail[i])) continue;
+    return tail[i];
+  }
+  return '';
+}
+
+function lastChoiceRun(tail: string[]): Array<{ label: string; selected: boolean }> | null {
+  const runs: Array<Array<{ label: string; selected: boolean }>> = [];
+  let current: Array<{ label: string; selected: boolean }> = [];
+  const flush = () => {
+    if (current.length > 0) runs.push(current);
+    current = [];
+  };
+  for (const line of tail) {
+    if (isPromptHintLine(line) || isPermissionHeaderLine(line) || isQuestionLine(line) || isBinaryPromptLine(line) || parseNumberedOption(line)) {
+      flush();
+      continue;
+    }
+    const choice = parseUnnumberedChoice(line);
+    if (choice) current.push(choice);
+    else flush();
+  }
+  flush();
+  for (let i = runs.length - 1; i >= 0; i--) {
+    if (runs[i].length >= 2) return runs[i];
+  }
+  return null;
+}
+
+function buildMenu(
+  cliName: string,
+  type: 'permission' | 'question',
+  command: string,
+  question: string,
+  options: PromptOption[],
+): DetectedTerminalPrompt {
+  const commandBrief = command ? command.slice(0, 80) : '';
+  const spoken = commandBrief
+    ? `${cliName} is requesting permission to run: ${commandBrief}. Say 'yes' or '1' to allow, or 'no' to cancel.`
+    : `${cliName} has a question: ${question}. Options are: ${options.map((o) => `${o.key}: ${o.label}`).slice(0, 3).join(', ')}. What would you like to do?`;
+  return {
+    id: `prompt-${command.slice(0, 32)}-${options.map((o) => o.key).join('')}-${question.slice(0, 24)}`,
+    type,
+    command,
+    question,
+    options,
+    spokenPrompt: spoken,
+    detectedAt: Date.now(),
+  };
+}
+
+function buildBinary(cliName: string, question: string): DetectedTerminalPrompt {
+  return {
+    id: `binary-${question.slice(0, 40)}`,
+    type: 'confirm',
+    question,
+    options: [
+      { key: '1', label: 'Yes', value: 'y', selected: true },
+      { key: '2', label: 'No', value: 'n' },
+    ],
+    spokenPrompt: `${cliName} is asking: ${question}. Say 'yes' to proceed, or 'no' to cancel.`,
+    detectedAt: Date.now(),
+  };
+}
+
+const BINARY_INLINE = /^(.+?)\s*(?:\[[yYnN]\/[yYnN]\]|\([yYnN]\/[yYnN]\)|\(yes\/no\))\s*[:?]?\s*$/i;
+const BINARY_BARE = /^(?:\[[yYnN]\/[yYnN]\]|\([yYnN]\/[yYnN]\)|\(yes\/no\))\s*[:?]?\s*$/i;
+
+function findBinary(lines: string[], cliName: string): DetectedTerminalPrompt | null {
+  const window = lines.slice(-8);
+  for (let i = window.length - 1; i >= 0; i--) {
+    const line = window[i];
+    if (isPromptHintLine(line) && !isBinaryPromptLine(line)) continue;
+    const inline = line.match(BINARY_INLINE);
+    if (inline && isBinaryPromptLine(line)) {
+      const qText = inline[1].trim();
+      if (qText) return buildBinary(cliName, qText);
+    }
+    if (BINARY_BARE.test(line)) {
+      let qText = 'Proceed?';
+      for (let j = i - 1; j >= 0; j--) {
+        if (isQuestionLine(window[j])) {
+          qText = window[j];
+          break;
+        }
+      }
+      return buildBinary(cliName, qText);
+    }
+  }
+  return null;
+}
+
 /**
  * Parses the live terminal buffer to detect if the CLI is currently waiting
  * for user permission or answering a question.
@@ -42,124 +267,32 @@ export function stripAnsi(str: string): string {
 export function detectTerminalPrompt(rawLines: string[], cliName: string = 'Antigravity'): DetectedTerminalPrompt | null {
   if (!rawLines || rawLines.length === 0) return null;
 
-  const lines = rawLines.map((l) => stripAnsi(l).trimEnd());
-  const nonBlank = lines.map((l) => l.trim()).filter(Boolean);
-  if (nonBlank.length === 0) return null;
+  const tail = rawLines.map(normalizePromptLine).filter(Boolean).slice(-25);
+  if (tail.length === 0) return null;
 
-  const tail = nonBlank.slice(-25);
-  const tailText = tail.join('\n');
+  const command = extractCommand(tail);
+  let question = findQuestion(tail);
+  const hasPermission = tail.some((line) => isPermissionHeaderLine(line));
+  if (!question && hasPermission) question = 'Run this command?';
 
-  // 1. Detect Permission Request with Numbered Options (Antigravity & Claude Code)
-  const isPermissionHeader =
-    /requesting permission for:|bash command|run this command\?|allow this command\?|allow tool execution|do you want to proceed\?|authorize tool/i.test(
-      tailText
-    );
-
-  // Check for numbered choices in the tail: e.g. "1. Yes", "2. Always", "4. No, cancel"
-  const optionLines: Array<{ line: string; index: number }> = [];
-  for (let i = 0; i < tail.length; i++) {
-    const l = tail[i];
-    if (/^([>❯*]\s*)?\d+[.)]\s+.+/i.test(l)) {
-      optionLines.push({ line: l, index: i });
-    }
+  const numbered = tail
+    .map((line) => parseNumberedOption(line))
+    .filter((row): row is ParsedOption => row !== null);
+  if (numbered.length >= 2 && (hasPermission || question)) {
+    return buildMenu(cliName, hasPermission ? 'permission' : 'question', command, question, toOptions(numbered, false));
   }
 
-  // Extract command being requested
-  let targetCommand = '';
-  for (let i = 0; i < tail.length; i++) {
-    const l = tail[i];
-    const permMatch = l.match(/requesting permission for:\s*(.*)/i);
-    if (permMatch) {
-      if (permMatch[1] && permMatch[1].trim()) {
-        targetCommand = permMatch[1].trim();
-      } else if (tail[i + 1] && !tail[i + 1].includes('Run this command')) {
-        targetCommand = tail[i + 1].trim();
-      }
-      break;
-    }
-    if (/^bash command\b/i.test(l) && tail[i + 1]) {
-      targetCommand = tail[i + 1].trim();
-      break;
-    }
+  const choices = !hasPermission && !question ? null : lastChoiceRun(tail);
+  if (choices && choices.length >= 2) {
+    const rows = choices.map((choice, index) => ({
+      key: String(index + 1),
+      label: choice.label,
+      selected: choice.selected,
+    }));
+    return buildMenu(cliName, hasPermission ? 'permission' : 'question', command, question, toOptions(rows, true));
   }
 
-  // Extract question
-  let question = '';
-  for (let i = tail.length - 1; i >= 0; i--) {
-    const l = tail[i];
-    if (/\?\s*$/i.test(l) && !/shortcuts|hints|press/i.test(l)) {
-      question = l;
-      break;
-    }
-  }
-  if (!question && isPermissionHeader) {
-    question = 'Run this command?';
-  }
-
-  // Case A: Numbered menu found
-  if (optionLines.length >= 2 && (isPermissionHeader || question)) {
-    const options: PromptOption[] = [];
-    for (const item of optionLines) {
-      const match = item.line.match(/^([>❯*]\s*)?(\d+)[.)]\s+(.+)$/);
-      if (match) {
-        const isSelected = Boolean(match[1]);
-        const key = match[2];
-        const label = match[3].trim();
-        options.push({
-          key,
-          label,
-          value: key,
-          selected: isSelected,
-        });
-      }
-    }
-
-    const commandBrief = targetCommand ? targetCommand.slice(0, 80) : '';
-    let spoken = '';
-    if (commandBrief) {
-      spoken = `${cliName} is requesting permission to run: ${commandBrief}. Say 'yes' or '1' to allow, or 'no' to cancel.`;
-    } else {
-      spoken = `${cliName} has a question: ${question}. Options are: ${options.map((o) => `${o.key}: ${o.label}`).slice(0, 3).join(', ')}. What would you like to do?`;
-    }
-
-    const promptId = `prompt-${targetCommand.slice(0, 32)}-${options.map((o) => o.key).join('')}-${question.slice(0, 24)}`;
-
-    return {
-      id: promptId,
-      type: isPermissionHeader ? 'permission' : 'select',
-      command: targetCommand,
-      question,
-      options,
-      spokenPrompt: spoken,
-      detectedAt: Date.now(),
-    };
-  }
-
-  // Case B: Binary confirmation prompt [y/N], (y/n), (yes/no)
-  const lastLine = tail[tail.length - 1] || '';
-  const secondLast = tail[tail.length - 2] || '';
-  const binaryMatch =
-    lastLine.match(/(.+?)\s*(?:\[([yYnN/]+)\]|\(([yYnN/]+)\)|\(yes\/no\))\s*[:?]?\s*$/i) ||
-    secondLast.match(/(.+?)\s*(?:\[([yYnN/]+)\]|\(([yYnN/]+)\)|\(yes\/no\))\s*[:?]?\s*$/i);
-
-  if (binaryMatch) {
-    const qText = binaryMatch[1].trim();
-    const options: PromptOption[] = [
-      { key: '1', label: 'Yes', value: 'y', selected: true },
-      { key: '2', label: 'No', value: 'n' },
-    ];
-    const spoken = `${cliName} is asking: ${qText}. Say 'yes' to proceed, or 'no' to cancel.`;
-    return {
-      id: `binary-${qText.slice(0, 40)}`,
-      type: 'confirm',
-      question: qText,
-      options,
-      spokenPrompt: spoken,
-      detectedAt: Date.now(),
-    };
-  }
-
-  return null;
+  return findBinary(tail, cliName);
 }
 
 /**

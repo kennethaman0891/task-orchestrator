@@ -8,13 +8,13 @@
 //! The frontend already retries its WebSocket every 3 s, so a freshly-spawned
 //! sidecar (binds in ~1 s) is picked up automatically without any extra code.
 
+use std::fs;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::fs;
 
 /// Desktop session token shared with the Python sidecar.
 ///
@@ -137,7 +137,10 @@ pub fn is_real_sidecar(addr: &str) -> bool {
     };
     use std::io::{Read, Write};
     let _ = stream.set_read_timeout(Some(Duration::from_millis(3000)));
-    if stream.write_all(b"GET /api/health HTTP/1.0\r\nHost: localhost\r\n\r\n").is_err() {
+    if stream
+        .write_all(b"GET /api/health HTTP/1.0\r\nHost: localhost\r\n\r\n")
+        .is_err()
+    {
         return false;
     }
     // Read in a loop: uvicorn writes headers and body separately, so a single
@@ -165,7 +168,10 @@ pub fn is_real_sidecar(addr: &str) -> bool {
 
 /// True when the REAL sidecar (not an impostor) already answers on the port.
 pub fn already_running() -> bool {
-    is_real_sidecar(&format!("127.0.0.1:{}", SIDECAR_PORT.load(Ordering::Relaxed)))
+    is_real_sidecar(&format!(
+        "127.0.0.1:{}",
+        SIDECAR_PORT.load(Ordering::Relaxed)
+    ))
 }
 
 /// Minimal HTTP GET against the sidecar (plain TCP, HTTP/1.0, body returned).
@@ -266,9 +272,13 @@ pub fn workspaces_listable() -> bool {
     while let Some(idx) = rest.find(marker) {
         let after = &rest[idx + marker.len()..];
         let Some(colon) = after.find(':') else { break };
-        let Some(open) = after[colon..].find('"') else { break };
+        let Some(open) = after[colon..].find('"') else {
+            break;
+        };
         let val_start = colon + open + 1;
-        let Some(close) = after[val_start..].find('"') else { break };
+        let Some(close) = after[val_start..].find('"') else {
+            break;
+        };
         let path = &after[val_start..val_start + close];
         if tcc_protected(path) {
             total_tcc_paths += 1;
@@ -358,7 +368,7 @@ fn bundled_backend_base() -> Option<PathBuf> {
     //   /Applications/Task Orchestrator.app/Contents/MacOS/tto
     let exe = std::env::current_exe().ok()?;
     let mut cur = exe.parent()?; // Contents/MacOS/
-    cur = cur.parent()?;        // Contents/
+    cur = cur.parent()?; // Contents/
     let resources = cur.join("Resources");
     if resources.is_dir() {
         Some(resources)
@@ -377,7 +387,11 @@ fn collab_ttos_host() -> Option<String> {
     let settings_path = home.join(".local/share/tto/collab/settings.json");
     if let Ok(content) = fs::read_to_string(&settings_path) {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-            if val.get("lan_enabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if val
+                .get("lan_enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 return Some("0.0.0.0".to_string());
             }
         }
@@ -444,7 +458,10 @@ pub fn spawn_if_needed() -> Option<Child> {
         })
         .or_else(|| {
             if user_venv_python.exists() {
-                log(&format!("using user venv interpreter: {}", user_venv_python.display()));
+                log(&format!(
+                    "using user venv interpreter: {}",
+                    user_venv_python.display()
+                ));
                 Some(user_venv_python)
             } else {
                 None
@@ -453,12 +470,18 @@ pub fn spawn_if_needed() -> Option<Child> {
         .or_else(|| {
             let brew_arm = PathBuf::from("/opt/homebrew/bin/python3");
             if brew_arm.exists() {
-                log(&format!("using Homebrew arm64 interpreter: {}", brew_arm.display()));
+                log(&format!(
+                    "using Homebrew arm64 interpreter: {}",
+                    brew_arm.display()
+                ));
                 Some(brew_arm)
             } else {
                 let brew_intel = PathBuf::from("/usr/local/bin/python3");
                 if brew_intel.exists() {
-                    log(&format!("using Homebrew x86_64 interpreter: {}", brew_intel.display()));
+                    log(&format!(
+                        "using Homebrew x86_64 interpreter: {}",
+                        brew_intel.display()
+                    ));
                     Some(brew_intel)
                 } else {
                     None
@@ -515,9 +538,7 @@ pub fn spawn_if_needed() -> Option<Child> {
         }
         let mut child = match cmd
             .stdout(Stdio::from(
-                log_file
-                    .try_clone()
-                    .expect("clone sidecar.log handle"),
+                log_file.try_clone().expect("clone sidecar.log handle"),
             ))
             .stderr(Stdio::from(log_file))
             .spawn()
@@ -622,10 +643,7 @@ fn kill_stale_sidecars() {
         // any third-party crate. If anything is unparseable we no-op safely —
         // leaking one stale sidecar is worse than accidentally killing another
         // process, so we only act on lines that clearly look like a listening PID.
-        let Ok(output) = Command::new("netstat")
-            .args(["-ano"])
-            .output()
-        else {
+        let Ok(output) = Command::new("netstat").args(["-ano"]).output() else {
             return;
         };
         let text = String::from_utf8_lossy(&output.stdout);
@@ -687,12 +705,19 @@ fn log(msg: &str) {
     let _ = writeln!(std::io::stderr(), "[sidecar] {msg}");
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     let path = crate::home_dir().join(".local/share/tto/rust-diag.log");
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = writeln!(f, "{ts} | {msg}");
     }
 }

@@ -11,8 +11,7 @@ use super::{FileNode, IssueSeverity, ProjectInfo};
 /// Uses UUID-based naming to handle multiple zips safely, even with identical names.
 pub fn extract_zip(zip_path: &str) -> Result<ProjectInfo, String> {
     let zip_file = fs::File::open(zip_path).map_err(|e| format!("Cannot open zip: {e}"))?;
-    let mut archive =
-        ZipArchive::new(zip_file).map_err(|e| format!("Invalid zip file: {e}"))?;
+    let mut archive = ZipArchive::new(zip_file).map_err(|e| format!("Invalid zip file: {e}"))?;
 
     // Create temp extraction directory
     let extract_dir = tempfile::tempdir().map_err(|e| format!("Temp dir failed: {e}"))?;
@@ -164,7 +163,8 @@ fn determine_file_status(path: &Path) -> IssueSeverity {
             }
             // Check for syntax issues by looking for common patterns
             if let Ok(content) = fs::read_to_string(path) {
-                if content.contains("TODO") || content.contains("FIXME") || content.contains("XXX") {
+                if content.contains("TODO") || content.contains("FIXME") || content.contains("XXX")
+                {
                     return IssueSeverity::Warning;
                 }
             }
@@ -210,7 +210,11 @@ fn determine_dir_status(path: &Path) -> IssueSeverity {
 
 /// Find settings.py in the project.
 pub fn find_settings_py(root: &Path) -> Option<PathBuf> {
-    for entry in walkdir::WalkDir::new(root).max_depth(3).into_iter().flatten() {
+    for entry in walkdir::WalkDir::new(root)
+        .max_depth(3)
+        .into_iter()
+        .flatten()
+    {
         if entry.file_name().to_string_lossy() == "settings.py" {
             return Some(entry.into_path());
         }
@@ -264,17 +268,18 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// Returns the number of directories removed.
 pub fn cleanup_old_projects(max_age_minutes: u64) -> Result<usize, String> {
     use std::time::{SystemTime, UNIX_EPOCH};
-    
+
     let temp_dir = std::env::temp_dir();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| format!("Failed to get current time: {e}"))?;
     let cutoff_age = std::time::Duration::from_secs(max_age_minutes * 60);
-    let cutoff = now.checked_sub(cutoff_age)
+    let cutoff = now
+        .checked_sub(cutoff_age)
         .ok_or("Invalid cutoff calculation")?;
-    
+
     let mut cleaned = 0;
-    
+
     if let Ok(entries) = fs::read_dir(&temp_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -286,9 +291,16 @@ pub fn cleanup_old_projects(max_age_minutes: u64) -> Result<usize, String> {
                         if let Ok(modified_duration) = modified.duration_since(UNIX_EPOCH) {
                             if modified_duration < cutoff {
                                 let path = entry.path();
-                                eprintln!("[TTO DJANGO] Cleaning up old project: {}", path.display());
+                                crate::safe_eprintln!(
+                                    "[TTO DJANGO] Cleaning up old project: {}",
+                                    path.display()
+                                );
                                 if let Err(e) = fs::remove_dir_all(&path) {
-                                    eprintln!("[TTO DJANGO] Failed to remove {:?}: {}", path, e);
+                                    crate::safe_eprintln!(
+                                        "[TTO DJANGO] Failed to remove {:?}: {}",
+                                        path,
+                                        e
+                                    );
                                 } else {
                                     cleaned += 1;
                                 }
@@ -299,6 +311,6 @@ pub fn cleanup_old_projects(max_age_minutes: u64) -> Result<usize, String> {
             }
         }
     }
-    
+
     Ok(cleaned)
 }

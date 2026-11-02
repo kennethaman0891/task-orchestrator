@@ -60,8 +60,10 @@ fn safe_split(buf: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
                 // CSI: terminated by a final byte 0x40..=0x7E (after params).
                 0x5b => tail[2..].iter().any(|&b| (0x40..=0x7e).contains(&b)),
                 // OSC: terminated by BEL (0x07), single-byte ST (0x9C) or ST (ESC \).
-                0x5d => tail[2..].iter().any(|&b| b == 0x07 || b == 0x9c)
-                    || tail[2..].windows(2).any(|w| w == [0x1b, 0x5c]),
+                0x5d => {
+                    tail[2..].iter().any(|&b| b == 0x07 || b == 0x9c)
+                        || tail[2..].windows(2).any(|w| w == [0x1b, 0x5c])
+                }
                 // ESC + single char (e.g. ESC c, ESC ( B) is self-terminated.
                 _ => true,
             }
@@ -107,7 +109,14 @@ pub fn spawn_reader(
             while pending.len() > MAX_CHUNK {
                 let (emit, defer) = safe_split(std::mem::take(&mut pending));
                 pending = defer;
-                if tx.blocking_send(OutputChunk { data: emit, dropped, eof: false }).is_err() {
+                if tx
+                    .blocking_send(OutputChunk {
+                        data: emit,
+                        dropped,
+                        eof: false,
+                    })
+                    .is_err()
+                {
                     // Receiver gone (session dropped) — stop reading.
                     return;
                 }
@@ -121,7 +130,14 @@ pub fn spawn_reader(
             // ANSI sequences are safely completed by the next xterm.write.
             if !pending.is_empty() {
                 let emit = std::mem::take(&mut pending);
-                if tx.blocking_send(OutputChunk { data: emit, dropped, eof: false }).is_err() {
+                if tx
+                    .blocking_send(OutputChunk {
+                        data: emit,
+                        dropped,
+                        eof: false,
+                    })
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -170,7 +186,13 @@ mod tests {
         // Generate 10,000 lines of output (> 550 KB) to simulate heavy CLI output
         let mut data = Vec::new();
         for i in 0..10_000 {
-            data.extend_from_slice(format!("Line {:05}: The quick brown fox jumps over the lazy dog\n", i).as_bytes());
+            data.extend_from_slice(
+                format!(
+                    "Line {:05}: The quick brown fox jumps over the lazy dog\n",
+                    i
+                )
+                .as_bytes(),
+            );
         }
         let total_len = data.len();
         assert!(total_len > 500_000);
@@ -206,8 +228,14 @@ mod tests {
             }
         }
 
-        handle.join().expect("reader thread should terminate cleanly");
+        handle
+            .join()
+            .expect("reader thread should terminate cleanly");
         assert!(eof_seen, "Should reach EOF");
-        assert_eq!(drained.len(), total_len, "All output bytes must be drained without backpressure loss");
+        assert_eq!(
+            drained.len(),
+            total_len,
+            "All output bytes must be drained without backpressure loss"
+        );
     }
 }
