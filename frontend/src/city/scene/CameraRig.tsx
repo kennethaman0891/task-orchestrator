@@ -9,6 +9,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { useCityStore } from '@/city/store';
 import { plotWorldPosition, cityRadius } from './CityGrid';
+import { InteriorWalkControls } from './InteriorWalkControls';
 import type { Project } from '@/city/types';
 
 const FLY_SPEED = 4.5;
@@ -18,13 +19,15 @@ export function CameraRig() {
   const camera = useThree((s) => s.camera);
   const cameraTarget = useCityStore((s) => s.cameraTarget);
   const nav = useCityStore((s) => s.nav);
+  const interiorViewMode = useCityStore((s) => s.interiorViewMode);
   const pending = useRef<{ pos: THREE.Vector3; look: THREE.Vector3 } | null>(null);
 
   const radius = cityRadius();
   const isCarMode = nav.mode === 'car';
   const isInteriorMode = nav.mode === 'interior';
-  const minDistance = isCarMode ? 0.05 : isInteriorMode ? 1.0 : 4;
-  const maxDistance = isCarMode ? 25 : isInteriorMode ? 16 : radius * 2.4;
+  const isWalkIn = isInteriorMode && interiorViewMode === 'walk-in';
+  const minDistance = isCarMode ? 0.05 : isInteriorMode ? 0.5 : 4;
+  const maxDistance = isCarMode ? 25 : isInteriorMode ? 18 : radius * 2.4;
 
   useEffect(() => {
     const c = controls.current;
@@ -67,16 +70,20 @@ export function CameraRig() {
   }, []);
 
   return (
-    <OrbitControls
-      ref={controls}
-      makeDefault
-      enableDamping
-      dampingFactor={0.08}
-      minDistance={minDistance}
-      maxDistance={maxDistance}
-      maxPolarAngle={Math.PI / 2.05}
-      target={[0, 4, 0]}
-    />
+    <>
+      <OrbitControls
+        ref={controls}
+        makeDefault
+        enabled={!isWalkIn}
+        enableDamping
+        dampingFactor={0.08}
+        minDistance={minDistance}
+        maxDistance={maxDistance}
+        maxPolarAngle={Math.PI / 2.05}
+        target={[0, 4, 0]}
+      />
+      {isWalkIn && <InteriorWalkControls />}
+    </>
   );
 }
 
@@ -149,7 +156,7 @@ export function interiorTarget(
   floorIndex: number,
   floorH: number,
   buildingDepth: number,
-  viewPreset: 'overview' | 'desks' | 'servers' | 'lounge' | 'topdown' = 'overview',
+  viewPreset: 'overview' | 'walkin' | 'desks' | 'servers' | 'blueprint' | 'lounge' | 'topdown' = 'overview',
 ) {
   const c = plotWorldPosition(plot);
   const fy = floorIndex * floorH + 0.3;
@@ -164,34 +171,55 @@ export function interiorTarget(
       lookZ: c[2],
     };
   }
+  if (viewPreset === 'walkin') {
+    // Stepped right inside the floor at eye level!
+    return {
+      x: c[0],
+      y: fy + 1.45,
+      z: c[2] + buildingDepth * 0.25,
+      lookX: c[0],
+      lookY: fy + 1.35,
+      lookZ: c[2] - buildingDepth * 0.3,
+    };
+  }
   if (viewPreset === 'desks') {
     return {
-      x: c[0] - 1.8,
-      y: fy + 2.2,
-      z: c[2] + buildingDepth * 0.2 + 3.2,
-      lookX: c[0] - 1.8,
-      lookY: fy + 0.8,
-      lookZ: c[2] - buildingDepth * 0.1,
+      x: c[0] - 1.9,
+      y: fy + 1.35,
+      z: c[2] + 1.6,
+      lookX: c[0] - 1.9,
+      lookY: fy + 0.85,
+      lookZ: c[2] + 0.2,
     };
   }
   if (viewPreset === 'servers') {
     return {
-      x: c[0] + buildingDepth * 0.28,
-      y: fy + 2.0,
-      z: c[2] + 2.8,
-      lookX: c[0] + buildingDepth * 0.28,
+      x: c[0] + 1.8,
+      y: fy + 1.4,
+      z: c[2] - 0.4,
+      lookX: c[0] + 2.4,
       lookY: fy + 1.1,
-      lookZ: c[2] - buildingDepth * 0.2,
+      lookZ: c[2] - 1.6,
+    };
+  }
+  if (viewPreset === 'blueprint') {
+    return {
+      x: c[0],
+      y: fy + 1.4,
+      z: c[2] - 0.9,
+      lookX: c[0],
+      lookY: fy + 1.35,
+      lookZ: c[2] - 2.4,
     };
   }
   if (viewPreset === 'lounge') {
     return {
-      x: c[0] + 1.8,
-      y: fy + 2.0,
-      z: c[2] + buildingDepth * 0.2 + 3.2,
-      lookX: c[0] + 1.8,
-      lookY: fy + 0.7,
-      lookZ: c[2] + buildingDepth * 0.1,
+      x: c[0] + 1.6,
+      y: fy + 1.25,
+      z: c[2] + 1.8,
+      lookX: c[0] + 2.2,
+      lookY: fy + 0.8,
+      lookZ: c[2] + 0.6,
     };
   }
 
@@ -206,10 +234,11 @@ export function interiorTarget(
   };
 }
 
-/** Fly INTO a car's cabin (car mode). */
+/** Fly INTO a car's cabin (car mode). Supports cockpit, driver POV, or chase view. */
 export function carCabinTarget(
   projectPlot: { x: number; y: number },
   carTransform: [number, number, number, number],
+  preset: 'cockpit' | 'driver' | 'chase' = 'cockpit',
 ): { x: number; y: number; z: number; lookX: number; lookY: number; lookZ: number } {
   const world = plotWorldPosition(projectPlot);
   const [dx, dy, dz, rotY] = carTransform;
@@ -220,15 +249,28 @@ export function carCabinTarget(
   const sin = Math.sin(rotY);
   const cos = Math.cos(rotY);
 
-  // Eye position inside car: passenger seat at eye level, looking forward at dash & windshield
-  const localCamX = 0.16;
-  const localCamY = 0.74;
-  const localCamZ = -0.30;
+  let localCamX = 0.22;
+  let localCamY = 0.78;
+  let localCamZ = -0.22;
+  let localLookX = -0.08;
+  let localLookY = 0.62;
+  let localLookZ = 0.68;
 
-  // Look target: front dashboard / windshield center
-  const localLookX = -0.05;
-  const localLookY = 0.58;
-  const localLookZ = 0.75;
+  if (preset === 'driver') {
+    localCamX = -0.28;
+    localCamY = 0.82;
+    localCamZ = -0.16;
+    localLookX = -0.28;
+    localLookY = 0.68;
+    localLookZ = 0.82;
+  } else if (preset === 'chase') {
+    localCamX = 0;
+    localCamY = 1.45;
+    localCamZ = -2.40;
+    localLookX = 0;
+    localLookY = 0.60;
+    localLookZ = 0.40;
+  }
 
   return {
     x: carX + (localCamX * cos + localCamZ * sin),

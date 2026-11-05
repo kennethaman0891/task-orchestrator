@@ -2,7 +2,7 @@
 // Reuses the same base-URL resolution as the rest of the app.
 
 import { apiBase, fetchWithTimeout, handle, imageBlobUrl, putFile } from '@/lib/api';
-import type { BuildingConfig, CityMeta, Project } from '@/city/types';
+import type { BuildingConfig, CityMeta, Project, ProjectFloorPlan } from '@/city/types';
 
 const TIMEOUT_MS = 10000;
 
@@ -59,6 +59,18 @@ export function saveAgentSnapshot(id: string, snapshot: Record<string, unknown>)
 
 export function getCityMeta(): Promise<CityMeta> {
   return req('/api/projects/__meta');
+}
+
+export function getProjectFloorPlan(id: string): Promise<ProjectFloorPlan> {
+  return req(`/api/projects/${encodeURIComponent(id)}/floor-plan`);
+}
+
+export function scanProjectFloorPlan(path: string): Promise<ProjectFloorPlan> {
+  return req('/api/projects/scan-floor-plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
 }
 
 /** Fixed sample mesh. The sentence is accepted by the server and ignored. */

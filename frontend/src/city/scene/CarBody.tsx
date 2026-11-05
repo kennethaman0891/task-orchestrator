@@ -23,7 +23,17 @@ const WHEEL_SLOTS: [number, number, number][] = [
   [0.58, 0.22, -0.72],
 ];
 
-export function CarBody({ color, spec, moving = false }: { color: string; spec?: CarSpec | null; moving?: boolean }) {
+export function CarBody({
+  color,
+  spec,
+  moving = false,
+  inside = false,
+}: {
+  color: string;
+  spec?: CarSpec | null;
+  moving?: boolean;
+  inside?: boolean;
+}) {
   const hex = color.toLowerCase();
 
   const mats = useMemo(() => {
@@ -62,6 +72,12 @@ export function CarBody({ color, spec, moving = false }: { color: string; spec?:
         color: '#0f172a',
         metalness: 0.95,
         roughness: 0.08,
+      })),
+      // Mirror glass reflection
+      mirrorGlass: materialFor('cyber:mirror:glass', () => new THREE.MeshStandardMaterial({
+        color: '#cbd5e1',
+        metalness: 0.95,
+        roughness: 0.05,
       })),
       // Wheel rim & rubber
       tire: materialFor('cyber:tire', () => new THREE.MeshStandardMaterial({
@@ -133,10 +149,35 @@ export function CarBody({ color, spec, moving = false }: { color: string; spec?:
     <group>
       {/* ── 1. Aerodynamic Cyber Chassis ───────────────────────────── */}
       <group position={[0, 0.22, 0]}>
-        {/* Main lower aerodynamic hull with front wedge */}
-        <mesh position={[0, 0.14, 0]} material={mats.body} castShadow receiveShadow>
-          <boxGeometry args={[1.12, 0.22, 2.36]} />
-        </mesh>
+        {inside ? (
+          <>
+            {/* Front hood & nose section */}
+            <mesh position={[0, 0.14, 0.78]} material={mats.body} castShadow receiveShadow>
+              <boxGeometry args={[1.12, 0.22, 0.80]} />
+            </mesh>
+            {/* Rear trunk & deck section */}
+            <mesh position={[0, 0.14, -0.84]} material={mats.body} castShadow receiveShadow>
+              <boxGeometry args={[1.12, 0.22, 0.68]} />
+            </mesh>
+            {/* Left lower door sill */}
+            <mesh position={[-0.53, 0.14, -0.05]} material={mats.body} castShadow receiveShadow>
+              <boxGeometry args={[0.08, 0.22, 0.94]} />
+            </mesh>
+            {/* Right lower door sill */}
+            <mesh position={[0.53, 0.14, -0.05]} material={mats.body} castShadow receiveShadow>
+              <boxGeometry args={[0.08, 0.22, 0.94]} />
+            </mesh>
+            {/* Lower cabin subfloor */}
+            <mesh position={[0, 0.04, -0.05]} material={mats.bodyTrim}>
+              <boxGeometry args={[0.98, 0.04, 0.94]} />
+            </mesh>
+          </>
+        ) : (
+          /* Main lower aerodynamic hull with front wedge */
+          <mesh position={[0, 0.14, 0]} material={mats.body} castShadow receiveShadow>
+            <boxGeometry args={[1.12, 0.22, 2.36]} />
+          </mesh>
+        )}
 
         {/* Front nose wedge slope */}
         <mesh position={[0, 0.12, 1.14]} rotation={[0.26, 0, 0]} material={mats.body}>
@@ -151,26 +192,47 @@ export function CarBody({ color, spec, moving = false }: { color: string; spec?:
           <boxGeometry args={[0.06, 0.08, 1.8]} />
         </mesh>
 
-        {/* Streamlined Fastback Cabin Canopy */}
-        <mesh position={[0, 0.38, -0.1]} material={mats.canopy} castShadow>
-          <boxGeometry args={[0.88, 0.28, 1.35]} />
-        </mesh>
+        {/* When NOT inside: solid fastback canopy */}
+        {!inside && (
+          <>
+            {/* Streamlined Fastback Cabin Canopy */}
+            <mesh position={[0, 0.38, -0.1]} material={mats.canopy} castShadow>
+              <boxGeometry args={[0.88, 0.28, 1.35]} />
+            </mesh>
 
-        {/* Sloping Front Windshield */}
-        <mesh position={[0, 0.36, 0.62]} rotation={[-0.48, 0, 0]} material={mats.canopy}>
-          <boxGeometry args={[0.86, 0.26, 0.12]} />
-        </mesh>
+            {/* Sloping Front Windshield */}
+            <mesh position={[0, 0.36, 0.62]} rotation={[-0.48, 0, 0]} material={mats.canopy}>
+              <boxGeometry args={[0.86, 0.26, 0.12]} />
+            </mesh>
 
-        {/* Sloping Rear Glass & Trunk */}
-        <mesh position={[0, 0.35, -0.84]} rotation={[0.42, 0, 0]} material={mats.canopy}>
-          <boxGeometry args={[0.86, 0.24, 0.14]} />
-        </mesh>
+            {/* Sloping Rear Glass & Trunk */}
+            <mesh position={[0, 0.35, -0.84]} rotation={[0.42, 0, 0]} material={mats.canopy}>
+              <boxGeometry args={[0.86, 0.24, 0.14]} />
+            </mesh>
+          </>
+        )}
 
         {/* Rear Integrated Aero Lip Spoiler */}
         <mesh position={[0, 0.28, -1.18]} material={mats.bodyTrim}>
           <boxGeometry args={[0.96, 0.06, 0.16]} />
         </mesh>
       </group>
+
+      {/* Aerodynamic Side Mirrors */}
+      {([-0.60, 0.60] as const).map((x) => (
+        <group key={`mirror-${x}`} position={[x, 0.62, 0.52]}>
+          <mesh material={mats.body}>
+            <boxGeometry args={[0.10, 0.06, 0.14]} />
+          </mesh>
+          <mesh
+            position={[x > 0 ? -0.051 : 0.051, 0, -0.01]}
+            rotation={[0, x > 0 ? -Math.PI / 2 : Math.PI / 2, 0]}
+            material={mats.mirrorGlass}
+          >
+            <planeGeometry args={[0.12, 0.05]} />
+          </mesh>
+        </group>
+      ))}
 
       {/* ── 2. High-Tech Continuous Front LED Lightbar ─────────────── */}
       <mesh position={[0, 0.34, 1.28]} material={mats.headlightBar}>

@@ -22,6 +22,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+try:
+    from backend.project_scanner import scan_project
+except ImportError:
+    from project_scanner import scan_project
+
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -293,5 +298,43 @@ async def save_agent_snapshot(project_id: str, body: Dict[str, Any]) -> Dict[str
         _save()
     await _broadcast("snapshot", project_id)
     return {"ok": True, "id": project_id}
+
+
+@router.get("/{project_id}/floor-plan")
+async def get_project_floor_plan(project_id: str) -> Dict[str, Any]:
+    """Return dynamically scanned, realistic 3D floor architecture and objects."""
+    async with _lock:
+        p = _projects.get(project_id)
+        if p is None:
+            raise HTTPException(404, "project not found")
+        project_path = p.get("path") or ""
+
+    if not project_path or not os.path.exists(project_path):
+        project_path = str(Path(__file__).resolve().parent.parent.parent)
+
+    try:
+        plan = scan_project(project_path)
+        # Update project floor names if they were generic defaults
+        scanned_floor_names = [f["name"] for f in plan.get("floors", [])]
+        if scanned_floor_names and (not p.get("floors") or len(p.get("floors", [])) != len(scanned_floor_names)):
+            async with _lock:
+                p["floors"] = scanned_floor_names
+                _save()
+        return plan
+    except Exception as e:
+        return {"error": str(e), "floors": []}
+
+
+@router.post("/scan-floor-plan")
+async def scan_custom_floor_plan(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Scan any directory path on demand and return its 3D architectural floor plan."""
+    path = body.get("path", "")
+    if not path or not os.path.exists(path):
+        path = str(Path.cwd())
+    try:
+        return scan_project(path)
+    except Exception as e:
+        raise HTTPException(500, f"Scan failed: {e}")
+
 
 

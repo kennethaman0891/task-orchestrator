@@ -60,7 +60,7 @@ fn shell_args(shell: &str) -> &'static [&'static str] {
     match name.as_deref() {
         Some("cmd.exe") | Some("cmd") => &[],
         Some(n) if n.contains("powershell") || n.contains("pwsh") => &["-NoLogo"],
-        _ => &["-l"],
+        _ => &["-l", "-i"],
     }
 }
 

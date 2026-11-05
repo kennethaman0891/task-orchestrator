@@ -29,12 +29,13 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "**/Users/*/Documents",
-          "**/Users/*/Desktop",
-          "**/Users/*/Downloads",
-          "**/Users/*/Projects",
-          "**/Users/*/Source",
-          "**/Users/*/workspace"
+          "**/Users/*/Documents/**",
+          "**/Users/*/Desktop/**",
+          "**/Users/*/Downloads/**",
+          "**/Users/*/Projects/**",
+          "**/Users/*/Source/**",
+          "**/Users/*/workspace/**",
+          "**"
         ]
       }
     }

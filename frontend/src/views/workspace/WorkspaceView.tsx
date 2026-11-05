@@ -32,6 +32,7 @@ import { TerminalManager } from '@/terminal/TerminalManager';
 import { detectCLI } from '@/jarvis/adapters';
 import { NotificationPopover } from '@/components/notifications/NotificationPopover';
 import { useWorkspaceNotifications } from '@/hooks/useWorkspaceNotifications';
+import { useChromeTabDrag } from './useChromeTabDrag';
 
 interface Props {
   activeWorkspace?: Workspace;
@@ -54,6 +55,12 @@ interface Props {
   onClearChips?: (sessionId: string) => void;
   onRenameTerminal?: (tty: string, currentLabel: string) => void;
   onSelectWorkspace?: (workspaceId: string) => void;
+  onReorderPanes?: (
+    workspaceId: string,
+    fromPaneOrIndex: string | number,
+    toPaneOrIndex: string | number,
+    position: 'before' | 'after' | 'swap'
+  ) => void;
 }
 
 export function WorkspaceView({
@@ -72,6 +79,7 @@ export function WorkspaceView({
   onDismissChip,
   onClearChips,
   onRenameTerminal,
+  onReorderPanes,
 }: Props) {
   const { theme: t } = useTheme();
   const [tick, setTick] = useState(0);
@@ -150,15 +158,6 @@ export function WorkspaceView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWorkspace, terminals, tick]);
 
-  // Auto-scroll active tab into view whenever focusedTerminal changes
-  useEffect(() => {
-    if (!focusedTerminal) return;
-    const activeEl = tabRefs.current[focusedTerminal];
-    if (activeEl) {
-      activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
-    }
-  }, [focusedTerminal]);
-
   // Tab scroll overflow measurement
   const updateScrollButtons = useCallback(() => {
     const el = tabsContainerRef.current;
@@ -216,6 +215,31 @@ export function WorkspaceView({
     setEditingTty(null);
     setRenameDraft('');
   };
+
+  // ── Chrome-Style Pointer Tab Drag & Drop Engine ──
+  const {
+    draggingState,
+    isDragging,
+    handleTabPointerDown,
+    handleTabClick,
+  } = useChromeTabDrag({
+    tabs: terminalList,
+    containerRef: tabsContainerRef,
+    tabRefs,
+    activeWorkspaceId: activeWorkspace?.id,
+    isEditing: Boolean(editingTty),
+    onSelectTab: onSelectTerminal,
+    onReorderPanes,
+  });
+
+  // Auto-scroll active tab into view whenever focusedTerminal changes (unless dragging)
+  useEffect(() => {
+    if (!focusedTerminal || isDragging) return;
+    const activeEl = tabRefs.current[focusedTerminal];
+    if (activeEl) {
+      activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }, [focusedTerminal, isDragging]);
 
   // ── Status-row data for the focused terminal ──
   const focusedActiveItem = terminalList.find((t) => t.tty === focusedTerminal);
@@ -285,6 +309,26 @@ export function WorkspaceView({
             const isHovered = hoveredTty === tty;
             const isShell = ['zsh', 'bash', 'sh'].includes(cli);
             const shortcutKey = index < 9 ? `⌘${index + 1}` : null;
+            const isDraggingThis = draggingState?.draggedPaneId === paneId;
+            const isSnapping = draggingState?.isSnapping ?? false;
+            const shiftX = draggingState?.shiftOffsets[index] ?? 0;
+
+            let tabTransform = 'translate3d(0, 0, 0)';
+            let tabTransition = 'background 0.12s ease, opacity 0.15s ease';
+            let tabZIndex = 1;
+            let tabBoxShadow = 'none';
+
+            if (isDraggingThis) {
+              tabTransform = `translate3d(${draggingState.translateX}px, 0, 0)`;
+              tabZIndex = 50;
+              tabBoxShadow = `0 4px 14px rgba(0, 0, 0, 0.45), 0 0 0 1px ${t.colors.accent.primary}`;
+              tabTransition = isSnapping
+                ? 'transform 0.14s cubic-bezier(0.2, 0, 0, 1)'
+                : 'none';
+            } else if (shiftX !== 0) {
+              tabTransform = `translate3d(${shiftX}px, 0, 0)`;
+              tabTransition = 'transform 0.18s cubic-bezier(0.2, 0, 0, 1), background 0.12s ease';
+            }
 
             return (
               <div
@@ -292,24 +336,35 @@ export function WorkspaceView({
                 ref={(el) => {
                   tabRefs.current[tty] = el;
                 }}
+                onPointerDown={(e) => handleTabPointerDown(e, paneId, tty, index)}
+                onClick={() => handleTabClick(tty)}
+                onMouseEnter={() => !isDragging && setHoveredTty(tty)}
+                onMouseLeave={() => !isDragging && setHoveredTty(null)}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
                   padding: '0 8px 0 10px',
                   borderRight: `1px solid ${t.colors.border.subtle}`,
                   borderBottom: `2px solid ${isActive ? t.colors.accent.primary : 'transparent'}`,
-                  background: isActive ? t.colors.bg.primary : isHovered ? t.colors.bg.hover : 'transparent',
+                  background: isDraggingThis
+                    ? t.colors.bg.elevated
+                    : isActive
+                    ? t.colors.bg.primary
+                    : isHovered
+                    ? t.colors.bg.hover
+                    : 'transparent',
                   maxWidth: '200px',
                   minWidth: '95px',
                   height: '100%',
                   flexShrink: 0,
-                  transition: 'background 0.12s ease',
-                  cursor: 'pointer',
+                  transform: tabTransform,
+                  transition: tabTransition,
+                  zIndex: tabZIndex,
+                  boxShadow: tabBoxShadow,
+                  cursor: isEditing ? 'default' : isDraggingThis ? 'grabbing' : 'default',
                   position: 'relative',
+                  touchAction: 'none',
                 }}
-                onClick={() => onSelectTerminal(tty)}
-                onMouseEnter={() => setHoveredTty(tty)}
-                onMouseLeave={() => setHoveredTty(null)}
               >
                 <div
                   style={{
@@ -324,6 +379,7 @@ export function WorkspaceView({
                     overflow: 'hidden',
                     height: '100%',
                     flexShrink: 1,
+                    pointerEvents: isDragging ? 'none' : 'auto',
                   }}
                   onDoubleClick={() => startRename(tty || paneId, label)}
                   title={`${label} — ${statusLabel(status).text}${shortcutKey ? ` · ${shortcutKey}` : ''} (double-click to rename)`}
@@ -363,9 +419,11 @@ export function WorkspaceView({
                   {isEditing ? (
                     <input
                       autoFocus
+                      draggable={false}
                       value={renameDraft}
                       onChange={(e) => setRenameDraft(e.target.value)}
                       onBlur={() => commitRename(tty || paneId)}
+                      onMouseDown={(e) => e.stopPropagation()}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') commitRename(tty || paneId);
                         if (e.key === 'Escape') {
@@ -408,9 +466,12 @@ export function WorkspaceView({
                       transition: 'opacity 0.15s ease',
                       flexShrink: 0,
                       marginLeft: '4px',
+                      pointerEvents: isDragging ? 'none' : 'auto',
                     }}
                   >
                     <button
+                      draggable={false}
+                      onMouseDown={(e) => e.stopPropagation()}
                       style={{
                         width: '18px',
                         height: '18px',
@@ -442,6 +503,8 @@ export function WorkspaceView({
                     </button>
                     {terminalList.length > 1 && (
                       <button
+                        draggable={false}
+                        onMouseDown={(e) => e.stopPropagation()}
                         style={{
                           width: '18px',
                           height: '18px',

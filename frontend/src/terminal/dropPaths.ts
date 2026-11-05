@@ -6,8 +6,12 @@
 export function extractDropPaths(dt: DataTransfer | null): string[] {
   if (!dt) return [];
 
-  // Ignore internal pane reorder drags
-  if (dt.types && Array.from(dt.types).includes('application/x-tto-grid-pane')) {
+  // Ignore internal pane and tab reorder drags
+  if (
+    dt.types &&
+    (Array.from(dt.types).includes('application/x-tto-grid-pane') ||
+      Array.from(dt.types).includes('application/x-tto-terminal-tab'))
+  ) {
     return [];
   }
 

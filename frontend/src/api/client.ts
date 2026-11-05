@@ -188,6 +188,27 @@ export async function waitForOpencodeBoot(
   return false;
 }
 
+export async function waitForOpencodeExit(
+  tty: string,
+  oldPid: number,
+  timeoutMs = 8000,
+): Promise<boolean> {
+  if (oldPid === 0) return true;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const d = await getTerminals();
+      const t = d.terminals[tty] as
+        (TerminalEntry & { opencode_running?: boolean; opencode_pid?: number }) | undefined;
+      if (!t?.opencode_running || (t.opencode_pid && t.opencode_pid !== oldPid)) {
+        return true;
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
 export function openTerminal(cwd = ''): Promise<{ ok: boolean; tty: string }> {
   return fetchWithTimeout(api('/api/terminal/open'), {
     method: 'POST',

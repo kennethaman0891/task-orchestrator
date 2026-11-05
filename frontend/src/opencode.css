@@ -44,9 +44,8 @@
 }
 
 [data-agent='opencode']:not(.oc-canvas) .xterm-rows > div {
-  /* Exact integral row height — no fractional drift between TUI rows. */
-  line-height: calc(var(--tto-term-line, 1.2) * 1px * 100) ; /* fallback */
-  line-height: 1.2 !important;
+  /* Exact integral row height matching xterm lineHeight 1.0 — prevents clipping OpenCode prompt */
+  line-height: 1 !important;
 }
 
 [data-agent='opencode']:not(.oc-canvas) .xterm-screen {

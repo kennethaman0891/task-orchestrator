@@ -2688,13 +2688,13 @@ async def scan_terminals():
                 else:
                     for line in tmux_result.stdout.splitlines():
                         parts = line.strip().split("|")
-                        if len(parts) >= 6:
+                        if len(parts) >= 5:
                             tty = parts[0].replace("/dev/", "")
                             tmux_info[tty] = {
                                 "session_name": parts[1],
                                 "window_name": parts[2],
                                 "pane_title": parts[3],
-                                "pane_target": parts[5],
+                                "pane_target": parts[4],
                             }
             except Exception as exc:
                 _tmux_skip_until = time.monotonic() + 30
@@ -3275,8 +3275,8 @@ async def find_tmux_pane(tty: str):
         )
         for line in result.splitlines():
             parts = line.strip().split("|")
-            if len(parts) == 6 and parts[0].replace("/dev/", "") == tty:
-                return parts[5]
+            if len(parts) >= 5 and parts[0].replace("/dev/", "") == tty:
+                return parts[4]
     except Exception:
         pass
     return None

@@ -156,9 +156,9 @@ fn run_manage_py(python: &str, root: &Path, settings_module: &str, args: &[&str]
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
             let combined = format!("{}\n{}", stdout, stderr);
-            // Trim to reasonable length
-            if combined.len() > 2000 {
-                format!("{}...(truncated)", &combined[..2000])
+            // Trim to reasonable length safely by characters (not raw bytes) to avoid UTF-8 boundary panics
+            if combined.chars().count() > 2000 {
+                format!("{}...(truncated)", combined.chars().take(2000).collect::<String>())
             } else {
                 combined.trim().to_string()
             }

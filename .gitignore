@@ -68,4 +68,5 @@ dmg_temp/
 # --- Root-level design prototypes / scratch mocks ---
 /*.html
 !/ARCHITECTURE.html
+/*.png
 /login.mp4

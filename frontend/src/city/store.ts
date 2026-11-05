@@ -7,7 +7,7 @@
 //   filters  — city-wide search/filter
 
 import { create } from 'zustand';
-import type { AgentBot, CarSpec, CityNavMode, Project, ProjectStatus, ProjectType, TerminalCar } from '@/city/types';
+import type { AgentBot, CarSpec, CityNavMode, Project, ProjectStatus, ProjectType, TerminalCar, InteriorViewMode, FloorPlanObject } from '@/city/types';
 import { parseCarSpec } from '@/city/scene/carSpec';
 
 export interface CityFilters {
@@ -67,6 +67,12 @@ interface CityStore {
   cameraTarget: CameraTarget | null;
   setCameraTarget: (t: Omit<CameraTarget, 'nonce'>) => void;
   clearCameraTarget: () => void;
+
+  // ── interior view mode (dollhouse overview vs walk-in first person) ──
+  interiorViewMode: InteriorViewMode;
+  setInteriorViewMode: (m: InteriorViewMode) => void;
+  activeObjectInspection: FloorPlanObject | null;
+  setActiveObjectInspection: (obj: FloorPlanObject | null) => void;
 
   // ── filters ──
   filters: CityFilters;
@@ -175,10 +181,10 @@ export const useCityStore = create<CityStore>((set, get) => ({
   exitOneLevel: () => set((s) => {
     const history = [...s.navHistory];
     const prev = history.pop();
-    if (!prev) return { nav: { mode: 'city' as const }, navHistory: [] };
-    return { nav: prev, navHistory: history };
+    if (!prev) return { nav: { mode: 'city' as const }, navHistory: [], interiorViewMode: 'dollhouse', activeObjectInspection: null };
+    return { nav: prev, navHistory: history, interiorViewMode: prev.mode === 'interior' ? s.interiorViewMode : 'dollhouse', activeObjectInspection: null };
   }),
-  exitToCity: () => set({ nav: { mode: 'city' }, navHistory: [], selectedProjectId: null }),
+  exitToCity: () => set({ nav: { mode: 'city' }, navHistory: [], selectedProjectId: null, interiorViewMode: 'dollhouse', activeObjectInspection: null }),
 
   selectedProjectId: null,
   selectedAgentId: null,
@@ -207,6 +213,11 @@ export const useCityStore = create<CityStore>((set, get) => ({
     cameraTarget: { ...t, nonce: (s.cameraTarget?.nonce ?? 0) + 1 },
   })),
   clearCameraTarget: () => set({ cameraTarget: null }),
+
+  interiorViewMode: 'dollhouse',
+  setInteriorViewMode: (mode) => set({ interiorViewMode: mode }),
+  activeObjectInspection: null,
+  setActiveObjectInspection: (obj) => set({ activeObjectInspection: obj }),
 
   filters: { query: '', types: [], statuses: [], agentActive: false },
   setFilters: (f) => set((s) => ({ filters: { ...s.filters, ...f } })),

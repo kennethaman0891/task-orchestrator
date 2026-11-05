@@ -405,9 +405,10 @@ impl TerminalManager {
                 // Increased to ensure PATH, shell init, and prompt are ready before
                 // launching TUI apps like claude, codex, etc.
                 tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-                // Use newline instead of carriage return for better compatibility
-                let cmd_with_nl = format!("{}\n", cmd);
-                if let Err(e) = session_clone.write(cmd_with_nl.as_bytes()) {
+                // Use decoupled send_command (command payload + 60ms pause + \r)
+                // so interactive TUIs (OpenCode, Claude Code, Codex) process the submission
+                // cleanly without dropping characters or corrupting input buffers.
+                if let Err(e) = session_clone.send_command(&cmd) {
                     crate::safe_eprintln!(
                         "[MANAGER] attach() failed to inject pending command for {}: {}",
                         id_clone,

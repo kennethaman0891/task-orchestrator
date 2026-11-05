@@ -32,6 +32,7 @@ import {
   ExternalLink,
   Search,
   Bot,
+  RefreshCw,
 } from 'lucide-react';
 import { listFiles, renameFile, searchProjectFiles, type FileEntry, type FileSearchResult } from '@/lib/api';
 import { isTauri as checkTauri, tauri } from '@/lib/tauri';
@@ -543,6 +544,33 @@ export function Sidebar({
     const parent = fileTreePath.split('/').slice(0, -1).join('/') || rootPathRef.current;
     navigateTo(parent);
   }, [fileTreePath, navigateTo]);
+
+  const [isRefreshingFiles, setIsRefreshingFiles] = useState(false);
+
+  const handleRefreshProjectFiles = useCallback(async () => {
+    const root = activeWorkspace?.projectPath || rootPathRef.current;
+    if (!root) {
+      if (onToast) onToast('No project folder selected', true);
+      return;
+    }
+    setIsRefreshingFiles(true);
+    try {
+      if (fileSearchQuery) {
+        setFileSearchQuery('');
+        setSearchResults([]);
+      }
+      rootPathRef.current = root;
+      const r = await listFiles(root);
+      setFileTree(r.files || []);
+      setFileTreePath(root);
+      setFilesOpen(true);
+      if (onToast) onToast(`Refreshed ${baseName(root)}`);
+    } catch (err: any) {
+      if (onToast) onToast(`Refresh failed: ${err?.message || err}`, true);
+    } finally {
+      setIsRefreshingFiles(false);
+    }
+  }, [activeWorkspace?.projectPath, fileSearchQuery, onToast]);
 
   const renderFileRow = (
     name: string,
@@ -1906,46 +1934,107 @@ export function Sidebar({
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '6px',
-                  padding: '6px 8px',
+                  justifyContent: 'space-between',
+                  padding: '4px 6px 4px 8px',
                   fontSize: '10.5px',
                   fontWeight: '700',
                   color: t.colors.text.muted,
                   textTransform: 'uppercase',
                   letterSpacing: '0.6px',
-                  cursor: 'pointer',
                   borderRadius: '6px',
-                  transition: 'all 0.12s ease',
-                }}
-                onClick={() => setFilesOpen((o) => !o)}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = t.colors.bg.hover;
-                  e.currentTarget.style.color = t.colors.text.primary;
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'transparent';
-                  e.currentTarget.style.color = t.colors.text.muted;
+                  userSelect: 'none',
                 }}
               >
-                {filesOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                <Folder size={12} style={{ color: t.colors.accent.primary }} />
-                <span>Project Files</span>
-                {activeWorkspace?.projectPath && (
-                  <span
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    cursor: 'pointer',
+                    flex: 1,
+                    minWidth: 0,
+                    padding: '2px 0',
+                    transition: 'color 0.12s ease',
+                  }}
+                  onClick={() => setFilesOpen((o) => !o)}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = t.colors.text.primary;
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = t.colors.text.muted;
+                  }}
+                >
+                  {filesOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <Folder size={12} style={{ color: t.colors.accent.primary }} />
+                  <span style={{ whiteSpace: 'nowrap' }}>Project Files</span>
+                </div>
+
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    flexShrink: 0,
+                  }}
+                >
+                  {activeWorkspace?.projectPath && (
+                    <span
+                      style={{
+                        fontSize: '9.5px',
+                        color: t.colors.text.muted,
+                        fontFamily: t.fontFamily.mono,
+                        maxWidth: '85px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        padding: '1px 5px',
+                        borderRadius: '4px',
+                        background: t.colors.bg.elevated || 'rgba(255, 255, 255, 0.04)',
+                        border: `1px solid ${t.colors.border.subtle || 'transparent'}`,
+                      }}
+                      title={activeWorkspace.projectPath}
+                    >
+                      {baseName(activeWorkspace.projectPath)}
+                    </span>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRefreshProjectFiles();
+                    }}
+                    title="Refresh entire project root"
+                    disabled={isRefreshingFiles || !activeWorkspace?.projectPath}
                     style={{
-                      marginLeft: 'auto',
-                      fontSize: '9.5px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: '20px',
+                      height: '20px',
+                      borderRadius: '4px',
+                      background: 'transparent',
+                      border: 'none',
                       color: t.colors.text.muted,
-                      fontFamily: t.fontFamily.mono,
-                      maxWidth: '90px',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
+                      cursor: activeWorkspace?.projectPath ? 'pointer' : 'default',
+                      transition: 'all 0.15s ease',
+                      opacity: activeWorkspace?.projectPath ? 1 : 0.4,
+                      padding: 0,
+                    }}
+                    onMouseEnter={(e) => {
+                      if (activeWorkspace?.projectPath) {
+                        e.currentTarget.style.background = t.colors.bg.hover;
+                        e.currentTarget.style.color = t.colors.text.primary;
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'transparent';
+                      e.currentTarget.style.color = t.colors.text.muted;
                     }}
                   >
-                    {baseName(activeWorkspace.projectPath)}
-                  </span>
-                )}
+                    <RefreshCw size={11} className={isRefreshingFiles ? 'spin' : ''} />
+                  </button>
+                </div>
               </div>
 
               {filesOpen && (

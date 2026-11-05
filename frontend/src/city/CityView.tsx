@@ -18,6 +18,7 @@ import { ProjectPanel } from '@/city/ui/ProjectPanel';
 import { BuildingEditor } from '@/city/ui/BuildingEditor';
 import { AgentPanel } from '@/city/ui/AgentPanel';
 import { FloorNav } from '@/city/ui/FloorNav';
+import { ObjectInspectorModal } from '@/city/ui/ObjectInspectorModal';
 import { TerminalCarPanel } from '@/city/ui/TerminalCarPanel';
 import { CarNav } from '@/city/ui/CarNav';
 import { RoadGraphPanel } from '@/city/ui/RoadGraphPanel';
@@ -150,6 +151,8 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
   const closeContextMenu = useCityStore((s) => s.closeContextMenu);
   const projectsById = useCityStore((s) => s.projects);
   const plotDistricts = useCityStore((s) => s.plotDistricts);
+  const activeObjectInspection = useCityStore((s) => s.activeObjectInspection);
+  const setActiveObjectInspection = useCityStore((s) => s.setActiveObjectInspection);
   const ctxProject = contextMenu ? projectsById[contextMenu.projectId] : null;
 
   const [floatingTerminalId, setFloatingTerminalId] = useState<string | null>(null);
@@ -238,7 +241,11 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
             onEditBuilding={(p) => setEditing(p)}
             onToast={onToast}
           />
-          <FloorNav onExitToWorkspace={exitOneLevel} />
+          <FloorNav
+            onExitToWorkspace={exitOneLevel}
+            onOpenTerminal={onOpenTerminal}
+            onNewSession={onNewSession}
+          />
           {nav.mode !== 'interior' && (
             <>
               <AgentPanel terminals={terminals} onOpenTerminal={(tid) => setFloatingTerminalId(tid)} />
@@ -307,6 +314,13 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
       )}
       {creating && (
         <CreateProjectModal onClose={() => setCreating(false)} onToast={onToast} />
+      )}
+      {activeObjectInspection && (
+        <ObjectInspectorModal
+          object={activeObjectInspection}
+          onClose={() => setActiveObjectInspection(null)}
+          onOpenTerminal={onOpenTerminal}
+        />
       )}
 
       {loadError && (

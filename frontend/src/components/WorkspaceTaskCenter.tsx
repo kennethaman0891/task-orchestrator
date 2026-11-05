@@ -12,6 +12,7 @@ import {
   acceptSuggestion,
   dismissSuggestion,
   waitForOpencodeBoot,
+  waitForOpencodeExit,
   type AvailableModel,
 } from '../api/client';
 import { formatTokens, isClosed, termName } from '../lib/format';
@@ -299,7 +300,12 @@ export function WorkspaceTaskCenter({
         await tauri.sendCommand(sid, `opencode -m ${model}`);
       } else {
         await tauri.sendCommand(sid, '/exit');
-        await new Promise((r) => setTimeout(r, 4000)); // MCP teardown ~2-3 s
+        const exited = await waitForOpencodeExit(tty, oldPid, 8000);
+        if (!exited) {
+          // If graceful /exit didn't finish, send SIGINT / Ctrl+C to drop to shell before issuing the command
+          await tauri.write(sid, [3]);
+          await new Promise((r) => setTimeout(r, 600));
+        }
         await tauri.sendCommand(sid, `opencode -m ${model}`);
       }
       // Wait for the fresh opencode (NEW pid) to actually boot before declaring

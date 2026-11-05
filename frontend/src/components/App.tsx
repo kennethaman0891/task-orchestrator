@@ -663,6 +663,21 @@ export default function App() {
 
   const handleCloseWorkspace = useCallback((id: string) => {
     setWorkspaces((prev) => {
+      const target = prev.find((w) => w.id === id);
+      if (target && isTauri()) {
+        const toClose = new Set<string>();
+        for (const p of target.panes) {
+          if (p.tty) toClose.add(p.tty);
+        }
+        if (target.idePanes) {
+          for (const p of target.idePanes) {
+            if (p.tty) toClose.add(p.tty);
+          }
+        }
+        for (const sid of toClose) {
+          tauri.close(sid).catch(() => {});
+        }
+      }
       const next = prev.filter((w) => w.id !== id);
       if (next.length === 0) next.push(newWorkspace());
       return next;
@@ -820,13 +835,15 @@ export default function App() {
         const newPanes = [...w.panes];
 
         const fromIdx = typeof fromPaneOrIndex === 'string'
-          ? newPanes.findIndex((p) => p.id === fromPaneOrIndex)
+          ? newPanes.findIndex((p) => p.id === fromPaneOrIndex || p.tty === fromPaneOrIndex)
           : fromPaneOrIndex;
         const rawToIdx = typeof toPaneOrIndex === 'string'
-          ? newPanes.findIndex((p) => p.id === toPaneOrIndex)
+          ? newPanes.findIndex((p) => p.id === toPaneOrIndex || p.tty === toPaneOrIndex)
           : toPaneOrIndex;
 
         if (fromIdx < 0 || fromIdx >= newPanes.length) return w;
+        if (typeof toPaneOrIndex === 'string' && rawToIdx < 0) return w;
+        if (fromIdx === rawToIdx && position !== 'swap') return w;
 
         if (position === 'swap') {
           let dest = rawToIdx;
@@ -850,11 +867,13 @@ export default function App() {
         const [moved] = newPanes.splice(fromIdx, 1);
 
         const targetIdx = typeof toPaneOrIndex === 'string'
-          ? newPanes.findIndex((p) => p.id === toPaneOrIndex)
+          ? newPanes.findIndex((p) => p.id === toPaneOrIndex || p.tty === toPaneOrIndex)
           : (toPaneOrIndex > fromIdx ? toPaneOrIndex - 1 : toPaneOrIndex);
 
         if (targetIdx === -1) {
-          newPanes.push(moved);
+          // If target is no longer found, restore moved element at its original index
+          newPanes.splice(fromIdx, 0, moved);
+          return w;
         } else {
           const insertIdx = position === 'before' ? targetIdx : targetIdx + 1;
           newPanes.splice(Math.max(0, Math.min(newPanes.length, insertIdx)), 0, moved);
@@ -1411,6 +1430,7 @@ export default function App() {
               onDismissChip={handleDismissChip}
               onClearChips={handleClearChips}
               onRenameTerminal={handleRenameTerminalDirect}
+              onReorderPanes={handleReorderPanes}
             />
           )}
           {view === 'grid' && (

@@ -78,6 +78,67 @@ export interface FloorSpec {
   rooms: string[];
 }
 
+export type FloorCategory = 'frontend' | 'backend' | 'rust' | 'ai' | 'devops' | 'docs' | 'custom';
+
+export type FloorPlanObjectType =
+  | 'workstation'
+  | 'server_pod'
+  | 'database_pod'
+  | 'preview_billboard'
+  | 'component_gallery'
+  | 'agent_console'
+  | 'pipeline_station'
+  | 'blueprint_board'
+  | 'lounge';
+
+export interface FloorPlanObject {
+  id: string;
+  type: FloorPlanObjectType;
+  title: string;
+  position: [number, number, number];
+  rotation?: [number, number, number];
+  file?: string;
+  file2?: string;
+  codeLines1?: string[];
+  codeLines2?: string[];
+  actionType?: string;
+  actionLabel?: string;
+  status?: string;
+  details?: string;
+  endpoints?: string[];
+  docs?: string[];
+  preview?: string[];
+  commits?: string[];
+}
+
+export interface FloorPlanFloor {
+  index: number;
+  name: string;
+  category: FloorCategory;
+  role: string;
+  folder: string;
+  theme: string;
+  accentColor: string;
+  floorStyle: 'oak' | 'tile' | 'steel' | 'obsidian' | 'slate' | 'walnut';
+  wallStyle: 'modern_white' | 'server_mesh' | 'dark_concrete' | 'wood_panel';
+  description: string;
+  objects: FloorPlanObject[];
+}
+
+export interface ProjectFloorPlan {
+  project: {
+    name: string;
+    path: string;
+    techStack: string[];
+    topFolders: string[];
+    gitBranch: string;
+    totalFloors: number;
+  };
+  floors: FloorPlanFloor[];
+}
+
+export type InteriorViewMode = 'dollhouse' | 'walk-in';
+
 export interface ProjectDeployInfo {
   target?: string;
   lastDeployedAt?: string;

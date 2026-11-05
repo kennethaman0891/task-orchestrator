@@ -229,6 +229,7 @@ export function TerminalPool({ sessionIds }: PoolProps) {
 
             if (host.querySelector('canvas.xterm-text-layer')) {
               host.dataset.ttoRenderer = 'canvas';
+              host.classList.add('oc-canvas');
             } else {
               host.dataset.ttoRenderer = 'dom';
               console.warn(`[TerminalPool] Canvas renderer did not attach for ${sessionId}; DOM fallback is active`);
@@ -454,6 +455,9 @@ export function TerminalAnchor({ sessionId, className, style }: TerminalAnchorPr
         setTuiActive(active);
         prevCb?.(active);
       };
+      return () => {
+        handle.onTuiChange = prevCb;
+      };
     }
   }, [sessionId]);
 
@@ -509,6 +513,9 @@ export function TerminalAnchor({ sessionId, className, style }: TerminalAnchorPr
         if (handle.host.parentElement !== container) {
           container.appendChild(handle.host);
         }
+        if (handle.host.dataset.ttoRenderer === 'canvas' || handle.host.classList.contains('oc-canvas')) {
+          container.classList.add('oc-canvas');
+        }
       } catch (e) {
         console.error(`[TerminalAnchor] Failed to reparent host for ${sessionId}:`, e);
         attachedRef.current = false;
@@ -516,11 +523,6 @@ export function TerminalAnchor({ sessionId, className, style }: TerminalAnchorPr
       }
 
       setTuiActive(handle.tuiActive);
-      const prevCb = handle.onTuiChange;
-      handle.onTuiChange = (active) => {
-        if (!disposed) setTuiActive(active);
-        prevCb?.(active);
-      };
 
       TerminalManager.setVisible(sessionId, true);
       // Attach never marks focus. Focus is exclusive and is set only when

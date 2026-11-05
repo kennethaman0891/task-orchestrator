@@ -69,6 +69,20 @@ def main() -> int:
                     json={"agents": [{"name": "claude", "status": "working"}]})
     assert r.status_code == 200
 
+    # floor plan scan
+    r = client.get(f"/api/projects/{p['id']}/floor-plan")
+    assert r.status_code == 200
+    plan = r.json()
+    assert "floors" in plan
+    assert len(plan["floors"]) > 0
+
+    # custom scan endpoint
+    r = client.post("/api/projects/scan-floor-plan", json={"path": str(BACKEND.parent)})
+    assert r.status_code == 200
+    cplan = r.json()
+    assert "floors" in cplan
+    assert any(f["category"] == "frontend" for f in cplan["floors"])
+
     # delete + 404 after
     assert client.delete(f"/api/projects/{p['id']}").status_code == 200
     assert client.get(f"/api/projects/{p['id']}").status_code == 404

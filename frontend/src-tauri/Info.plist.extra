@@ -4,5 +4,11 @@
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>TTO uses the microphone so you can dictate terminal commands with the voice button.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Task Orchestrator accesses your documents folder to run and manage developer terminal workspaces.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>Task Orchestrator accesses your downloads folder to manage files and dependencies.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>Task Orchestrator accesses your desktop folder to open and run terminal workspaces.</string>
 </dict>
 </plist>

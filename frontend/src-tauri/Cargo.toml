@@ -61,3 +61,11 @@ codegen-units = 1
 # app alive instead of killing it.
 panic = "unwind"
 strip = true
+
+# Vendored tao 0.35.3 and wry 0.55.1. AppKit calls into these crates through
+# extern "C" callbacks. A panic there aborts the process ("quit unexpectedly")
+# because that frame cannot unwind, and upstream tao also stops NSApplication
+# when it does catch a panic. The copies under vendor/ keep the session up.
+[patch.crates-io]
+tao = { path = "vendor/tao" }
+wry = { path = "vendor/wry" }

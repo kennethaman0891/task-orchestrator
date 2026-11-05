@@ -259,15 +259,19 @@ pub fn run() {
                 let state2 = app.state::<Arc<AppState>>().inner().clone();
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(20));
-                    let Some(child) = sidecar::supervisor_tick() else {
-                        continue;
-                    };
-                    let mut b = state2.backend.lock();
-                    if let Some(mut old) = b.replace(child) {
-                        // The replaced child was SIGTERMed by the reclaim;
-                        // reap it so it never lingers as a zombie.
-                        let _ = old.wait();
-                    }
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let Some(child) = sidecar::supervisor_tick() else {
+                            return;
+                        };
+                        let old_child = {
+                            let mut b = state2.backend.lock();
+                            b.replace(child)
+                        };
+                        if let Some(mut old) = old_child {
+                            // Reap outside the mutex lock so we never block other threads or app exit
+                            let _ = old.wait();
+                        }
+                    }));
                 });
             }
             // Diagnostic: log page load events to a file so we can see what the webview does.

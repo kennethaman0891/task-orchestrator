@@ -10,6 +10,7 @@ import type { CarSpec, Project, TerminalCar } from '@/city/types';
 import { relativeToProject } from '@/city/sync/plotDistrictSync';
 import { CarBody } from './CarBody';
 import { CarInterior } from './CarInterior';
+import { carCabinTarget } from './CameraRig';
 import { plotWorldPosition } from './CityGrid';
 import { layoutDistrict, segmentForCwd } from './roadLayout';
 import { AVENUE_OFFSET, stallFor } from './plotFit';
@@ -158,26 +159,27 @@ function TerminalCarNode({
   return (
     <group position={[world[0] + dx, dy, world[2] + dz]} rotation={[0, rotY, 0]}>
       <group ref={roll}>
-      {inside ? <CarInterior car={car} /> : <CarBody color={car.color} spec={spec} moving={car.moving} />}
-      {!inside && <CarNameBoards name={car.name} />}
-      {selected && (
-        <mesh position={[0, 0.04, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <ringGeometry args={[1.2, 1.42, 28]} />
-          <meshBasicMaterial
-            color={car.color}
-            transparent
-            opacity={0.9}
-            depthWrite={false}
-            side={THREE.DoubleSide}
-          />
-        </mesh>
-      )}
-      {!inside && (
-        <mesh position={[0, 0.68, 0]} onPointerDown={select} onDoubleClick={enter}>
-          <boxGeometry args={[1.7, 1.5, 2.9]} />
-          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-        </mesh>
-      )}
+        <CarBody color={car.color} spec={spec} moving={car.moving} inside={inside} />
+        {inside && <CarInterior car={car} />}
+        {!inside && <CarNameBoards name={car.name} />}
+        {selected && (
+          <mesh position={[0, 0.04, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[1.2, 1.42, 28]} />
+            <meshBasicMaterial
+              color={car.color}
+              transparent
+              opacity={0.9}
+              depthWrite={false}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+        )}
+        {!inside && (
+          <mesh position={[0, 0.68, 0]} onPointerDown={select} onDoubleClick={enter}>
+            <boxGeometry args={[1.7, 1.5, 2.9]} />
+            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+          </mesh>
+        )}
       </group>
     </group>
   );
@@ -192,9 +194,21 @@ export function TerminalCars() {
   const nav = useCityStore((s) => s.nav);
   const plotDistricts = useCityStore((s) => s.plotDistricts);
   const carSpecs = useCityStore((s) => s.carSpecs);
+  const setCameraTarget = useCityStore((s) => s.setCameraTarget);
 
   const cars = Object.values(terminalCars).filter((car) => projects[car.projectId]);
   if (cars.length === 0) return null;
+
+  const handleEnter = (projectId: string, paneId: string, terminalId: string) => {
+    goCar(projectId, paneId, terminalId);
+    const car = terminalCars[paneId];
+    const project = projects[projectId];
+    if (car && project) {
+      const dirs = plotDistricts[projectId]?.dirs ?? [];
+      const transform = carLocalTransform(car, project, dirs);
+      setCameraTarget(carCabinTarget(project.plot, transform));
+    }
+  };
 
   return (
     <group>
@@ -211,7 +225,7 @@ export function TerminalCars() {
             selected={car.id === selectedTerminalCarId}
             inside={nav.mode === 'car' && nav.paneId === car.id}
             onSelect={selectTerminalCar}
-            onEnter={goCar}
+            onEnter={handleEnter}
           />
         );
       })}

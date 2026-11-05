@@ -617,7 +617,10 @@ export const TerminalManager = {
       } catch {}
     };
 
-    if (immediate || TerminalManager.isTui(resolvedId)) {
+    // Debounce all normal resizing (even for TUIs) so rapid ResizeObserver / drag
+    // updates do not flood OpenCode or interactive TUIs with dozens of SIGWINCH
+    // signals per second, which saturates Bun/Node event queues and locks up the TUI.
+    if (immediate) {
       await doResize();
     } else {
       const timer = window.setTimeout(doResize, 35);
