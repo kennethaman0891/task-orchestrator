@@ -7,7 +7,7 @@
 //   filters  — city-wide search/filter
 
 import { create } from 'zustand';
-import type { AgentBot, CarSpec, CityNavMode, Project, ProjectStatus, ProjectType, TerminalCar, InteriorViewMode, FloorPlanObject } from '@/city/types';
+import type { AgentBot, CarSpec, CityNavMode, MemoryFloor, MemoryHit, Project, ProjectStatus, ProjectType, TerminalCar, InteriorViewMode, FloorPlanObject } from '@/city/types';
 import { parseCarSpec } from '@/city/scene/carSpec';
 
 export interface CityFilters {
@@ -106,6 +106,14 @@ interface CityStore {
   setShowNature: (s: boolean) => void;
   showBirds: boolean;
   setShowBirds: (s: boolean) => void;
+
+  // ── Nero recall (HTML overlay; not a 3D ghost) ──
+  memoryOpen: boolean;
+  memoryFloor: MemoryFloor | null;
+  memoryHits: MemoryHit[];
+  openMemory: (projectId: string, floorIndex: number | null) => void;
+  closeMemory: () => void;
+  setMemoryHits: (hits: MemoryHit[]) => void;
 }
 
 const initialNav: CityNavMode = { mode: 'city' };
@@ -247,6 +255,16 @@ export const useCityStore = create<CityStore>((set, get) => ({
   setShowNature: (s) => set({ showNature: s }),
   showBirds: true,
   setShowBirds: (s) => set({ showBirds: s }),
+
+  memoryOpen: false,
+  memoryFloor: null,
+  memoryHits: [],
+  openMemory: (projectId, floorIndex) => set({
+    memoryOpen: true,
+    memoryFloor: { projectId, floorIndex },
+  }),
+  closeMemory: () => set({ memoryOpen: false }),
+  setMemoryHits: (hits) => set({ memoryHits: hits }),
 }));
 
 function loadCityMood(): 'day' | 'night' {

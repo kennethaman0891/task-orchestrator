@@ -187,6 +187,23 @@ export interface AgentBot {
   recentActions: string[];
 }
 
+/** One Nero recall hit. Real git commit or terminal task, never a fabricated episode. */
+export interface MemoryHit {
+  id: string;
+  source: string;
+  summary: string;
+  label: string;
+  ts: number;
+  floor_index: number | null;
+  distance: number;
+  score: number;
+}
+
+export interface MemoryFloor {
+  projectId: string;
+  floorIndex: number | null;
+}
+
 /** One primitive of a terminal car mesh. */
 export interface CarPart {
   shape: 'box' | 'cylinder';

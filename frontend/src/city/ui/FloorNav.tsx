@@ -23,6 +23,7 @@ import {
   Bot,
   X,
   Compass,
+  History,
 } from 'lucide-react';
 import { useCityStore } from '@/city/store';
 import { floorName } from '@/city/scene/Interior';
@@ -52,6 +53,9 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
   const [yaw, setYaw] = useState<number>(0);
   const [zoomFactor, setZoomFactor] = useState<number>(1.0);
   const [showAgents, setShowAgents] = useState<boolean>(false);
+  const memoryOpen = useCityStore((s) => s.memoryOpen);
+  const memoryFloor = useCityStore((s) => s.memoryFloor);
+  const openMemory = useCityStore((s) => s.openMemory);
 
   const isInterior = nav.mode === 'interior';
   const p = isInterior ? projects[nav.projectId] : null;
@@ -74,6 +78,12 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isInterior, interiorViewMode]);
+
+  useEffect(() => {
+    if (!memoryOpen || nav.mode !== 'interior') return;
+    if (memoryFloor?.projectId === nav.projectId && memoryFloor.floorIndex === nav.floorIndex) return;
+    openMemory(nav.projectId, nav.floorIndex);
+  }, [memoryOpen, nav, memoryFloor, openMemory]);
 
   if (!isInterior || !p) return null;
 
@@ -607,6 +617,31 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
               <ChevronUp size={14} />
             </button>
           </div>
+
+          <div style={{ width: 1, height: 22, background: 'rgba(255, 255, 255, 0.12)' }} />
+
+          <button
+            type="button"
+            onClick={() => openMemory(p.id, nav.floorIndex)}
+            title="Episodes from the last 30 days on this floor"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              height: 28,
+              padding: '0 10px',
+              borderRadius: 8,
+              border: memoryOpen ? '1px solid #60a5fa' : '1px solid rgba(255, 255, 255, 0.12)',
+              background: memoryOpen ? 'rgba(59, 130, 246, 0.25)' : 'rgba(255, 255, 255, 0.06)',
+              color: '#e8edf5',
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: 'pointer',
+            }}
+          >
+            <History size={13} />
+            Memory
+          </button>
 
           <div style={{ width: 1, height: 22, background: 'rgba(255, 255, 255, 0.12)' }} />
 

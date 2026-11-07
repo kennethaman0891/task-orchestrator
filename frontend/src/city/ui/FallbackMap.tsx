@@ -24,6 +24,7 @@ export function FallbackMap({
   const selected = useCityStore((s) => s.selectedProjectId);
   const selectProject = useCityStore((s) => s.selectProject);
   const activeWorkspacePath = useCityStore((s) => s.activeWorkspacePath);
+  const openMemory = useCityStore((s) => s.openMemory);
 
   const visible = useMemo(
     () => visibleProjectIds(projects, order, filters).map((id) => projects[id]).filter(Boolean),
@@ -115,6 +116,12 @@ export function FallbackMap({
             style={{ background: t.colors.accent.primary, color: '#fff', border: 'none', borderRadius: 7, padding: '6px 10px', fontSize: 11, cursor: 'pointer' }}
           >
             Continue
+          </button>
+          <button
+            onClick={() => openMemory(projects[selected].id, null)}
+            style={{ background: 'transparent', color: t.colors.text.secondary, border: `1px solid ${t.colors.border.primary}`, borderRadius: 7, padding: '6px 10px', fontSize: 11, cursor: 'pointer' }}
+          >
+            Memory
           </button>
           <button
             onClick={() => onEditBuilding(projects[selected])}

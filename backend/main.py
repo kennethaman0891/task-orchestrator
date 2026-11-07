@@ -2164,6 +2164,14 @@ try:
 except Exception as _e:  # noqa: BLE001
     print(f"[city-spec] router init FAILED: {_e!r}")
 
+# Nero: spatial memory graph. Additive; never breaks core sidecar boot.
+try:
+    from routers import neurocity as _neurocity_mod
+    app.include_router(_neurocity_mod.router)
+    print("[neurocity] router mounted (/api/neurocity)")
+except Exception as _e:  # noqa: BLE001
+    print(f"[neurocity] router init FAILED (memory layer disabled): {_e!r}")
+
 # Collab (remote collaboration) — additive, never breaks core boot
 # Ensure backend directory is on sys.path so routers can import collab_store, audit
 import sys

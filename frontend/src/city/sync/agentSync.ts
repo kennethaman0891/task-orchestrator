@@ -4,10 +4,11 @@
 //   current task, model) × project registry (which cwd belongs to which
 //   building). Nothing here is invented.
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import type { TerminalEntry } from '@/types';
 import type { AgentBot, Project } from '@/city/types';
 import { useCityStore } from '@/city/store';
+import { recordEpisode } from '@/city/api';
 
 const AGENT_CLIS = ['claude', 'opencode', 'codex', 'cursor', 'gemini', 'qwen', 'antigravity', 'agy', 'prime'];
 
@@ -131,4 +132,42 @@ export function useAgentSync(terminals: Record<string, TerminalEntry>) {
   }, [bots, setAgents]);
 
   return bots;
+}
+
+/**
+ * Write a Nero episode when a live task id or status changes.
+ * The summary is the task title only. Scrollback and output stay out.
+ */
+export function useTerminalEpisodeSync(terminals: Record<string, TerminalEntry>) {
+  const projects = useCityStore((s) => s.projects);
+  const projectOrder = useCityStore((s) => s.projectOrder);
+  const seen = useRef<Record<string, string>>({});
+
+  useEffect(() => {
+    const list = projectOrder.map((id) => projects[id]).filter(Boolean);
+    for (const [key, entry] of Object.entries(terminals)) {
+      const task = entry.current_task;
+      if (!task?.id || !task.description) continue;
+      const cwd = entry.cwd || '';
+      const project = list.find((p) => {
+        if (!p.path) return false;
+        return cwd === p.path || cwd.startsWith(p.path + '/') || p.path.startsWith(cwd);
+      });
+      if (!project) continue;
+      const stamp = `${task.id}:${task.status}`;
+      if (seen.current[key] === stamp) continue;
+      seen.current[key] = stamp;
+      const summary = task.description.slice(0, 500);
+      void recordEpisode({
+        project_id: project.id,
+        source: 'terminal_task',
+        summary,
+        cwd,
+        terminal_id: key,
+        task_id: task.id,
+        task_status: task.status,
+        ts: task.started_at || task.created_at || undefined,
+      }).catch(() => { /* sidecar memory layer may be offline */ });
+    }
+  }, [terminals, projects, projectOrder]);
 }

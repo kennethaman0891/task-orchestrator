@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { Canvas } from '@react-three/fiber';
 import { useProjectsFeed } from '@/city/feed';
 import { useCityStore } from '@/city/store';
-import { useAgentSync } from '@/city/sync/agentSync';
+import { useAgentSync, useTerminalEpisodeSync } from '@/city/sync/agentSync';
 import { useTerminalCarSync } from '@/city/sync/terminalCarSync';
 import { usePlotDistrictSync } from '@/city/sync/plotDistrictSync';
 import { CityScene } from '@/city/scene/CityScene';
@@ -25,6 +25,7 @@ import { RoadGraphPanel } from '@/city/ui/RoadGraphPanel';
 import { FallbackMap } from '@/city/ui/FallbackMap';
 import { CreateProjectModal } from '@/city/ui/CreateProjectModal';
 import { BuildingContextMenu } from '@/city/ui/BuildingContextMenu';
+import { MemoryPanel } from '@/city/ui/MemoryPanel';
 import { interiorTarget, buildingFocusTarget, carCabinTarget } from '@/city/scene/CameraRig';
 import { carLocalTransform } from '@/city/scene/TerminalCars';
 import { FloatingCityTerminal } from '@/city/ui/FloatingCityTerminal';
@@ -63,6 +64,7 @@ export interface CityViewProps {
 export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, onToggleSidebar, workspaces = [], activeWorkspaceId = null, onToast, onRenameCar }: CityViewProps) {
   useProjectsFeed();
   useAgentSync(terminals);
+  useTerminalEpisodeSync(terminals);
   useTerminalCarSync(workspaces, terminals);
   usePlotDistrictSync();
   useWorkspaceSync(workspaces, activeWorkspaceId, onToast);
@@ -322,6 +324,8 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
           onOpenTerminal={onOpenTerminal}
         />
       )}
+
+      <MemoryPanel />
 
       {loadError && (
         <div style={{

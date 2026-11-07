@@ -2,7 +2,7 @@
 // Reuses the same base-URL resolution as the rest of the app.
 
 import { apiBase, fetchWithTimeout, handle, imageBlobUrl, putFile } from '@/lib/api';
-import type { BuildingConfig, CityMeta, Project, ProjectFloorPlan } from '@/city/types';
+import type { BuildingConfig, CityMeta, MemoryHit, Project, ProjectFloorPlan } from '@/city/types';
 
 const TIMEOUT_MS = 10000;
 
@@ -59,6 +59,34 @@ export function saveAgentSnapshot(id: string, snapshot: Record<string, unknown>)
 
 export function getCityMeta(): Promise<CityMeta> {
   return req('/api/projects/__meta');
+}
+
+export function recallMemory(
+  projectId: string,
+  floorIndex: number | null,
+  q = '',
+): Promise<{ hits: MemoryHit[] }> {
+  const params = new URLSearchParams({ project_id: projectId, q, limit: '5', days: '30' });
+  if (floorIndex !== null) params.set('floor_index', String(floorIndex));
+  return req(`/api/neurocity/geodesic-recall?${params.toString()}`);
+}
+
+export function recordEpisode(body: {
+  project_id: string;
+  source: 'git_commit' | 'terminal_task';
+  summary: string;
+  cwd?: string;
+  floor_folder?: string;
+  terminal_id?: string;
+  task_id?: string;
+  task_status?: string;
+  ts?: number;
+}): Promise<{ ok: boolean; created: boolean; id: string }> {
+  return req('/api/neurocity/record', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
 
 export function getProjectFloorPlan(id: string): Promise<ProjectFloorPlan> {
