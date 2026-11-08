@@ -116,6 +116,102 @@ export const darkTheme: Theme = {
 
 // ── Professional themes ───────────────────────────────────────────────
 
+// ── System Terminal theme (macOS / OS default terminal) ─────────────
+export const systemTerminalDarkTheme: Theme = {
+  ...darkTheme,
+  name: 'System Terminal',
+  label: 'System Terminal (Auto)',
+  mode: 'dark',
+  category: 'professional',
+  colors: {
+    ...darkTheme.colors,
+    bg: {
+      primary: '#000000',      // macOS Terminal / Unix default pure black background
+      secondary: '#121214',    // Apple macOS system dark window/panel
+      tertiary: '#1c1c1e',     // macOS system card material
+      elevated: '#2c2c2e',     // macOS system elevated input/chip
+      hover: '#26262a',
+      active: '#323236',
+      overlay: 'rgba(0,0,0,0.8)',
+      input: '#000000',
+    },
+    text: {
+      primary: '#f5f5f7',      // Apple macOS primary terminal text
+      secondary: '#8e8e93',    // macOS secondary label
+      muted: '#636366',        // macOS tertiary label
+      inverse: '#000000',
+      accent: '#007aff',       // macOS system blue accent
+      link: '#0a84ff',
+    },
+    accent: { primary: '#007aff', hover: '#0062cc', light: 'rgba(0,122,255,0.18)', dark: '#0051a8' },
+    success: { primary: '#34c759', light: 'rgba(52,199,89,0.15)', dark: '#248a3d' },
+    warning: { primary: '#ff9f0a', light: 'rgba(255,159,10,0.15)', dark: '#c97800' },
+    danger: { primary: '#ff453a', light: 'rgba(255,69,58,0.15)', dark: '#d70015' },
+    info: { primary: '#0a84ff', light: 'rgba(10,132,255,0.15)' },
+    border: { primary: '#2c2c2e', secondary: '#1c1c1e', focus: '#007aff', subtle: '#18181a' },
+  },
+  fontFamily: {
+    mono: 'ui-monospace, "SF Mono", Monaco, "Cascadia Code", "Fira Code", monospace',
+    sans: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif',
+  },
+};
+
+export const systemTerminalLightTheme: Theme = {
+  ...darkTheme,
+  name: 'System Terminal',
+  label: 'System Terminal (Auto)',
+  mode: 'light',
+  category: 'professional',
+  colors: {
+    ...darkTheme.colors,
+    bg: {
+      primary: '#ffffff',      // macOS Terminal Basic default white background
+      secondary: '#f2f2f7',    // macOS System Light grouped background
+      tertiary: '#e5e5ea',     // macOS secondary grouped background
+      elevated: '#ffffff',
+      hover: '#e5e5ea',
+      active: '#d1d1d6',
+      overlay: 'rgba(0,0,0,0.35)',
+      input: '#ffffff',
+    },
+    text: {
+      primary: '#000000',      // macOS Terminal text
+      secondary: '#6c6c70',
+      muted: '#8e8e93',
+      inverse: '#ffffff',
+      accent: '#007aff',
+      link: '#007aff',
+    },
+    accent: { primary: '#007aff', hover: '#0062cc', light: 'rgba(0,122,255,0.12)', dark: '#0051a8' },
+    success: { primary: '#34c759', light: 'rgba(52,199,89,0.12)', dark: '#248a3d' },
+    warning: { primary: '#ff9500', light: 'rgba(255,149,0,0.12)', dark: '#c97800' },
+    danger: { primary: '#ff3b30', light: 'rgba(255,59,48,0.12)', dark: '#d70015' },
+    info: { primary: '#007aff', light: 'rgba(0,122,255,0.12)' },
+    border: { primary: '#d1d1d6', secondary: '#e5e5ea', focus: '#007aff', subtle: '#e5e5ea' },
+  },
+  fontFamily: {
+    mono: 'ui-monospace, "SF Mono", Monaco, "Cascadia Code", "Fira Code", monospace',
+    sans: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif',
+  },
+};
+
+export function buildSystemTerminalTheme(mode: 'dark' | 'light' = 'dark'): Theme {
+  return mode === 'light' ? systemTerminalLightTheme : systemTerminalDarkTheme;
+}
+
+export const systemTerminalTheme: Theme = systemTerminalDarkTheme;
+
+export function getSystemMode(): 'dark' | 'light' {
+  if (typeof window === 'undefined') return 'dark';
+  try {
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light';
+  } catch {
+    return 'dark';
+  }
+}
+
 export const githubDarkTheme: Theme = {
   ...darkTheme,
   name: 'GitHub Dark',
@@ -510,6 +606,21 @@ export interface CustomPreset {
 
 export const CUSTOM_THEME_PRESETS: CustomPreset[] = [
   {
+    id: 'system-terminal',
+    label: 'System Terminal',
+    config: {
+      baseMode: 'dark',
+      bgPrimary: '#000000',
+      bgSecondary: '#121214',
+      bgTertiary: '#1c1c1e',
+      bgElevated: '#2c2c2e',
+      accent: '#007aff',
+      textPrimary: '#f5f5f7',
+      textMuted: '#8e8e93',
+      border: '#2c2c2e',
+    },
+  },
+  {
     id: 'cyber-amber',
     label: 'Cyber Amber',
     config: {
@@ -664,6 +775,7 @@ export function buildCustomTheme(cfg: CustomThemeConfig): Theme {
 
 export const ALL_THEMES: Theme[] = [
   darkTheme,
+  systemTerminalTheme,
   githubDarkTheme,
   draculaTheme,
   nordTheme,
@@ -678,9 +790,23 @@ export const ALL_THEMES: Theme[] = [
   paperTheme,
 ];
 
-export function getThemeByName(name: string, customConfig?: CustomThemeConfig): Theme {
+export function getThemeByName(
+  name: string,
+  customConfig?: CustomThemeConfig,
+  systemMode?: 'dark' | 'light'
+): Theme {
   if (name === 'Custom' || name === 'custom') {
     return buildCustomTheme(customConfig || DEFAULT_CUSTOM_THEME_CONFIG);
+  }
+  if (
+    name === 'System Terminal' ||
+    name === 'system-terminal' ||
+    name === 'System' ||
+    name === 'system' ||
+    name === 'system_terminal'
+  ) {
+    const resolvedMode = systemMode ?? getSystemMode();
+    return buildSystemTerminalTheme(resolvedMode);
   }
   return ALL_THEMES.find((t) => t.name === name) || darkTheme;
 }

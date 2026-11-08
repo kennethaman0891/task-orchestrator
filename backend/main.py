@@ -4796,6 +4796,11 @@ try:
         OllamaEngine,
         PrimeIntelligenceEngine,
         QwenTaskRouter,
+        ollama_profile_section,
+        discover_local_runtimes,
+        read_prefs,
+        write_prefs,
+        QwenMemory,
     )
 except ImportError:
     from backend.qwen_orchestrator import (
@@ -4803,11 +4808,23 @@ except ImportError:
         OllamaEngine,
         PrimeIntelligenceEngine,
         QwenTaskRouter,
+        ollama_profile_section,
+        discover_local_runtimes,
+        read_prefs,
+        write_prefs,
+        QwenMemory,
     )
 
 _qwen_ollama = OllamaEngine()
 _qwen_intelligence = PrimeIntelligenceEngine(ollama_engine=_qwen_ollama)
 _qwen_router = QwenTaskRouter()
+_qwen_memory = QwenMemory()
+
+
+class QwenTarget(BaseModel):
+    session_id: str
+    label: Optional[str] = ""
+    cli: Optional[str] = ""
 
 
 class QwenOrchestrateRequest(BaseModel):
@@ -4816,26 +4833,39 @@ class QwenOrchestrateRequest(BaseModel):
     workspace_name: Optional[str] = ""
     project_path: Optional[str] = ""
     target_ttys: Optional[List[str]] = []
+    targets: Optional[List[QwenTarget]] = None
     model: Optional[str] = ""
+    runtime: Optional[str] = "ollama"
+    runtime_url: Optional[str] = ""
     strategy: Optional[str] = "fastest"  # fastest | reasoning
+
+
+class QwenDispatchResult(BaseModel):
+    id: str
+    status: str
+    error: Optional[str] = ""
 
 
 class QwenDispatchRequest(BaseModel):
     plan_id: str
     subtask_ids: Optional[List[str]] = None
+    results: Optional[List[QwenDispatchResult]] = None
+
+
+class QwenPrefRequest(BaseModel):
+    runtime: str = ""
+    model: str = ""
 
 
 class QwenBenchmarkRequest(BaseModel):
     model_name: Optional[str] = ""
 
 
-@app.get("/api/qwen/profile")
-async def get_qwen_system_profile():
-    """Return hardware specs, Ollama connection status, and installed Qwen models."""
-    hw = await asyncio.to_thread(get_hardware_profile)
-    ollama_ok = await asyncio.to_thread(_qwen_ollama.is_available)
-    ollama_version = await asyncio.to_thread(_qwen_ollama.get_version) if ollama_ok else "unavailable"
-    local_models = await asyncio.to_thread(_qwen_ollama.get_installed_models) if ollama_ok else []
+def _qwen_profile_payload():
+    """Hardware, one Ollama probe, and the other local servers that answered."""
+    hw = get_hardware_profile()
+    section = ollama_profile_section(_qwen_ollama)
+    local_models = section["models"]
     qwen_models = [m for m in local_models if m.is_qwen]
     fastest_model = (
         _qwen_ollama.select_optimal_model(strategy="fastest", installed=local_models, hardware=hw)
@@ -4847,21 +4877,34 @@ async def get_qwen_system_profile():
     )
     for model in local_models:
         model.is_fastest = bool(fastest_model) and model.model_name == fastest_model
-
+    runtimes = discover_local_runtimes(section)
     return {
         "hardware": hw.model_dump(),
-        "ollama": {
-            "available": ollama_ok,
-            "version": ollama_version,
-            "url": _qwen_ollama.base_url,
-        },
+        "ollama": section["ollama"],
         "qwen_models": [m.model_dump() for m in qwen_models],
         "local_models": [m.model_dump() for m in local_models],
+        "models_status": section["models_status"],
+        "inventory_error": section["inventory_error"],
         "recommendations": {
             "fastest": fastest_model,
             "reasoning": reasoning_model,
         },
+        "runtimes": [row.model_dump() for row in runtimes],
+        "prefs": read_prefs(),
     }
+
+
+@app.get("/api/qwen/profile")
+async def get_qwen_system_profile():
+    """Return hardware specs, Ollama connection status, and installed local models."""
+    return await asyncio.to_thread(_qwen_profile_payload)
+
+
+@app.post("/api/qwen/pref")
+async def save_qwen_pref(req: QwenPrefRequest):
+    """Remember the runtime and model the user picked. Not written into state.json."""
+    saved = write_prefs(req.runtime or "", req.model or "")
+    return {"ok": True, "prefs": saved}
 
 
 @app.post("/api/qwen/benchmark")
@@ -4914,12 +4957,17 @@ async def qwen_orchestrate_task(req: QwenOrchestrateRequest):
     elif ws_dict is not None and req.project_path and not (ws_dict.get("projectPath") or ws_dict.get("path")):
         ws_dict["projectPath"] = req.project_path
 
-    # Roster is exactly the terminals the client checked. An empty list is
-    # this workspace having nothing selected, not every shell on the machine.
+    # Roster is exactly the panes the client checked. The id is the Rust
+    # session id. CLI comes from the client. A miss is "unknown", not "shell".
     target_terms = []
     roster: List[str] = []
     seen_ttys = set()
-    for raw in req.target_ttys or []:
+    supplied = req.targets or []
+    if supplied:
+        pairs = [(item.session_id, item.label or "", item.cli or "") for item in supplied]
+    else:
+        pairs = [(raw, "", "") for raw in (req.target_ttys or [])]
+    for raw, label, cli in pairs:
         tty = (raw or "").strip()
         if not tty or tty in seen_ttys:
             continue
@@ -4927,11 +4975,14 @@ async def qwen_orchestrate_task(req: QwenOrchestrateRequest):
         roster.append(tty)
         resolved = _resolve_tty(tty)
         t = terminals.get(tty) or terminals.get(resolved)
+        known_cli = (cli or "").strip()
+        if not known_cli and t and (t.info.cli or "").strip():
+            known_cli = t.info.cli.strip()
         target_terms.append({
             "tty": tty,
-            "label": (t.info.window_name or t.session_name or tty) if t else tty,
-            "cli": (t.info.cli or "shell") if t else "shell",
-            "cwd": (t.info.cwd or "") if t else "",
+            "label": (label or "").strip() or ((t.info.window_name or t.session_name or tty) if t else tty),
+            "cli": known_cli or "unknown",
+            "cwd": ((t.info.cwd or "") if t else "") or (req.project_path or ""),
             "current_task": t.current_task.description if t and t.current_task else None,
         })
 
@@ -4939,6 +4990,11 @@ async def qwen_orchestrate_task(req: QwenOrchestrateRequest):
     if requested_model.lower().startswith("ollama/"):
         requested_model = requested_model.split("/", 1)[1]
 
+    memory_text = _qwen_memory.prompt_block(
+        workspace_id=(req.workspace_id or "").strip(),
+        project_path=(req.project_path or "").strip(),
+    )
+    hw = await asyncio.to_thread(get_hardware_profile)
     plan = await asyncio.to_thread(
         _qwen_intelligence.orchestrate_task,
         user_prompt=prompt,
@@ -4946,12 +5002,28 @@ async def qwen_orchestrate_task(req: QwenOrchestrateRequest):
         terminals=target_terms,
         model=requested_model or None,
         strategy=req.strategy or "fastest",
+        runtime=(req.runtime or "ollama").strip() or "ollama",
+        runtime_url=(req.runtime_url or "").strip(),
+        hardware_summary=hw.hardware_summary,
+        memory_text=memory_text,
     )
 
     allowed = set(roster)
     plan.subtasks = [s for s in plan.subtasks if s.target_tty in allowed]
     plan.allowed_ttys = roster
     _qwen_router.register_plan(plan)
+    _qwen_memory.record_run(
+        plan_id=plan.plan_id,
+        workspace_id=(req.workspace_id or "").strip(),
+        workspace_name=(req.workspace_name or "").strip(),
+        project_path=(req.project_path or "").strip(),
+        runtime=(req.runtime or "ollama").strip() or "ollama",
+        model=plan.selected_model,
+        strategy=(req.strategy or "fastest").strip(),
+        user_goal=plan.user_goal,
+        plan_json=plan.model_dump_json(),
+        status=plan.status,
+    )
     return {"ok": True, "plan": plan.model_dump()}
 
 
@@ -4973,30 +5045,37 @@ async def get_qwen_plan(plan_id: str):
 
 @app.post("/api/qwen/dispatch")
 async def dispatch_qwen_plan(req: QwenDispatchRequest):
-    """Dispatch subtasks to the target terminals."""
+    """Record sends the desktop already typed into the checked session ids.
+
+    This route does not call send_to_terminal_shell. A second writer there
+    targets tmux and Terminal.app by OS tty and double-types the pane.
+    """
     plan = _qwen_router.get_plan(req.plan_id)
     if not plan:
         raise HTTPException(404, "Plan not found")
 
-    tasks_to_run = plan.subtasks
+    rows = [item.model_dump() for item in (req.results or [])]
     if req.subtask_ids:
-        tasks_to_run = [s for s in plan.subtasks if s.id in req.subtask_ids]
-
-    async def _send_subtask(tty: str, command: str):
-        real_tty = _resolve_tty(tty)
-        # Rust session ids are typed by the desktop client. The shell sender
-        # only runs when this id is a live sidecar terminal.
-        if real_tty in terminals:
-            await send_to_terminal_shell(real_tty, command)
-        elif tty in terminals:
-            await send_to_terminal_shell(tty, command)
-
-    result = await _qwen_router.dispatch_plan(
-        req.plan_id,
-        subtasks_to_run=tasks_to_run,
-        terminal_sender=_send_subtask,
-    )
-    await broadcast_state()
+        allowed_ids = set(req.subtask_ids)
+        rows = [row for row in rows if row.get("id") in allowed_ids]
+    result = _qwen_router.apply_client_results(req.plan_id, rows)
+    updated = _qwen_router.get_plan(req.plan_id)
+    if updated is not None:
+        _qwen_memory.record_steps(
+            updated.plan_id,
+            [
+                {
+                    "session_id": step.target_tty,
+                    "cli": step.cli,
+                    "action_type": step.action_type,
+                    "command": step.command,
+                    "outcome": step.status,
+                    "error": step.error or "",
+                }
+                for step in updated.subtasks
+            ],
+        )
+        _qwen_memory.update_status(updated.plan_id, updated.status)
     return result
 
 

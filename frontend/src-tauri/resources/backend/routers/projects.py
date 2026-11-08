@@ -129,6 +129,11 @@ def _next_free_slot(occupied: set) -> Dict[str, int]:
     return {"x": 0, "y": GRID_SIZE + 1}
 
 
+def project_record(project_id: str) -> Optional[Dict[str, Any]]:
+    """In-memory registry lookup. Callers must not persist from this dict."""
+    return _projects.get(project_id)
+
+
 def _assign_missing_plots() -> None:
     occupied = set()
     for p in _projects.values():
@@ -309,6 +314,7 @@ async def get_project_floor_plan(project_id: str) -> Dict[str, Any]:
             raise HTTPException(404, "project not found")
         project_path = p.get("path") or ""
 
+    stored_path = project_path
     if not project_path or not os.path.exists(project_path):
         project_path = str(Path(__file__).resolve().parent.parent.parent)
 
@@ -320,6 +326,14 @@ async def get_project_floor_plan(project_id: str) -> Dict[str, Any]:
             async with _lock:
                 p["floors"] = scanned_floor_names
                 _save()
+        # Nero anchors only a path that really exists. A missing path falls
+        # back to this repo for the visual plan and must not enter the graph.
+        if stored_path and os.path.exists(stored_path):
+            try:
+                from routers import neurocity as _neuro
+                _neuro.ingest_scanned_plan(p, plan)
+            except Exception:
+                pass
         return plan
     except Exception as e:
         return {"error": str(e), "floors": []}

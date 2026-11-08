@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
-import type { AgentBot, FloorSpec, Project, FloorPlanFloor } from '@/city/types';
+import type { AgentBot, FloorSpec, Project, FloorPlanFloor, FloorPlanObject } from '@/city/types';
 import { AgentBots } from './Bots';
 import { themeById } from '@/city/themes';
 import { useBuildingMaterials } from './archetypes';
@@ -278,6 +278,112 @@ function makeBlueprintTexture(title: string, docs: string[] = []): THREE.CanvasT
   return tex;
 }
 
+/** Generates dynamic live system telemetry & build monitor texture */
+function makeTelemetryTexture(projectName: string, accentColor: string): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('no 2d context');
+
+  // Dark futuristic telemetry display background
+  ctx.fillStyle = '#070b14';
+  ctx.fillRect(0, 0, 512, 256);
+
+  // Subtle grid lines
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.12)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= 512; x += 32) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 256); ctx.stroke();
+  }
+  for (let y = 0; y <= 256; y += 32) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(512, y); ctx.stroke();
+  }
+
+  // Header Bar
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+  ctx.fillRect(0, 0, 512, 34);
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.4)';
+  ctx.beginPath(); ctx.moveTo(0, 34); ctx.lineTo(512, 34); ctx.stroke();
+
+  // Status Indicator Dot
+  ctx.fillStyle = '#10b981';
+  ctx.beginPath(); ctx.arc(18, 17, 5, 0, Math.PI * 2); ctx.fill();
+
+  ctx.fillStyle = accentColor || '#38bdf8';
+  ctx.font = 'bold 12px monospace';
+  ctx.fillText('SYSTEM TELEMETRY · ' + projectName.toUpperCase(), 32, 21);
+
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '10px monospace';
+  ctx.fillText('LIVE DIAGNOSTICS', 390, 21);
+
+  // Simulated activity waveform
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  const wave = [40, 55, 38, 72, 60, 85, 45, 90, 65, 78, 52, 68, 82, 45, 58, 70, 88, 62, 50, 75, 60, 48];
+  const stepX = 220 / (wave.length - 1);
+  for (let i = 0; i < wave.length; i++) {
+    const wx = 24 + i * stepX;
+    const wy = 145 - wave[i] * 0.7;
+    if (i === 0) ctx.moveTo(wx, wy);
+    else ctx.lineTo(wx, wy);
+  }
+  ctx.stroke();
+
+  // Waveform area fill
+  ctx.fillStyle = 'rgba(56, 189, 248, 0.08)';
+  ctx.lineTo(24 + (wave.length - 1) * stepX, 155);
+  ctx.lineTo(24, 155);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = '#64748b';
+  ctx.font = '9px monospace';
+  ctx.fillText('REAL-TIME WORKSPACE PROFILER', 24, 168);
+
+  // Metrics Grid Cards on Right
+  const metrics = [
+    { label: 'MEMORY', val: '42.8 MB', col: '#38bdf8' },
+    { label: 'VIEWPORT', val: '60 FPS', col: '#10b981' },
+    { label: 'IPC RELAY', val: '12ms', col: '#a855f7' },
+    { label: 'BUILD', val: 'PASSED', col: '#22c55e' },
+  ];
+
+  metrics.forEach((m, idx) => {
+    const mx = 270 + (idx % 2) * 115;
+    const my = 48 + Math.floor(idx / 2) * 58;
+    ctx.fillStyle = 'rgba(30, 41, 59, 0.7)';
+    ctx.fillRect(mx, my, 105, 48);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+    ctx.strokeRect(mx, my, 105, 48);
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '9px monospace';
+    ctx.fillText(m.label, mx + 8, my + 16);
+
+    ctx.fillStyle = m.col;
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText(m.val, mx + 8, my + 38);
+  });
+
+  // Footer status bar
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+  ctx.fillRect(16, 190, 480, 46);
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.2)';
+  ctx.strokeRect(16, 190, 480, 46);
+
+  ctx.fillStyle = '#e2e8f0';
+  ctx.font = '11px monospace';
+  ctx.fillText('BRANCH: main · SYSTEM HEALTH: NOMINAL · ZERO WARNINGS', 28, 218);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 /** Generates live preview billboard texture */
 function makePreviewTexture(projectName: string, tech: string): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
@@ -386,6 +492,7 @@ export function InteriorFloor({
     const blueprintObj = activePlanFloor.objects?.find((o) => o.type === 'blueprint_board');
     const blueprintMap = makeBlueprintTexture(project.name || 'Project', blueprintObj?.docs);
     const previewMap = makePreviewTexture(project.name || 'Project', floorPlan?.project.techStack?.join(', ') || 'React, Python, Rust');
+    const telemetryMap = makeTelemetryTexture(project.name || 'Project', accent);
 
     return {
       floorMap,
@@ -393,6 +500,7 @@ export function InteriorFloor({
       codeMap2,
       blueprintMap,
       previewMap,
+      telemetryMap,
       floorMesh: new THREE.MeshStandardMaterial({
         color: '#ffffff',
         map: floorMap,
@@ -426,6 +534,12 @@ export function InteriorFloor({
         metalness: 0.1,
         transparent: true,
         opacity: 0.75,
+      }),
+      cutawayGlass: new THREE.MeshStandardMaterial({
+        color: '#e0f2fe',
+        transparent: true,
+        opacity: 0.22,
+        roughness: 0.08,
       }),
       rugWork: new THREE.MeshStandardMaterial({
         color: '#0f172a',
@@ -483,6 +597,13 @@ export function InteriorFloor({
         emissiveIntensity: 0.85,
         roughness: 0.15,
       }),
+      telemetryDisplay: new THREE.MeshStandardMaterial({
+        map: telemetryMap,
+        emissive: new THREE.Color('#ffffff'),
+        emissiveMap: telemetryMap,
+        emissiveIntensity: 0.9,
+        roughness: 0.15,
+      }),
       chairMesh: new THREE.MeshStandardMaterial({
         color: '#1e293b',
         roughness: 0.75,
@@ -517,6 +638,34 @@ export function InteriorFloor({
         color: '#1e293b',
         roughness: 0.85,
       }),
+      loungeLeather: new THREE.MeshStandardMaterial({
+        color: '#c2410c', // Warm cognac / saddle leather
+        roughness: 0.65,
+        metalness: 0.05,
+      }),
+      loungeWood: new THREE.MeshStandardMaterial({
+        color: '#5c4028', // American Walnut plinth
+        roughness: 0.35,
+        metalness: 0.1,
+      }),
+      marble: new THREE.MeshStandardMaterial({
+        color: '#f8fafc', // Carrara Marble
+        roughness: 0.15,
+        metalness: 0.05,
+      }),
+      brass: new THREE.MeshStandardMaterial({
+        color: '#eab308', // Brushed Brass
+        roughness: 0.25,
+        metalness: 0.85,
+      }),
+      plantLeaf: new THREE.MeshStandardMaterial({
+        color: '#16a34a', // Lush Ficus green
+        roughness: 0.35,
+      }),
+      plantPot: new THREE.MeshStandardMaterial({
+        color: '#f1f5f9', // Matte Ceramic White
+        roughness: 0.25,
+      }),
       elevatorDoor: new THREE.MeshStandardMaterial({
         color: '#e2e8f0',
         roughness: 0.2,
@@ -533,6 +682,7 @@ export function InteriorFloor({
       bag.codeMap2.dispose();
       bag.blueprintMap.dispose();
       bag.previewMap.dispose();
+      bag.telemetryMap.dispose();
       bag.floorMesh.dispose();
     };
   }, [materials]);
@@ -556,11 +706,30 @@ export function InteriorFloor({
   const devAgents = agents.slice(0, 2);
   const loungeAgents = agents.slice(2, 4);
 
+  const interiorViewMode = useCityStore((s) => s.interiorViewMode);
+  const isWalkIn = interiorViewMode === 'walk-in';
+
   // Find relevant objects from the scanned floor plan
   const workstationObj = activePlanFloor.objects?.find((o) => o.type === 'workstation');
   const serverObj = activePlanFloor.objects?.find((o) => o.type === 'server_pod');
   const blueprintObj = activePlanFloor.objects?.find((o) => o.type === 'blueprint_board');
   const previewObj = activePlanFloor.objects?.find((o) => o.type === 'preview_billboard');
+  const loungeObj = activePlanFloor.objects?.find((o) => o.type === 'lounge') || {
+    id: `${activePlanFloor.folder || 'floor'}_strategy_hub`,
+    type: 'lounge' as const,
+    title: 'Breakout Strategy & Agent Collaboration Hub',
+    position: [width * 0.26, 0.16, depth * 0.24] as [number, number, number],
+    status: 'Standup Active · 2 Agents Synced',
+    details: 'Autonomous Agent Standup, Task Retrospectives & Strategic Decisions',
+  };
+  const telemetryObj: FloorPlanObject = {
+    id: 'system_telemetry_screen',
+    type: 'preview_billboard',
+    title: 'Live System Telemetry & Workspace Profiler',
+    position: [-width * 0.24, floorH * 0.50, -depth / 2 + 0.12] as [number, number, number],
+    status: '60 FPS Viewport Online · Nominal',
+    details: 'Real-Time CPU/Memory Profiler, 12ms IPC Relay, 0 Errors, Main Git Branch Healthy',
+  };
 
   return (
     <group position={[0, Y, 0]}>
@@ -584,6 +753,20 @@ export function InteriorFloor({
         </mesh>
       ))}
 
+      {/* ── 4 Slender Corner Structural Columns ── */}
+      {[-width / 2 + 0.1, width / 2 - 0.1].map((cx, cxi) =>
+        [-depth / 2 + 0.1, depth / 2 - 0.1].map((cz, czi) => (
+          <mesh
+            key={`col-${cxi}-${czi}`}
+            position={[cx, floorH / 2 + 0.14, cz]}
+            material={materials.interiorFrame}
+            castShadow
+          >
+            <boxGeometry args={[0.12, floorH, 0.12]} />
+          </mesh>
+        )),
+      )}
+
       {/* ── Front Glass Balustrade (Dollhouse Cutaway) ── */}
       <group position={[0, 0.16, depth / 2 - 0.08]}>
         <mesh position={[0, 0.05, 0]} material={mats.trim}>
@@ -597,13 +780,12 @@ export function InteriorFloor({
         </mesh>
       </group>
 
-      {/* ── Back Wall: Punched Windows or Master Blueprint Board ── */}
+      {/* ── Back Wall: Master Blueprint Board or Live Telemetry Monitor ── */}
       <group position={[0, floorH / 2 + 0.14, -depth / 2 + 0.08]}>
         <mesh material={materials.plaster}>
           <boxGeometry args={[width, floorH, 0.16]} />
         </mesh>
 
-        {/* Master Architectural Blueprint Board (if present on this floor or docs floor) */}
         {blueprintObj ? (
           <group
             position={[0, floorH * 0.18, 0.1]}
@@ -617,7 +799,6 @@ export function InteriorFloor({
             <mesh position={[0, 0, 0.035]} material={materials.blueprintDisplay}>
               <planeGeometry args={[3.7, 1.7]} />
             </mesh>
-            {/* Interactive 3D tag */}
             {hoveredObjectId === blueprintObj.id && (
               <mesh position={[0, 1.1, 0.1]} material={mats.accent}>
                 <boxGeometry args={[2.0, 0.22, 0.02]} />
@@ -625,26 +806,50 @@ export function InteriorFloor({
             )}
           </group>
         ) : (
-          // Default architectural punched windows
-          [-1.5, 0, 1.5].map((bx, i) => (
-            <group key={`back-win-${i}`} position={[bx, floorH * 0.16, 0.1]}>
-              <mesh material={materials.interiorFrame}>
-                <boxGeometry args={[0.92, 0.68, 0.05]} />
+          /* Live System Telemetry & Workspace Profiler Display (Replaces dead grey box!) */
+          <group
+            position={[-width * 0.24, floorH * 0.16, 0.1]}
+            onPointerOver={(e) => { e.stopPropagation(); handlePointerOver(telemetryObj.id); }}
+            onPointerOut={handlePointerOut}
+            onClick={(e) => { e.stopPropagation(); setActiveObjectInspection(telemetryObj); }}
+          >
+            <mesh material={materials.interiorFrame}>
+              <boxGeometry args={[2.2, 1.15, 0.06]} />
+            </mesh>
+            <mesh position={[0, 0, 0.035]} material={materials.telemetryDisplay}>
+              <planeGeometry args={[2.12, 1.07]} />
+            </mesh>
+            {hoveredObjectId === telemetryObj.id && (
+              <mesh position={[0, 0.72, 0.08]} material={materials.ledGreen}>
+                <boxGeometry args={[1.8, 0.18, 0.02]} />
               </mesh>
-              <mesh position={[0, 0, 0.03]} material={materials.interiorGlass}>
-                <boxGeometry args={[0.74, 0.58, 0.03]} />
-              </mesh>
-            </group>
-          ))
+            )}
+          </group>
         )}
       </group>
 
-      {/* ── Side Walls ── */}
+      {/* ── Side Walls: Adaptive Architectural Cutaways for Free 360° Inspection ── */}
       {([-1, 1] as const).map((side) => (
-        <group key={`side-wall-${side}`} position={[side * (width / 2 - 0.08), floorH / 2 + 0.14, 0]}>
-          <mesh material={materials.plaster}>
-            <boxGeometry args={[0.16, floorH, depth - 0.16]} />
-          </mesh>
+        <group key={`side-wall-${side}`} position={[side * (width / 2 - 0.08), 0.16, 0]}>
+          {isWalkIn ? (
+            /* Inside room in FPS mode: Full wall enclosure */
+            <mesh position={[0, floorH / 2, 0]} material={materials.plaster}>
+              <boxGeometry args={[0.16, floorH, depth - 0.16]} />
+            </mesh>
+          ) : (
+            /* Dollhouse overview mode: Architectural half-wall with transparent glass for 360° visibility */
+            <group>
+              <mesh position={[0, 0.38, 0]} material={materials.plaster} castShadow>
+                <boxGeometry args={[0.16, 0.76, depth - 0.16]} />
+              </mesh>
+              <mesh position={[0, 0.78, 0]} material={mats.trim}>
+                <boxGeometry args={[0.20, 0.04, depth - 0.12]} />
+              </mesh>
+              <mesh position={[0, 0.78 + (floorH - 0.78) / 2, 0]} material={materials.cutawayGlass}>
+                <boxGeometry args={[0.02, floorH - 0.78, depth - 0.2]} />
+              </mesh>
+            </group>
+          )}
         </group>
       ))}
 
@@ -729,17 +934,18 @@ export function InteriorFloor({
         </group>
       )}
 
-      {/* ── ZONE 2: 42U Server Pod & Cloud Infrastructure ── */}
+      {/* ── ZONE 2: 42U Server Pod (Placed neatly in rear-right nook) ── */}
       {serverObj && (
         <group
-          position={[width * 0.28, 0.18, -depth * 0.24]}
+          position={[width * 0.35, 0.18, -depth * 0.30]}
+          rotation={[0, -0.25, 0]}
           onPointerOver={(e) => { e.stopPropagation(); handlePointerOver(serverObj.id); }}
           onPointerOut={handlePointerOut}
           onClick={(e) => { e.stopPropagation(); setActiveObjectInspection(serverObj); }}
         >
           {/* Raised Data Center Tile */}
           <mesh position={[0, -0.01, 0]} receiveShadow material={materials.tileServer}>
-            <boxGeometry args={[width * 0.34, 0.02, depth * 0.32]} />
+            <boxGeometry args={[1.2, 0.02, 1.2]} />
           </mesh>
 
           {/* 42U Server Rack Cabinet */}
@@ -776,15 +982,16 @@ export function InteriorFloor({
         </group>
       )}
 
-      {/* ── ZONE 3: Live UI Preview Billboard (on Frontend or UI Floor) ── */}
+      {/* ── ZONE 3: Live UI Preview Billboard (Prominently forward, 0 collision with server pod) ── */}
       {previewObj && (
         <group
-          position={[width * 0.26, 0.16, -depth * 0.24]}
+          position={[width * 0.24, 0.16, depth * 0.02]}
+          rotation={[0, -0.42, 0]}
           onPointerOver={(e) => { e.stopPropagation(); handlePointerOver(previewObj.id); }}
           onPointerOut={handlePointerOut}
           onClick={(e) => { e.stopPropagation(); setActiveObjectInspection(previewObj); }}
         >
-          {/* Stand */}
+          {/* Stand Pole */}
           <mesh position={[0, 0.6, 0]} material={materials.interiorFrame}>
             <cylinderGeometry args={[0.04, 0.05, 1.2, 12]} />
           </mesh>
@@ -796,40 +1003,101 @@ export function InteriorFloor({
           <mesh position={[0, 1.25, 0.035]} material={materials.previewDisplay}>
             <planeGeometry args={[2.1, 1.1]} />
           </mesh>
+          {/* Interactive Hover Tag */}
+          {hoveredObjectId === previewObj.id && (
+            <mesh position={[0, 1.95, 0]} material={mats.accent}>
+              <boxGeometry args={[1.8, 0.18, 0.02]} />
+            </mesh>
+          )}
         </group>
       )}
 
-      {/* ── ZONE 4: Breakout Lounge & Ficus Botanical Plant ── */}
-      <group position={[width * 0.26, 0.16, depth * 0.15]}>
-        {/* Lounge Rug */}
+      {/* ── ZONE 4: Breakout Strategy & Agent Collaboration Hub (Warm Luxury Lounge) ── */}
+      <group
+        position={[width * 0.26, 0.16, depth * 0.24]}
+        onPointerOver={(e) => { e.stopPropagation(); handlePointerOver(loungeObj.id); }}
+        onPointerOut={handlePointerOut}
+        onClick={(e) => { e.stopPropagation(); setActiveObjectInspection(loungeObj); }}
+      >
+        {/* Soft Lounge Rug */}
         <mesh position={[0, 0.005, 0]} receiveShadow material={materials.rugLounge}>
-          <boxGeometry args={[width * 0.38, 0.01, depth * 0.45]} />
+          <boxGeometry args={[width * 0.38, 0.01, depth * 0.40]} />
         </mesh>
 
-        {/* Sectional Sofa */}
-        <group position={[-0.2, 0, 0]}>
-          <mesh position={[0, 0.2, 0]} material={materials.sofaFabric} castShadow>
-            <boxGeometry args={[1.5, 0.24, 0.7]} />
+        {/* Solid Walnut Plinth Base */}
+        <mesh position={[-0.15, 0.05, 0]} material={materials.loungeWood} castShadow>
+          <boxGeometry args={[1.72, 0.08, 0.82]} />
+        </mesh>
+
+        {/* Warm Cognac Leather Sectional Sofa */}
+        <group position={[-0.15, 0, 0]}>
+          {/* Main Seat Cushion */}
+          <mesh position={[0, 0.18, 0]} material={materials.loungeLeather} castShadow>
+            <boxGeometry args={[1.68, 0.18, 0.78]} />
           </mesh>
-          <mesh position={[0.55, 0.2, 0.55]} material={materials.sofaFabric} castShadow>
-            <boxGeometry args={[0.6, 0.24, 0.7]} />
+          {/* Chaise Return */}
+          <mesh position={[0.52, 0.18, 0.44]} material={materials.loungeLeather} castShadow>
+            <boxGeometry args={[0.68, 0.18, 0.74]} />
           </mesh>
-          <mesh position={[0, 0.44, -0.28]} material={materials.sofaFabric}>
-            <boxGeometry args={[1.5, 0.32, 0.16]} />
+          {/* Backrest Cushion */}
+          <mesh position={[0, 0.40, -0.32]} material={materials.loungeLeather}>
+            <boxGeometry args={[1.68, 0.32, 0.18]} />
+          </mesh>
+          {/* Decorative Pillow */}
+          <mesh position={[-0.55, 0.32, -0.18]} rotation={[0, 0.2, 0]} material={materials.screenBezel}>
+            <boxGeometry args={[0.32, 0.28, 0.10]} />
           </mesh>
         </group>
 
-        {/* Coffee Table with Slim Laptop */}
-        <group position={[-0.2, 0, 0.55]}>
-          <mesh position={[0, 0.2, 0]} material={materials.deskTop} castShadow>
-            <cylinderGeometry args={[0.38, 0.38, 0.035, 32]} />
+        {/* Honed Carrara Marble Coffee Table with Fluted Brass Legs */}
+        <group position={[-0.15, 0, 0.46]}>
+          <mesh position={[0, 0.22, 0]} material={materials.marble} castShadow>
+            <cylinderGeometry args={[0.36, 0.36, 0.035, 32]} />
+          </mesh>
+          {/* Brass Hairpin Legs */}
+          {[-0.2, 0.2].map((lx) => (
+            <mesh key={`leg-${lx}`} position={[lx, 0.11, 0]} material={materials.brass}>
+              <cylinderGeometry args={[0.012, 0.008, 0.22, 12]} />
+            </mesh>
+          ))}
+          {/* Interactive Tablet on Coffee Table */}
+          <mesh position={[0, 0.245, 0]} material={materials.telemetryDisplay}>
+            <boxGeometry args={[0.20, 0.008, 0.14]} />
+          </mesh>
+          {/* Espresso Cup */}
+          <mesh position={[0.12, 0.25, 0.06]} material={materials.plantPot}>
+            <cylinderGeometry args={[0.026, 0.020, 0.042, 12]} />
           </mesh>
         </group>
 
-        {/* Live bots in lounge */}
-        <group position={[-0.2, 0.26, 0]}>
+        {/* Architectural Ficus Botanical Plant */}
+        <group position={[width * 0.15, 0, -depth * 0.14]}>
+          <mesh position={[0, 0.20, 0]} material={materials.plantPot} castShadow>
+            <cylinderGeometry args={[0.18, 0.13, 0.38, 20]} />
+          </mesh>
+          {/* Lush Greenery Canopy */}
+          <mesh position={[0, 0.48, 0]} material={materials.plantLeaf} castShadow>
+            <sphereGeometry args={[0.26, 12, 12]} />
+          </mesh>
+          <mesh position={[0.06, 0.65, 0.04]} material={materials.plantLeaf}>
+            <sphereGeometry args={[0.18, 10, 10]} />
+          </mesh>
+        </group>
+
+        {/* Warm Ambient Lounge Point Light */}
+        <pointLight position={[-0.15, 1.2, 0.4]} color="#fef3c7" intensity={1.4} distance={3.8} />
+
+        {/* Live Bots seated in lounge */}
+        <group position={[-0.15, 0.26, 0]}>
           <AgentBots bots={loungeAgents} small />
         </group>
+
+        {/* Interactive Hover Cue for Lounge */}
+        {hoveredObjectId === loungeObj.id && (
+          <mesh position={[-0.15, 1.1, 0.2]} material={materials.ledAmber}>
+            <boxGeometry args={[2.2, 0.2, 0.02]} />
+          </mesh>
+        )}
       </group>
 
       {/* ── ZONE 5: Elevator Core ── */}

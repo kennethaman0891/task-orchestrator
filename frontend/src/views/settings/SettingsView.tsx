@@ -225,6 +225,7 @@ export function SettingsView({
     customConfig,
     setCustomConfig,
     resetCustomConfig,
+    systemMode,
   } = useTheme();
 
   // Theme category filter & custom studio state
@@ -1633,9 +1634,31 @@ Generated: ${new Date().toISOString()}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                           <div>
-                            <span style={{ fontSize: '13px', fontWeight: 600, color: t.colors.text.primary, display: 'block' }}>
-                              {th.label}
-                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span style={{ fontSize: '13px', fontWeight: 600, color: t.colors.text.primary, display: 'block' }}>
+                                {th.label}
+                              </span>
+                              {th.isAutoSystem && (
+                                <span
+                                  style={{
+                                    fontSize: '9px',
+                                    fontWeight: 700,
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.4px',
+                                    padding: '1px 5px',
+                                    borderRadius: '4px',
+                                    background: isCurrent ? t.colors.accent.primary : t.colors.accent.light,
+                                    color: isCurrent ? t.colors.text.inverse : t.colors.accent.primary,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                  }}
+                                >
+                                  <Terminal size={9} />
+                                  Auto
+                                </span>
+                              )}
+                            </div>
                             <span
                               style={{
                                 fontSize: '10px',
@@ -1645,8 +1668,24 @@ Generated: ${new Date().toISOString()}
                                 display: 'inline-block',
                               }}
                             >
-                              {th.category || 'Theme'} • {th.mode || 'dark'}
+                              {th.isAutoSystem
+                                ? `System Default • ${systemMode || th.mode || 'dark'} (Tracks OS)`
+                                : `${th.category || 'Theme'} • ${th.mode || 'dark'}`}
                             </span>
+                            {th.isAutoSystem && (
+                              <span
+                                style={{
+                                  fontSize: '10px',
+                                  color: t.colors.text.secondary,
+                                  marginTop: '4px',
+                                  display: 'block',
+                                  lineHeight: '1.3',
+                                  opacity: 0.85,
+                                }}
+                              >
+                                Auto-selects OS scheme & terminal default backgrounds
+                              </span>
+                            )}
                           </div>
                           {isCurrent && (
                             <div

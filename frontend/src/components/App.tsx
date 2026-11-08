@@ -69,7 +69,7 @@ export default function App() {
   const { theme: t } = useTheme();
 
   // ── Sidecar data (tasks, tokens, opencode status) ──
-  const { terminals: sidecarTerminals, tokenUsage: sidecarTokenUsage } = useTerminals();
+  const { terminals: sidecarTerminals, tokenUsage: sidecarTokenUsage, connected: sidecarConnected } = useTerminals();
 
   const [workspaces, setWorkspaces] = useState<Workspace[]>(() => loadWorkspaces());
   const [activeWsId, setActiveWsId] = useState<string>(() => loadActiveWsId());
@@ -1492,6 +1492,7 @@ export default function App() {
               workspaces={visibleWorkspaces}
               terminals={unifiedTerminals}
               activeId={activeWsId}
+              sidecarConnected={sidecarConnected}
               onToast={showToast}
             />
           )}

@@ -12,6 +12,7 @@ interface Props {
   workspaces: Workspace[];
   terminals?: Record<string, UnifiedTerminal>;
   activeId?: string;
+  sidecarConnected?: boolean;
   onToast: (msg: string, error?: boolean) => void;
 }
 
@@ -20,6 +21,7 @@ export function AgentView({
   workspaces,
   terminals = {},
   activeId,
+  sidecarConnected,
   onToast,
 }: Props) {
   return (
@@ -28,6 +30,7 @@ export function AgentView({
       workspaces={workspaces}
       terminals={terminals}
       activeId={activeId}
+      sidecarConnected={sidecarConnected}
       onToast={onToast}
     />
   );

@@ -22,7 +22,9 @@ class PlannedSubtask(BaseModel):
     command: str = Field(..., description="Exact command or prompt to send to the terminal")
     cwd: Optional[str] = Field(default=None, description="Working directory for this task")
     reasoning: str = Field(default="", description="Why this subtask is assigned to this terminal")
-    status: str = Field(default="pending", description="pending | queued | running | done | failed")
+    cli: str = Field(default="", description="CLI detected on this pane. Session id stays target_tty.")
+    error: str = Field(default="", description="Why a send failed. Empty after a successful send.")
+    status: str = Field(default="pending", description="pending | queued | running | sent | done | failed")
 
 
 class PrimeOrchestrationPlan(BaseModel):
@@ -89,37 +91,40 @@ def _roster_ids(terminals: Optional[List[Dict[str, Any]]]) -> List[str]:
     return roster
 
 
-def _fallback_subtask(
-    plan_id: str,
-    user_prompt: str,
-    terminals: Optional[List[Dict[str, Any]]],
-    workspace: Optional[Dict[str, Any]],
-) -> Optional[PlannedSubtask]:
-    if not terminals:
-        return None
-    first = terminals[0]
-    tty = (first.get("tty") or first.get("id") or "").strip()
-    if not tty:
-        return None
-    return PlannedSubtask(
-        id=f"{plan_id}-1",
-        title="Run requested task",
-        target_tty=tty,
-        target_label=first.get("label") or tty,
-        target_workspace=(workspace.get("name") if workspace else "") or "",
-        action_type="shell_command",
-        command=user_prompt,
-        reasoning="Single-task direct execution",
-    )
+AGENT_CLIS = {
+    "claude", "codex", "opencode", "gemini", "cursor", "qwen",
+    "antigravity", "grok", "aider", "prime", "prime-agent",
+}
+SHELL_CLIS = {"shell", "zsh", "bash", "sh", "fish"}
+NON_PROMPT_CLIS = {"vim", "nvim", "htop", "top", "btop", "tmux"}
+
+
+def action_for_cli(cli: str) -> str:
+    """Agent panes get a natural-language prompt. A known shell gets a command."""
+    name = (cli or "").strip().lower()
+    if name in SHELL_CLIS:
+        return "shell_command"
+    if name in AGENT_CLIS or name.startswith("claude"):
+        return "agent_prompt"
+    return "agent_prompt"
 
 
 class PrimeIntelligenceEngine:
     def __init__(self, ollama_engine: Optional[OllamaEngine] = None):
         self.ollama = ollama_engine or OllamaEngine()
 
-    def assemble_system_prompt(self, workspace_context: str, terminals_context: str) -> str:
+    def assemble_system_prompt(
+        self,
+        workspace_context: str,
+        terminals_context: str,
+        observer: str = "",
+        memory: str = "",
+    ) -> str:
         """Compose the full layered Prime-Agent system prompt."""
+        observed = f"\n## SELECTED MODEL\n{observer}\n" if observer else ""
+        remembered = f"\n## PRIOR OUTCOMES\n{memory}\n" if memory else ""
         return f"""{PRIME_CORE_LAYER}
+{observed}{remembered}
 
 {PRIME_USAGE_LAYER}
 
@@ -156,6 +161,10 @@ Respond with a single JSON object. No conversational filler. Use this exact sche
         terminals: Optional[List[Dict[str, Any]]] = None,
         model: Optional[str] = None,
         strategy: str = "fastest",
+        runtime: str = "ollama",
+        runtime_url: str = "",
+        hardware_summary: str = "",
+        memory_text: str = "",
     ) -> PrimeOrchestrationPlan:
         """Analyze user prompt and orchestrate tasks using the selected Qwen model."""
         import time
@@ -228,31 +237,47 @@ Respond with a single JSON object. No conversational filler. Use this exact sche
         else:
             terms_info = "No live terminals open in this workspace."
 
-        # 4. Assemble system prompt
-        system_prompt = self.assemble_system_prompt(ws_info, terms_info)
+        # 4. Assemble system prompt. The model sees its own name, the runtime, and prior runs.
+        observer = (
+            f"Runtime: {runtime or 'ollama'}\n"
+            f"Model: {selected_model}\n"
+            f"Hardware: {hardware_summary or 'unavailable'}\n"
+            "Use the CLI field on each roster row. Do not treat an agent CLI as a shell."
+        )
+        system_prompt = self.assemble_system_prompt(
+            ws_info, terms_info, observer=observer, memory=memory_text or "",
+        )
         user_message = f"User Request: {user_prompt.strip()}"
 
-        # 5. Call Qwen Model via Ollama
+        # 5. Call the model the user selected. A failure is a failed plan, not a pasted command.
         try:
-            response = self.ollama.generate_chat(
-                model=selected_model,
-                system_prompt=system_prompt,
-                user_prompt=user_message,
-                temperature=0.1,
-                max_tokens=3000,
-            )
+            if (runtime or "ollama") != "ollama":
+                from .local_runtimes import chat_completions
+                response = chat_completions(
+                    runtime_url,
+                    selected_model,
+                    system_prompt,
+                    user_message,
+                )
+            else:
+                response = self.ollama.generate_chat(
+                    model=selected_model,
+                    system_prompt=system_prompt,
+                    user_prompt=user_message,
+                    temperature=0.1,
+                    max_tokens=3000,
+                )
             raw_text = response.get("content", "")
             native_thinking = response.get("thinking", "")
         except Exception as exc:
-            fallback = _fallback_subtask(plan_id, user_prompt, terminals, workspace)
             return PrimeOrchestrationPlan(
                 plan_id=plan_id,
                 user_goal=user_prompt,
                 selected_model=selected_model,
-                thinking_process=f"Error contacting local model: {exc}. Generated safe deterministic fallback.",
-                subtasks=[fallback] if fallback else [],
+                thinking_process=f"The selected model did not answer: {exc}",
+                subtasks=[],
                 allowed_ttys=roster,
-                status="planned",
+                status="failed",
                 created_at=time.time(),
             )
 
@@ -261,49 +286,66 @@ Respond with a single JSON object. No conversational filler. Use this exact sche
         
         extracted_thinking = parsed.get("thinking") or native_thinking or "Deconstructed task across active workspace."
         raw_subtasks = parsed.get("subtasks", [])
+        if not isinstance(raw_subtasks, list):
+            raw_subtasks = []
 
-        # Build PlannedSubtasks
+        roster_by_tty = {}
+        for term in terminals or []:
+            tty = (term.get("tty") or term.get("id") or "").strip()
+            if tty:
+                roster_by_tty[tty] = term
+
+        # Build PlannedSubtasks. An empty or foreign tty is dropped, not reassigned.
         subtasks: List[PlannedSubtask] = []
         for i, item in enumerate(raw_subtasks):
+            if not isinstance(item, dict):
+                continue
             sub_id = f"{plan_id}-{i+1}"
             title = item.get("title") or f"Subtask {i+1}"
-            target_tty = item.get("target_tty", "")
+            target_tty = (item.get("target_tty") or "").strip()
             target_label = item.get("target_label", "")
             target_ws = item.get("target_workspace") or (workspace.get("name") if workspace else "")
-            action_type = item.get("action_type", "shell_command")
-            cmd = item.get("command", "").strip()
+            cmd = (item.get("command") or "").strip()
             reasoning = item.get("reasoning", "")
-
-            # Empty assignment stays inside the roster. Anything else is dropped.
-            if not target_tty and terminals:
-                assigned_term = terminals[i % len(terminals)]
-                target_tty = assigned_term.get("tty") or assigned_term.get("id") or ""
-                target_label = assigned_term.get("label") or target_tty
-            if target_tty and target_tty not in roster:
+            if not target_tty or target_tty not in roster or not cmd:
                 continue
-
-            if cmd:
-                subtasks.append(
-                    PlannedSubtask(
-                        id=sub_id,
-                        title=title,
-                        target_tty=target_tty,
-                        target_label=target_label,
-                        target_workspace=target_ws,
-                        action_type=action_type,
-                        command=cmd,
-                        cwd=ws_path,
-                        reasoning=reasoning,
-                        status="pending",
-                    )
+            term = roster_by_tty.get(target_tty) or {}
+            cli = (term.get("cli") or "unknown").strip() or "unknown"
+            if cli.lower() in NON_PROMPT_CLIS:
+                continue
+            if not target_label:
+                target_label = term.get("label") or target_tty
+            subtasks.append(
+                PlannedSubtask(
+                    id=sub_id,
+                    title=title,
+                    target_tty=target_tty,
+                    target_label=target_label,
+                    target_workspace=target_ws,
+                    action_type=action_for_cli(cli),
+                    command=cmd,
+                    cwd=ws_path,
+                    cli=cli,
+                    reasoning=reasoning,
+                    status="pending",
                 )
+            )
 
-        # A model that returned no subtasks at all gets one task on the first
-        # roster terminal. Subtasks aimed outside the roster stay dropped.
-        if not subtasks and not raw_subtasks:
-            fallback = _fallback_subtask(plan_id, user_prompt, terminals, workspace)
-            if fallback:
-                subtasks.append(fallback)
+        if not subtasks:
+            return PrimeOrchestrationPlan(
+                plan_id=plan_id,
+                user_goal=user_prompt,
+                selected_model=selected_model,
+                thinking_process=(
+                    extracted_thinking
+                    + " The reply had no subtask aimed at a checked pane in this workspace."
+                ),
+                system_profile_summary=f"Model: {selected_model}",
+                subtasks=[],
+                allowed_ttys=roster,
+                status="failed",
+                created_at=time.time(),
+            )
 
         return PrimeOrchestrationPlan(
             plan_id=plan_id,

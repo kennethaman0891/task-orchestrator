@@ -6,6 +6,8 @@ import {
   isLightTheme,
   DEFAULT_CUSTOM_THEME_CONFIG,
   buildCustomTheme,
+  buildSystemTerminalTheme,
+  getSystemMode,
   type Theme,
   type ThemeColors,
   type CustomThemeConfig,
@@ -17,6 +19,7 @@ export interface ThemeMeta {
   mode?: 'dark' | 'light';
   category?: 'professional' | 'creative' | 'light' | 'custom';
   colors: ThemeColors;
+  isAutoSystem?: boolean;
 }
 
 interface ThemeContextValue {
@@ -28,6 +31,7 @@ interface ThemeContextValue {
   setCustomConfig: (update: Partial<CustomThemeConfig> | ((prev: CustomThemeConfig) => CustomThemeConfig)) => void;
   resetCustomConfig: () => void;
   isLight: boolean;
+  systemMode: 'dark' | 'light';
 }
 
 const ThemeContext = createContext<ThemeContextValue>({
@@ -39,6 +43,7 @@ const ThemeContext = createContext<ThemeContextValue>({
   setCustomConfig: () => {},
   resetCustomConfig: () => {},
   isLight: false,
+  systemMode: 'dark',
 });
 
 const CUSTOM_CONFIG_KEY = 'tto-custom-theme-config';
@@ -86,7 +91,19 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     } catch {}
   }, []);
 
-  const theme = getThemeByName(themeName, customConfig);
+  const [systemMode, setSystemMode] = useState<'dark' | 'light'>(getSystemMode);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mql = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (e: MediaQueryListEvent) => {
+      setSystemMode(e.matches ? 'dark' : 'light');
+    };
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }, []);
+
+  const theme = getThemeByName(themeName, customConfig, systemMode);
   const isLight = isLightTheme(theme);
 
   // Synchronize CSS variables and root document attributes live
@@ -106,15 +123,28 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [theme, isLight]);
 
   const customBuiltTheme = buildCustomTheme(customConfig);
+  const currentSystemTheme = buildSystemTerminalTheme(systemMode);
 
   const availableThemes: ThemeMeta[] = [
-    ...ALL_THEMES.map((t) => ({
-      name: t.name,
-      label: t.label || t.name,
-      mode: t.mode || (isLightTheme(t) ? 'light' : 'dark'),
-      category: t.category || 'professional',
-      colors: t.colors,
-    })),
+    ...ALL_THEMES.map((t) => {
+      if (t.name === 'System Terminal') {
+        return {
+          name: t.name,
+          label: 'System Terminal (Auto)',
+          mode: systemMode,
+          category: 'professional' as const,
+          colors: currentSystemTheme.colors,
+          isAutoSystem: true,
+        };
+      }
+      return {
+        name: t.name,
+        label: t.label || t.name,
+        mode: t.mode || (isLightTheme(t) ? 'light' : 'dark'),
+        category: t.category || 'professional',
+        colors: t.colors,
+      };
+    }),
     {
       name: 'Custom',
       label: 'Custom Theme',
@@ -135,6 +165,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         setCustomConfig,
         resetCustomConfig,
         isLight,
+        systemMode,
       }}
     >
       {children}

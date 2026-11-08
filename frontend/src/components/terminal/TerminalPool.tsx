@@ -24,6 +24,35 @@ const ANCHOR_HOST_STYLE = 'position:absolute;left:0;top:0;width:100%;height:100%
  */
 function buildXtermTheme(t: import('@/lib/theme').Theme) {
   const isLight = isLightTheme(t);
+  const isSystemTerminal = t.name === 'System Terminal';
+
+  if (isSystemTerminal) {
+    return {
+      background: isLight ? '#ffffff' : '#000000',
+      foreground: isLight ? '#000000' : '#f5f5f7',
+      cursor: isLight ? '#000000' : '#00ff00',
+      selectionBackground: isLight ? 'rgba(0,122,255,0.25)' : 'rgba(0,122,255,0.35)',
+      // macOS / System Terminal ANSI 0–7 (standard)
+      black: '#000000',
+      red: '#c91b00',
+      green: '#00c200',
+      yellow: '#c7c400',
+      blue: '#0225c7',
+      magenta: '#c930c7',
+      cyan: '#00c5c7',
+      white: isLight ? '#202020' : '#c7c7c7',
+      // ANSI 8–15 (bright)
+      brightBlack: '#686868',
+      brightRed: '#ff6d67',
+      brightGreen: '#5ff967',
+      brightYellow: '#fefb67',
+      brightBlue: '#6871ff',
+      brightMagenta: '#ff76ff',
+      brightCyan: '#5ffdff',
+      brightWhite: '#ffffff',
+    };
+  }
+
   return {
     background: t.colors.bg.primary,
     foreground: t.colors.text.primary,

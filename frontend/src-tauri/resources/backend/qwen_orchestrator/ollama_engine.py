@@ -3,16 +3,45 @@ Connects to local Ollama, discovers Qwen models, measures generation speeds (tok
 and manages local LLM inference.
 """
 
+import errno
+import http.client
 import json
 import os
 import re
+import socket
+import threading
 import time
+import urllib.parse
 import urllib.request
 import urllib.error
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from pydantic import BaseModel, Field
 
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+
+
+def configured_ollama_url() -> str:
+    """Read OLLAMA_URL at call time. Default is IPv4 loopback, not the name localhost."""
+    raw = (os.environ.get("OLLAMA_URL") or DEFAULT_OLLAMA_URL).strip()
+    return (raw or DEFAULT_OLLAMA_URL).rstrip("/")
+
+
+def candidate_origins(base_url: str) -> List[str]:
+    """Dial addresses for one configured URL. localhost tries 127.0.0.1, then ::1."""
+    text = base_url if "://" in (base_url or "") else f"http://{base_url}"
+    parsed = urllib.parse.urlparse(text)
+    host = (parsed.hostname or "127.0.0.1").lower()
+    scheme = parsed.scheme or "http"
+    port = parsed.port or (443 if scheme == "https" else 11434)
+    if host == "localhost":
+        return [f"{scheme}://127.0.0.1:{port}", f"{scheme}://[::1]:{port}"]
+    if ":" in host:
+        return [f"{scheme}://[{host}]:{port}"]
+    return [f"{scheme}://{host}:{port}"]
+
+
+def _no_proxy_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 _PARAM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*b\b", re.IGNORECASE)
 
@@ -64,38 +93,151 @@ class QwenModelBenchmark(BaseModel):
     status: str = "ready"  # ready | benchmarked | failed
 
 
+class OllamaProbe(BaseModel):
+    ok: bool
+    version: str = "unavailable"
+    reason: str = "refused"  # ok | refused | timeout | http
+    error: Optional[str] = None
+    url: str = ""
+
+
+def _failure_kind(exc: BaseException) -> str:
+    """Map a socket error onto refused or timeout. Reset is retried like a timeout."""
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "timeout"
+    if isinstance(exc, ConnectionResetError):
+        return "timeout"
+    err_no = getattr(exc, "errno", None)
+    if err_no in (errno.ETIMEDOUT, errno.EAGAIN, errno.ECONNRESET, errno.EPIPE):
+        return "timeout"
+    return "refused"
+
+
+def loopback_http(
+    origin: str,
+    path: str,
+    *,
+    method: str = "GET",
+    body: Optional[bytes] = None,
+    connect_timeout: float = 0.4,
+    read_timeout: float = 5.0,
+    max_bytes: int = 256 * 1024,
+) -> Tuple[int, bytes]:
+    """One HTTP call on an already-resolved loopback origin. No proxy, no redirect."""
+    parsed = urllib.parse.urlparse(origin)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    sock = socket.create_connection((host, port), timeout=connect_timeout)
+    sock.settimeout(read_timeout)
+    conn: http.client.HTTPConnection
+    if parsed.scheme == "https":
+        import ssl
+        ctx = ssl.create_default_context()
+        sock = ctx.wrap_socket(sock, server_hostname=host)
+        conn = http.client.HTTPSConnection(host, port, timeout=read_timeout, context=ctx)
+    else:
+        conn = http.client.HTTPConnection(host, port, timeout=read_timeout)
+    conn.sock = sock
+    try:
+        headers = {"Accept": "application/json", "Connection": "close"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        conn.request(method, path, body=body, headers=headers)
+        resp = conn.getresponse()
+        payload = resp.read(max_bytes)
+        return resp.status, payload
+    finally:
+        conn.close()
+
+
 class OllamaEngine:
-    def __init__(self, base_url: str = OLLAMA_BASE_URL):
-        self.base_url = base_url
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        connect_timeout: float = 0.4,
+        read_timeout: float = 5.0,
+    ):
+        self._explicit_base = base_url.rstrip("/") if base_url else None
+        self.connect_timeout = connect_timeout
+        self.read_timeout = read_timeout
+        self.base_url = candidate_origins(self._explicit_base or configured_ollama_url())[0]
         self._cached_benchmarks: Dict[str, QwenModelBenchmark] = {}
+        self._cache_lock = threading.Lock()
+        self.last_inventory_error: Optional[str] = None
+        self.last_probe: Optional[OllamaProbe] = None
+
+    def _origins(self) -> List[str]:
+        return candidate_origins(self._explicit_base or configured_ollama_url())
+
+    def _get_version_once(self, origin: str) -> OllamaProbe:
+        try:
+            status, payload = loopback_http(
+                origin,
+                "/api/version",
+                connect_timeout=self.connect_timeout,
+                read_timeout=self.read_timeout,
+            )
+        except Exception as exc:
+            kind = _failure_kind(exc)
+            print(f"[OllamaEngine] version {kind} at {origin}: {exc}", flush=True)
+            return OllamaProbe(ok=False, reason=kind, error=f"{type(exc).__name__}: {exc}", url=origin)
+        if status != 200:
+            print(f"[OllamaEngine] version HTTP {status} at {origin}", flush=True)
+            return OllamaProbe(ok=False, reason="http", error=f"HTTP {status}", url=origin)
+        try:
+            data = json.loads(payload.decode() or "{}")
+        except Exception as exc:
+            return OllamaProbe(ok=False, reason="http", error=f"bad version json: {exc}", url=origin)
+        version = str(data.get("version") or "unknown")
+        return OllamaProbe(ok=True, version=version, reason="ok", error=None, url=origin)
+
+    def probe(self) -> OllamaProbe:
+        """One liveness result. Retries a timeout once. Does not retry connection refused."""
+        origins = self._origins()
+        failures: List[OllamaProbe] = []
+        for origin in origins:
+            result = self._get_version_once(origin)
+            if not result.ok and result.reason == "timeout":
+                result = self._get_version_once(origin)
+            if result.ok:
+                self.base_url = origin
+                self.last_probe = result
+                return result
+            failures.append(result)
+            if result.reason == "refused":
+                continue
+        chosen = next((item for item in failures if item.reason != "refused"), failures[0] if failures else None)
+        if chosen is None:
+            chosen = OllamaProbe(ok=False, reason="refused", error="no dial address", url=self.base_url)
+        self.base_url = origins[0] if origins else self.base_url
+        self.last_probe = chosen
+        return chosen
 
     def is_available(self) -> bool:
-        """Check if local Ollama daemon is active and responding."""
-        try:
-            req = urllib.request.Request(f"{self.base_url}/api/version", method="GET")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                return resp.status == 200
-        except Exception:
-            return False
+        """True only when a completed version probe returned HTTP 200."""
+        return self.probe().ok
 
     def get_version(self) -> str:
-        """Get Ollama version string."""
-        try:
-            req = urllib.request.Request(f"{self.base_url}/api/version", method="GET")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                data = json.loads(resp.read().decode())
-                return data.get("version", "unknown")
-        except Exception:
-            return "unavailable"
+        """Ollama version string from one probe. Unavailable when the probe misses."""
+        result = self.probe()
+        return result.version if result.ok else "unavailable"
 
     def list_models(self) -> List[Dict[str, Any]]:
-        """List all installed models from local Ollama."""
+        """List installed models. A failure is recorded on last_inventory_error and returns []."""
         try:
-            req = urllib.request.Request(f"{self.base_url}/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                data = json.loads(resp.read().decode())
-                return data.get("models", [])
+            status, payload = loopback_http(
+                self.base_url,
+                "/api/tags",
+                connect_timeout=self.connect_timeout,
+                read_timeout=max(self.read_timeout, 4.0),
+            )
+            if status != 200:
+                raise RuntimeError(f"HTTP {status}")
+            data = json.loads(payload.decode() or "{}")
+            self.last_inventory_error = None
+            return data.get("models", [])
         except Exception as exc:
+            self.last_inventory_error = f"{type(exc).__name__}: {exc}"
             print(f"[OllamaEngine] list_models failed: {exc}", flush=True)
             return []
 
@@ -112,7 +254,8 @@ class OllamaEngine:
             caps = raw.get("capabilities") or []
             has_thinking = "thinking" in caps or "agentic" in name_lower or "thinking" in name_lower
             size_b = int(raw.get("size") or 0)
-            cached = self._cached_benchmarks.get(name)
+            with self._cache_lock:
+                cached = self._cached_benchmarks.get(name)
             if cached:
                 bench = cached
                 bench.size_bytes = size_b or bench.size_bytes
@@ -166,7 +309,7 @@ class OllamaEngine:
                 method="POST"
             )
             t0 = time.time()
-            with urllib.request.urlopen(req, timeout=35) as resp:
+            with _no_proxy_opener().open(req, timeout=35) as resp:
                 elapsed_client_ms = (time.time() - t0) * 1000
                 res_data = json.loads(resp.read().decode())
 
@@ -207,7 +350,8 @@ class OllamaEngine:
                 has_thinking=has_thinking,
                 status="benchmarked",
             )
-            self._cached_benchmarks[model_name] = bench
+            with self._cache_lock:
+                self._cached_benchmarks[model_name] = bench
             return bench
 
         except Exception as exc:
@@ -338,7 +482,7 @@ class OllamaEngine:
 
         t0 = time.time()
         try:
-            with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+            with _no_proxy_opener().open(req, timeout=timeout_seconds) as resp:
                 elapsed_ms = (time.time() - t0) * 1000
                 data = json.loads(resp.read().decode())
         except urllib.error.HTTPError as err:
@@ -362,3 +506,37 @@ class OllamaEngine:
             "eval_tok_per_sec": eval_tok_per_sec,
             "duration_ms": round(elapsed_ms, 1),
         }
+
+
+def ollama_profile_section(engine: OllamaEngine) -> Dict[str, Any]:
+    """One probe, then inventory only when that probe is up.
+
+    A down daemon does not call get_installed_models. A tags failure after a
+    live probe keeps available true and records models_status failed.
+    """
+    probe = engine.probe()
+    models: List[QwenModelBenchmark] = []
+    inventory_error = None
+    models_status = "skipped"
+    if probe.ok:
+        models = engine.get_installed_models()
+        inventory_error = engine.last_inventory_error
+        if inventory_error:
+            models_status = "failed"
+            models = []
+        elif not models:
+            models_status = "empty"
+        else:
+            models_status = "listed"
+    return {
+        "ollama": {
+            "available": probe.ok,
+            "version": probe.version if probe.ok else "unavailable",
+            "url": probe.url or engine.base_url,
+            "reason": probe.reason,
+            "error": probe.error,
+        },
+        "models": models,
+        "models_status": models_status,
+        "inventory_error": inventory_error,
+    }

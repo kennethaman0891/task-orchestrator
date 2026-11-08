@@ -29,7 +29,6 @@ import { useCityStore } from '@/city/store';
 import { floorName } from '@/city/scene/Interior';
 import { interiorTarget, buildingFocusTarget } from '@/city/scene/CameraRig';
 import { fittedArchetype } from '@/city/scene/plotFit';
-import { plotWorldPosition } from '@/city/scene/CityGrid';
 import type { AgentBot, Project, FloorPlanFloor } from '@/city/types';
 import { useProjectFloorPlan, generateFallbackFloorPlan } from '@/city/utils/projectScanner';
 
@@ -50,9 +49,11 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
   const setInteriorViewMode = useCityStore((s) => s.setInteriorViewMode);
 
   const [activePreset, setActivePreset] = useState<'overview' | 'walkin' | 'desks' | 'servers' | 'blueprint' | 'lounge' | 'topdown'>('overview');
-  const [yaw, setYaw] = useState<number>(0);
-  const [zoomFactor, setZoomFactor] = useState<number>(1.0);
   const [showAgents, setShowAgents] = useState<boolean>(false);
+  const [showFloorPicker, setShowFloorPicker] = useState<boolean>(false);
+  const turntable = useCityStore((s) => s.turntable);
+  const setTurntable = useCityStore((s) => s.setTurntable);
+  const toggleTurntable = useCityStore((s) => s.toggleTurntable);
   const memoryOpen = useCityStore((s) => s.memoryOpen);
   const memoryFloor = useCityStore((s) => s.memoryFloor);
   const openMemory = useCityStore((s) => s.openMemory);
@@ -98,8 +99,6 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
   const flyToFloor = (i: number, preset: 'overview' | 'walkin' | 'desks' | 'servers' | 'blueprint' | 'lounge' | 'topdown' = activePreset) => {
     goInterior(p.id, i, nav.room);
     setActivePreset(preset);
-    setYaw(0);
-    setZoomFactor(1.0);
     setCameraTarget(
       interiorTarget(p.plot, i, fitted.floorH, fitted.depth, preset),
     );
@@ -107,8 +106,6 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
 
   const setViewPreset = (preset: 'overview' | 'walkin' | 'desks' | 'servers' | 'blueprint' | 'lounge' | 'topdown') => {
     setActivePreset(preset);
-    setYaw(0);
-    setZoomFactor(1.0);
     if (preset === 'walkin') {
       setInteriorViewMode('walk-in');
     } else {
@@ -129,57 +126,18 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
     }
   };
 
-  // Interactive 3D step rotation around floor
+  // Interactive 3D step rotation around floor (dispatched directly to CameraRig for zero-conflict orbit)
   const rotateCamera = (deltaRad: number) => {
-    const nextYaw = yaw + deltaRad;
-    setYaw(nextYaw);
-
-    const c = plotWorldPosition(p.plot);
-    const fy = nav.floorIndex * fitted.floorH + 0.3;
-    const baseDist = (activePreset === 'overview' ? 6.4 : 4.6) * zoomFactor;
-    const height = (activePreset === 'overview' ? 4.4 : 2.2) * zoomFactor;
-
-    const x = c[0] + Math.sin(nextYaw) * baseDist;
-    const z = c[2] + Math.cos(nextYaw) * baseDist;
-    const y = fy + height;
-
-    setCameraTarget({
-      x,
-      y,
-      z,
-      lookX: c[0],
-      lookY: fy + 0.8,
-      lookZ: c[2],
-    });
+    window.dispatchEvent(new CustomEvent('tto-camera-rotate', { detail: { deltaRad } }));
   };
 
-  // Interactive 3D step zoom
+  // Interactive 3D step zoom (dispatched directly to CameraRig)
   const zoomCamera = (factorDelta: number) => {
-    const nextZoom = Math.min(1.8, Math.max(0.6, zoomFactor * factorDelta));
-    setZoomFactor(nextZoom);
-
-    const c = plotWorldPosition(p.plot);
-    const fy = nav.floorIndex * fitted.floorH + 0.3;
-    const baseDist = (activePreset === 'overview' ? 6.4 : 4.6) * nextZoom;
-    const height = (activePreset === 'overview' ? 4.4 : 2.2) * nextZoom;
-
-    const x = c[0] + Math.sin(yaw) * baseDist;
-    const z = c[2] + Math.cos(yaw) * baseDist;
-    const y = fy + height;
-
-    setCameraTarget({
-      x,
-      y,
-      z,
-      lookX: c[0],
-      lookY: fy + 0.8,
-      lookZ: c[2],
-    });
+    window.dispatchEvent(new CustomEvent('tto-camera-zoom', { detail: { factor: factorDelta } }));
   };
 
   const resetCamera = () => {
-    setYaw(0);
-    setZoomFactor(1.0);
+    setTurntable(false);
     setInteriorViewMode('dollhouse');
     setViewPreset('overview');
   };
@@ -506,11 +464,11 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
         </div>
       )}
 
-      {/* ── 3. Bottom Multi-Floor Elevator & Real 3D Inside-the-Room Controls ── */}
+      {/* ── 3. Bottom Responsive Island Dock Architecture (Zero-Clipping Guaranteed) ── */}
       <div
         style={{
           position: 'absolute',
-          bottom: 16,
+          bottom: 14,
           left: '50%',
           transform: 'translateX(-50%)',
           zIndex: 28,
@@ -518,13 +476,16 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
           flexDirection: 'column',
           alignItems: 'center',
           gap: 8,
-          maxWidth: 'min(980px, calc(100% - 32px))',
+          width: 'calc(100% - 24px)',
+          maxWidth: 1100,
+          pointerEvents: 'none',
         }}
       >
         {/* Floating Hint for First-Person Walk-In Mode */}
         {interiorViewMode === 'walk-in' && (
           <div
             style={{
+              pointerEvents: 'auto',
               background: 'rgba(15, 23, 42, 0.95)',
               border: '1px solid #38bdf8',
               borderRadius: 20,
@@ -544,28 +505,88 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
           </div>
         )}
 
+        {/* Floating Floor Picker Shaft Popover (opens when clicking elevator badge) */}
+        {showFloorPicker && (
+          <div
+            style={{
+              pointerEvents: 'auto',
+              background: 'rgba(9, 13, 22, 0.96)',
+              border: '1px solid rgba(255, 255, 255, 0.16)',
+              borderRadius: 14,
+              padding: '8px',
+              boxShadow: '0 20px 48px rgba(0, 0, 0, 0.85)',
+              backdropFilter: 'blur(24px)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              minWidth: 230,
+              marginBottom: 4,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', fontSize: 10, fontWeight: 700, color: 'rgba(232, 237, 245, 0.45)', letterSpacing: 1 }}>
+              <span>SELECT FLOOR SHAFT</span>
+              <button
+                type="button"
+                onClick={() => setShowFloorPicker(false)}
+                style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: 2 }}
+              >
+                <X size={12} />
+              </button>
+            </div>
+            {Array.from({ length: floorCount }, (_, i) => {
+              const isActive = nav.floorIndex === i;
+              const fPlan = floorPlan?.floors?.[i];
+              const fName = fPlan?.name || floorName(p, i);
+              const fCat = fPlan?.category || 'custom';
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => {
+                    flyToFloor(i);
+                    setShowFloorPicker(false);
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '6px 10px',
+                    borderRadius: 8,
+                    border: isActive ? '1px solid #60a5fa' : '1px solid transparent',
+                    background: isActive ? 'rgba(59, 130, 246, 0.25)' : 'rgba(255, 255, 255, 0.04)',
+                    color: isActive ? '#93c5fd' : '#e2e8f0',
+                    fontSize: 12,
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    transition: 'all 0.12s ease',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontWeight: 700, minWidth: 16, color: isActive ? '#38bdf8' : '#94a3b8' }}>
+                      {i + 1}
+                    </span>
+                    <span style={{ fontWeight: isActive ? 600 : 500 }}>{fName}</span>
+                  </div>
+                  <span style={{ fontSize: 9, textTransform: 'uppercase', color: '#64748b' }}>{fCat}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* 3 Autonomous Floating Islands */}
         <div
           style={{
             display: 'flex',
+            flexWrap: 'wrap',
             alignItems: 'center',
-            gap: 14,
-            background: 'rgba(9, 13, 22, 0.95)',
-            border: '1px solid rgba(255, 255, 255, 0.14)',
-            borderRadius: 16,
-            padding: '8px 16px',
-            boxShadow: '0 20px 48px rgba(0, 0, 0, 0.75)',
-            backdropFilter: 'blur(24px)',
-            color: '#e8edf5',
-            fontFamily: 'system-ui, sans-serif',
-            overflowX: 'auto',
+            justifyContent: 'center',
+            gap: 8,
+            width: '100%',
           }}
         >
-          {/* Elevator Floor Stepper */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 10, fontWeight: 700, color: 'rgba(232, 237, 245, 0.45)', letterSpacing: 1 }}>
-              ELEVATOR
-            </span>
-
+          {/* ── ISLAND 1: Compact Elevator Stepper & Memory ── */}
+          <div style={islandBaseStyle}>
             <button
               type="button"
               onClick={() => flyToFloor(Math.max(0, nav.floorIndex - 1))}
@@ -576,36 +597,28 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
               <ChevronDown size={14} />
             </button>
 
-            {Array.from({ length: floorCount }, (_, i) => {
-              const isActive = nav.floorIndex === i;
-              const fName = floorPlan?.floors?.[i]?.name || floorName(p, i);
-              return (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => flyToFloor(i)}
-                  title={fName}
-                  style={{
-                    minWidth: 28,
-                    height: 28,
-                    borderRadius: 8,
-                    border: isActive ? '1px solid #60a5fa' : '1px solid rgba(255, 255, 255, 0.1)',
-                    background: isActive ? '#3b82f6' : 'rgba(255, 255, 255, 0.05)',
-                    color: isActive ? '#fff' : '#cbd5e1',
-                    fontSize: 12,
-                    fontWeight: isActive ? 700 : 500,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    boxShadow: isActive ? '0 0 12px rgba(59, 130, 246, 0.55)' : 'none',
-                    transition: 'all 0.15s ease',
-                  }}
-                >
-                  {i + 1}
-                </button>
-              );
-            })}
+            {/* Compact Floor Picker Trigger */}
+            <button
+              type="button"
+              onClick={() => setShowFloorPicker(!showFloorPicker)}
+              title="Click to jump to any floor"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '4px 10px',
+                borderRadius: 8,
+                background: 'rgba(59, 130, 246, 0.18)',
+                border: '1px solid rgba(59, 130, 246, 0.45)',
+                color: '#93c5fd',
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              <Layers size={13} color="#60a5fa" />
+              <span>Floor {nav.floorIndex + 1} / {floorCount}</span>
+            </button>
 
             <button
               type="button"
@@ -616,37 +629,35 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
             >
               <ChevronUp size={14} />
             </button>
+
+            <div style={{ width: 1, height: 18, background: 'rgba(255, 255, 255, 0.12)', margin: '0 2px' }} />
+
+            <button
+              type="button"
+              onClick={() => openMemory(p.id, nav.floorIndex)}
+              title="Episodes from the last 30 days on this floor"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+                height: 28,
+                padding: '0 8px',
+                borderRadius: 8,
+                border: memoryOpen ? '1px solid #60a5fa' : '1px solid rgba(255, 255, 255, 0.12)',
+                background: memoryOpen ? 'rgba(59, 130, 246, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                color: '#e8edf5',
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              <History size={13} />
+              <span>Memory</span>
+            </button>
           </div>
 
-          <div style={{ width: 1, height: 22, background: 'rgba(255, 255, 255, 0.12)' }} />
-
-          <button
-            type="button"
-            onClick={() => openMemory(p.id, nav.floorIndex)}
-            title="Episodes from the last 30 days on this floor"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              height: 28,
-              padding: '0 10px',
-              borderRadius: 8,
-              border: memoryOpen ? '1px solid #60a5fa' : '1px solid rgba(255, 255, 255, 0.12)',
-              background: memoryOpen ? 'rgba(59, 130, 246, 0.25)' : 'rgba(255, 255, 255, 0.06)',
-              color: '#e8edf5',
-              fontSize: 11,
-              fontWeight: 700,
-              cursor: 'pointer',
-            }}
-          >
-            <History size={13} />
-            Memory
-          </button>
-
-          <div style={{ width: 1, height: 22, background: 'rgba(255, 255, 255, 0.12)' }} />
-
-          {/* 3D View Mode: Overview vs Walk Inside */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {/* ── ISLAND 2: Viewport Mode & Zone Presets ── */}
+          <div style={islandBaseStyle}>
             <button
               type="button"
               onClick={toggleWalkInMode}
@@ -657,7 +668,7 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
                 background: interiorViewMode === 'walk-in' ? '#0284c7' : 'rgba(56, 189, 248, 0.12)',
                 border: interiorViewMode === 'walk-in' ? '1px solid #38bdf8' : '1px solid rgba(56, 189, 248, 0.35)',
                 borderRadius: 8,
-                padding: '5px 12px',
+                padding: '5px 10px',
                 color: interiorViewMode === 'walk-in' ? '#ffffff' : '#38bdf8',
                 fontSize: 11,
                 fontWeight: 700,
@@ -665,17 +676,14 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
                 transition: 'all 0.18s ease',
                 boxShadow: interiorViewMode === 'walk-in' ? '0 0 14px rgba(56, 189, 248, 0.6)' : 'none',
               }}
-              title="Step INSIDE the room in 3D first-person mode (WASD + Mouse)"
+              title="Toggle First-Person Room Mode [V]"
             >
               <Compass size={14} />
-              <span>{interiorViewMode === 'walk-in' ? 'Inside Room (FPS)' : 'Walk Inside'}</span>
+              <span>{interiorViewMode === 'walk-in' ? 'Walk (FPS)' : 'Walk In'}</span>
             </button>
-          </div>
 
-          <div style={{ width: 1, height: 22, background: 'rgba(255, 255, 255, 0.12)' }} />
+            <div style={{ width: 1, height: 18, background: 'rgba(255, 255, 255, 0.12)', margin: '0 2px' }} />
 
-          {/* 3D Camera Waypoint Presets */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
             <button
               type="button"
               onClick={() => setViewPreset('overview')}
@@ -690,13 +698,12 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
               type="button"
               onClick={() => setViewPreset('desks')}
               style={presetBtn(activePreset === 'desks')}
-              title="Workstations & Monitors"
+              title="Workstations & Code Monitors"
             >
               <Monitor size={13} />
               <span>Workstations</span>
             </button>
 
-            {/* Dynamic Preset Button based on floor category */}
             {activePlanFloor?.category === 'docs' ? (
               <button
                 type="button"
@@ -712,7 +719,7 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
                 type="button"
                 onClick={() => setViewPreset('servers')}
                 style={presetBtn(activePreset === 'servers')}
-                title="Server & Cloud Pod"
+                title="Server & Cloud Infrastructure Pod"
               >
                 <Server size={13} />
                 <span>Server Pod</span>
@@ -723,7 +730,7 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
               type="button"
               onClick={() => setViewPreset('lounge')}
               style={presetBtn(activePreset === 'lounge')}
-              title="Breakout Lounge & Coffee Bar"
+              title="Breakout Strategy & Coffee Lounge"
             >
               <Coffee size={13} />
               <span>Lounge</span>
@@ -740,14 +747,12 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
             </button>
           </div>
 
-          <div style={{ width: 1, height: 22, background: 'rgba(255, 255, 255, 0.12)' }} />
-
-          {/* 3D Interactive Controls: Rotate Left/Right, Zoom In/Out, Reset */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          {/* ── ISLAND 3: 3D Camera Controls & 360° Turntable (Zero-Clipping Guaranteed) ── */}
+          <div style={islandBaseStyle}>
             <button
               type="button"
               onClick={() => rotateCamera(-Math.PI / 4)}
-              title="Rotate Left 45°"
+              title="Step Rotate Left 45°"
               style={navIconBtn(false)}
             >
               <RotateCcw size={13} />
@@ -756,10 +761,36 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
             <button
               type="button"
               onClick={() => rotateCamera(Math.PI / 4)}
-              title="Rotate Right 45°"
+              title="Step Rotate Right 45°"
               style={navIconBtn(false)}
             >
               <RotateCw size={13} />
+            </button>
+
+            {/* 360° Turntable Mode Toggle */}
+            <button
+              type="button"
+              onClick={toggleTurntable}
+              title="Toggle Smooth 360° Continuous Turntable Orbit"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                height: 28,
+                padding: '0 8px',
+                borderRadius: 8,
+                border: turntable ? '1px solid #38bdf8' : '1px solid rgba(255, 255, 255, 0.12)',
+                background: turntable ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                color: turntable ? '#38bdf8' : '#e8edf5',
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: 'pointer',
+                boxShadow: turntable ? '0 0 10px rgba(56, 189, 248, 0.5)' : 'none',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <Compass size={13} color={turntable ? '#38bdf8' : '#cbd5e1'} />
+              <span>360°</span>
             </button>
 
             <button
@@ -827,3 +858,18 @@ function presetBtn(active: boolean): CSSProperties {
     transition: 'all 0.15s ease',
   };
 }
+
+const islandBaseStyle: CSSProperties = {
+  pointerEvents: 'auto',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  background: 'rgba(9, 13, 22, 0.94)',
+  border: '1px solid rgba(255, 255, 255, 0.14)',
+  borderRadius: 14,
+  padding: '6px 10px',
+  boxShadow: '0 16px 36px rgba(0, 0, 0, 0.7)',
+  backdropFilter: 'blur(24px)',
+  color: '#e8edf5',
+  fontFamily: 'system-ui, sans-serif',
+};

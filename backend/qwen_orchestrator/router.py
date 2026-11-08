@@ -77,7 +77,7 @@ class QwenTaskRouter:
                 errors.append(f"Failed to dispatch to {tty}: {exc}")
 
         if dispatched_count > 0 and len(errors) == 0:
-            plan.status = "completed"
+            plan.status = "sent"
         elif dispatched_count > 0:
             plan.status = "partial"
         else:
@@ -86,6 +86,51 @@ class QwenTaskRouter:
         return {
             "ok": dispatched_count > 0,
             "dispatched_count": dispatched_count,
+            "errors": errors,
+            "plan_status": plan.status,
+        }
+
+    def apply_client_results(self, plan_id: str, results: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """Record what the desktop already typed. This method does not write to a PTY."""
+        plan = self._plans.get(plan_id)
+        if not plan:
+            return {"ok": False, "error": f"Plan {plan_id} not found", "dispatched_count": 0, "errors": [], "plan_status": "failed"}
+
+        by_id = {}
+        for row in results or []:
+            sid = (row.get("id") or "").strip()
+            if sid:
+                by_id[sid] = row
+
+        sent = 0
+        errors = []
+        for task in plan.subtasks:
+            row = by_id.get(task.id)
+            if row is None:
+                task.status = "failed"
+                task.error = f"{task.id} was not sent"
+                errors.append(task.error)
+                continue
+            outcome = (row.get("status") or "").strip()
+            if outcome == "sent":
+                task.status = "sent"
+                task.error = ""
+                sent += 1
+            else:
+                task.status = "failed"
+                message = (row.get("error") or "").strip() or f"{task.id} failed"
+                task.error = message
+                errors.append(message)
+
+        if sent and not errors:
+            plan.status = "sent"
+        elif sent:
+            plan.status = "partial"
+        else:
+            plan.status = "failed"
+        return {
+            "ok": sent > 0,
+            "dispatched_count": sent,
             "errors": errors,
             "plan_status": plan.status,
         }

@@ -47,6 +47,7 @@ fn detect_agent(command: &str) -> String {
         ("cursor", &["cursor", "cursor-agent"][..]),
         ("aider", &["aider"][..]),
         ("grok", &["grok"][..]),
+        ("qwen", &["qwen", "qwen-cli"][..]),
     ];
     let tokens: Vec<&str> = lower.split_whitespace().collect();
     for (name, keys) in candidates {

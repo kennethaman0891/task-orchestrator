@@ -28,6 +28,8 @@ export function InteriorWalkControls() {
   const isDragging = useRef(false);
   const prevMouse = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const euler = useRef(new THREE.Euler(0, 0, 0, 'YXZ'));
+  const yaw = useRef<number>(Math.PI);
+  const pitch = useRef<number>(0);
   const initializedForFloor = useRef<string | null>(null);
 
   const isInterior = nav.mode === 'interior';
@@ -78,15 +80,15 @@ export function InteriorWalkControls() {
       const dy = e.clientY - prevMouse.current.y;
       prevMouse.current = { x: e.clientX, y: e.clientY };
 
-      euler.current.setFromQuaternion(camera.quaternion);
-      euler.current.y -= dx * MOUSE_SENSITIVITY;
-      euler.current.x -= dy * MOUSE_SENSITIVITY;
+      // Direct scalar accumulation avoids quaternion-to-euler gimbal locking
+      yaw.current -= dx * MOUSE_SENSITIVITY;
+      pitch.current -= dy * MOUSE_SENSITIVITY;
 
       // Clamp vertical look (pitch) so camera does not flip upside down
       const maxPitch = Math.PI * 0.38;
-      euler.current.x = Math.max(-maxPitch, Math.min(maxPitch, euler.current.x));
-      euler.current.z = 0;
+      pitch.current = Math.max(-maxPitch, Math.min(maxPitch, pitch.current));
 
+      euler.current.set(pitch.current, yaw.current, 0, 'YXZ');
       camera.quaternion.setFromEuler(euler.current);
     };
 
@@ -125,6 +127,8 @@ export function InteriorWalkControls() {
 
     // Place camera slightly forward in the room looking toward the workstations and server racks
     camera.position.set(center[0], fy + eyeH, center[2] + fitted.depth * 0.28);
+    yaw.current = Math.PI;
+    pitch.current = 0;
     euler.current.set(0, Math.PI, 0, 'YXZ');
     camera.quaternion.setFromEuler(euler.current);
   }, [isWalkIn, nav, projects, camera]);
@@ -149,8 +153,7 @@ export function InteriorWalkControls() {
       const moveVec = new THREE.Vector3(moveX, 0, moveZ).normalize().multiplyScalar(step);
 
       // Apply yaw rotation to move vector (move relative to where user is looking horizontally)
-      const yaw = euler.current.y;
-      moveVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+      moveVec.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw.current);
 
       camera.position.x += moveVec.x;
       camera.position.z += moveVec.z;

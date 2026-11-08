@@ -148,6 +148,8 @@ pub fn active_child_process(shell_pid: u32) -> Option<String> {
                                 return Some("codex".to_string());
                             } else if args.contains("opencode") {
                                 return Some("opencode".to_string());
+                            } else if args.contains("qwen") {
+                                return Some("qwen".to_string());
                             } else if args.contains("prime-agent")
                                 || args.contains("prime_agent")
                                 || args.contains("prime")

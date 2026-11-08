@@ -70,6 +70,16 @@ export function generateFallbackFloorPlan(project: Project): ProjectFloorPlan {
           details: 'Modular HUD, Terminal Dock & 3D Canvas',
           status: '12 UI Archetypes Active',
         },
+        {
+          id: 'fe_lounge_strategy',
+          type: 'lounge',
+          title: 'Breakout Strategy & Coffee Lounge',
+          position: [2.4, 0.16, 1.8],
+          actionType: 'open_standup',
+          actionLabel: 'Open Strategy Standup',
+          details: 'Agent Collaboration, UI Review Notes & Coffee Break',
+          status: 'Quiet Zone · Standup Active',
+        },
       ],
     },
     {

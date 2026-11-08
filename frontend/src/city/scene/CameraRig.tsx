@@ -20,7 +20,8 @@ export function CameraRig() {
   const cameraTarget = useCityStore((s) => s.cameraTarget);
   const nav = useCityStore((s) => s.nav);
   const interiorViewMode = useCityStore((s) => s.interiorViewMode);
-  const pending = useRef<{ pos: THREE.Vector3; look: THREE.Vector3 } | null>(null);
+  const turntable = useCityStore((s) => s.turntable);
+  const pending = useRef<{ pos: THREE.Vector3; look: THREE.Vector3; startTime: number } | null>(null);
 
   const radius = cityRadius();
   const isCarMode = nav.mode === 'car';
@@ -38,11 +39,64 @@ export function CameraRig() {
     }
   }, [minDistance, maxDistance]);
 
+  // Cancel any automated flight immediately as soon as the user starts dragging or rotating
+  useEffect(() => {
+    const c = controls.current;
+    if (!c) return;
+    const handleUserInteraction = () => {
+      pending.current = null;
+    };
+    c.addEventListener('start', handleUserInteraction);
+    return () => {
+      c.removeEventListener('start', handleUserInteraction);
+    };
+  }, []);
+
+  // Listen to step-rotation and step-zoom events from FloorNav HUD
+  useEffect(() => {
+    const handleStepRotate = (e: Event) => {
+      const custom = e as CustomEvent<{ deltaRad: number }>;
+      const delta = custom.detail?.deltaRad ?? 0;
+      const c = controls.current;
+      if (!c || isWalkIn) return;
+      pending.current = null;
+      const target = c.target as THREE.Vector3;
+      const offset = new THREE.Vector3().subVectors(camera.position, target);
+      offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), delta);
+      camera.position.copy(target).add(offset);
+      c.update();
+    };
+
+    const handleStepZoom = (e: Event) => {
+      const custom = e as CustomEvent<{ factor: number }>;
+      const factor = custom.detail?.factor ?? 1;
+      const c = controls.current;
+      if (!c || isWalkIn) return;
+      pending.current = null;
+      const target = c.target as THREE.Vector3;
+      const offset = new THREE.Vector3().subVectors(camera.position, target);
+      const nextDist = offset.length() * factor;
+      if (nextDist >= minDistance && nextDist <= maxDistance) {
+        offset.multiplyScalar(factor);
+        camera.position.copy(target).add(offset);
+        c.update();
+      }
+    };
+
+    window.addEventListener('tto-camera-rotate', handleStepRotate);
+    window.addEventListener('tto-camera-zoom', handleStepZoom);
+    return () => {
+      window.removeEventListener('tto-camera-rotate', handleStepRotate);
+      window.removeEventListener('tto-camera-zoom', handleStepZoom);
+    };
+  }, [camera, isWalkIn, minDistance, maxDistance]);
+
   useEffect(() => {
     if (!cameraTarget) return;
     pending.current = {
       pos: new THREE.Vector3(cameraTarget.x, cameraTarget.y, cameraTarget.z),
       look: new THREE.Vector3(cameraTarget.lookX, cameraTarget.lookY, cameraTarget.lookZ),
+      startTime: performance.now(),
     };
   }, [cameraTarget]);
 
@@ -56,7 +110,9 @@ export function CameraRig() {
       c.target.lerp(p.look, t);
       c.update();
     }
-    if (camera.position.distanceTo(p.pos) < 0.05 && c.target.distanceTo(p.look) < 0.05) {
+    const elapsed = performance.now() - p.startTime;
+    // Timeout guard (max 1.2s flight) + distance threshold
+    if (elapsed > 1200 || (camera.position.distanceTo(p.pos) < 0.05 && c.target.distanceTo(p.look) < 0.05)) {
       pending.current = null;
     }
   });
@@ -80,6 +136,8 @@ export function CameraRig() {
         minDistance={minDistance}
         maxDistance={maxDistance}
         maxPolarAngle={Math.PI / 2.05}
+        autoRotate={turntable && !isWalkIn}
+        autoRotateSpeed={2.2}
         target={[0, 4, 0]}
       />
       {isWalkIn && <InteriorWalkControls />}

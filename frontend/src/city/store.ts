@@ -67,6 +67,9 @@ interface CityStore {
   cameraTarget: CameraTarget | null;
   setCameraTarget: (t: Omit<CameraTarget, 'nonce'>) => void;
   clearCameraTarget: () => void;
+  turntable: boolean;
+  setTurntable: (active: boolean) => void;
+  toggleTurntable: () => void;
 
   // ── interior view mode (dollhouse overview vs walk-in first person) ──
   interiorViewMode: InteriorViewMode;
@@ -221,6 +224,9 @@ export const useCityStore = create<CityStore>((set, get) => ({
     cameraTarget: { ...t, nonce: (s.cameraTarget?.nonce ?? 0) + 1 },
   })),
   clearCameraTarget: () => set({ cameraTarget: null }),
+  turntable: false,
+  setTurntable: (active) => set({ turntable: active }),
+  toggleTurntable: () => set((s) => ({ turntable: !s.turntable })),
 
   interiorViewMode: 'dollhouse',
   setInteriorViewMode: (mode) => set({ interiorViewMode: mode }),
