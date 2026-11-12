@@ -16,16 +16,20 @@ class AuditEvent:
     details: Dict[str, Any] = field(default_factory=dict)
     workspace_id: Optional[str] = None
     tty: Optional[str] = None
+    visit_id: Optional[str] = None
 
     def to_jsonl(self) -> str:
-        return json.dumps({
+        payload = {
             "ts": self.timestamp,
             "user": self.username,
             "type": self.event_type,
             "details": self.details,
             "ws": self.workspace_id,
             "tty": self.tty,
-        }, separators=(",", ":"), ensure_ascii=False)
+        }
+        if self.visit_id:
+            payload["visit"] = self.visit_id
+        return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
     def to_txt_line(self, max_len: int = 200) -> str:
         ts_str = time.strftime("%H:%M:%S", time.localtime(self.timestamp))
@@ -47,15 +51,29 @@ class AuditEvent:
             detail_str = f"LOGIN (LAN, token {self.details.get('token_prefix', '')})"
         elif self.event_type == "logout":
             detail_str = "LOGOUT"
+        elif self.event_type == "login_failed":
+            detail_str = f"LOGIN FAILED ({self.details.get('reason', '')}) from {self.details.get('ip', '')}"
         elif self.event_type == "message":
             msg = self.details.get("message", "")
             detail_str = f"message: {msg!r}"
             if len(detail_str) > max_len:
                 detail_str = detail_str[:max_len] + "…"
+        elif self.event_type == "denied":
+            detail_str = f"DENIED {self.details.get('method', '')} {self.details.get('path', '')} ({self.details.get('status', '')})"
+        elif self.event_type == "failed":
+            detail_str = f"FAILED {self.details.get('method', '')} {self.details.get('path', '')} ({self.details.get('status', '')})"
+        elif self.event_type in ("orchestrator_started", "orchestrator_outcome", "qwen_task", "task_started", "task_outcome", "agent_task"):
+            summary = self.details.get("summary") or self.details.get("task") or self.details.get("description") or self.details.get("status") or ""
+            detail_str = f"{self.event_type.replace('_', ' ')}: {summary}"
+            if len(detail_str) > max_len:
+                detail_str = detail_str[:max_len] + "…"
+        elif self.event_type == "visit_ended":
+            detail_str = f"VISIT ENDED ({self.details.get('reason', '')})"
         else:
             detail_str = json.dumps(self.details, ensure_ascii=False)
         ws = f" (ws: {self.workspace_id})" if self.workspace_id else ""
-        return f"[{ts_str}] {detail_str}{ws}"
+        visit = f" [visit {self.visit_id}]" if self.visit_id else ""
+        return f"[{ts_str}]{visit} {detail_str}{ws}"
 
 class AuditRecorder:
     def __init__(self):
@@ -176,16 +194,47 @@ def get_audit_recorder() -> AuditRecorder:
         _audit_recorder = AuditRecorder()
     return _audit_recorder
 
-async def audit_event(username: str, event_type: str, details: Dict[str, Any] = None, workspace_id: str = None, tty: str = None):
-    """Convenience: record an audit event asynchronously."""
-    recorder = get_audit_recorder()
-    recorder.record(AuditEvent(
-        timestamp=time.time(),
+def queue_mirror(username: str, event_type: str, details: Dict[str, Any] = None, workspace_id: str = None, tty: str = None, visit_id: str = None, timestamp: float = None):
+    """Queue a desktop/JSONL line without attaching another visit event."""
+    get_audit_recorder().record(AuditEvent(
+        timestamp=timestamp or time.time(),
         username=username,
         event_type=event_type,
         details=details or {},
         workspace_id=workspace_id,
         tty=tty,
+        visit_id=visit_id,
+    ))
+
+
+async def audit_event(username: str, event_type: str, details: Dict[str, Any] = None, workspace_id: str = None, tty: str = None, dedupe_seconds: float = 0):
+    """Record an audit event and, when a visit is open, attach it to that visit."""
+    details = details or {}
+    visit_id = None
+    try:
+        from visit_store import attach_audit_event
+        attached = attach_audit_event(
+            username,
+            event_type,
+            details,
+            workspace_id=workspace_id,
+            tty=tty,
+            dedupe_seconds=dedupe_seconds,
+        )
+    except Exception:
+        attached = None
+    if attached is not None and attached.get("recorded") is False:
+        return
+    if attached:
+        visit_id = attached.get("visit_id")
+    get_audit_recorder().record(AuditEvent(
+        timestamp=time.time(),
+        username=username,
+        event_type=event_type,
+        details=details,
+        workspace_id=workspace_id,
+        tty=tty,
+        visit_id=visit_id,
     ))
 
 # Helper for common events

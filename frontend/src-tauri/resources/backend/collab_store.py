@@ -95,7 +95,7 @@ class InviteRecord:
         return asdict(self)
 
 class CollabStore:
-    def __init__(self):
+    def __init__(self, base_dir: Optional[pathlib.Path] = None):
         self._users: Dict[str, CollabUser] = {}
         self._tokens: Dict[str, CollabToken] = {}
         self._owner: Optional[OwnerProfile] = None
@@ -103,6 +103,10 @@ class CollabStore:
         self._settings: dict = {
             "lan_access": False,
             "log_on_desktop": True,
+            "signin_alerts": False,
+            "visit_retention_days": 90,
+            "session_hours": 168,
+            "idle_minutes": 30,
             "smtp": {
                 "enabled": False,
                 "host": "",
@@ -114,13 +118,21 @@ class CollabStore:
                 "from_name": "Task Orchestrator Colab",
             }
         }
+        base = pathlib.Path(base_dir) if base_dir else COLLAB_DIR
+        base.mkdir(parents=True, exist_ok=True)
+        self.base_dir = base
+        self.owner_file = base / "owner.json"
+        self.users_file = base / "users.json"
+        self.tokens_file = base / "tokens.json"
+        self.invites_file = base / "invites.json"
+        self.settings_file = base / "settings.json"
         self._load()
 
     def _load(self):
         # owner
-        if OWNER_FILE.exists():
+        if self.owner_file.exists():
             try:
-                data = json.loads(OWNER_FILE.read_text(encoding="utf-8"))
+                data = json.loads(self.owner_file.read_text(encoding="utf-8"))
                 if "plan" not in data:
                     data["plan"] = "pro"
                 self._owner = OwnerProfile(**data)
@@ -128,9 +140,9 @@ class CollabStore:
                 pass
 
         # users
-        if USERS_FILE.exists():
+        if self.users_file.exists():
             try:
-                data = json.loads(USERS_FILE.read_text(encoding="utf-8"))
+                data = json.loads(self.users_file.read_text(encoding="utf-8"))
                 for u in data.get("users", []):
                     # Handle backward compatibility for records without email/name/last_login_at
                     clean_u = {
@@ -150,48 +162,48 @@ class CollabStore:
                 pass
 
         # tokens
-        if TOKENS_FILE.exists():
+        if self.tokens_file.exists():
             try:
-                data = json.loads(TOKENS_FILE.read_text(encoding="utf-8"))
+                data = json.loads(self.tokens_file.read_text(encoding="utf-8"))
                 for t in data.get("tokens", []):
                     self._tokens[t["token"]] = CollabToken(**t)
             except Exception:
                 pass
 
         # invites
-        if INVITES_FILE.exists():
+        if self.invites_file.exists():
             try:
-                data = json.loads(INVITES_FILE.read_text(encoding="utf-8"))
+                data = json.loads(self.invites_file.read_text(encoding="utf-8"))
                 for inv in data.get("invites", []):
                     self._invites[inv["code"]] = InviteRecord(**inv)
             except Exception:
                 pass
 
         # settings
-        if SETTINGS_FILE.exists():
+        if self.settings_file.exists():
             try:
-                data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+                data = json.loads(self.settings_file.read_text(encoding="utf-8"))
                 self._settings.update(data)
             except Exception:
                 pass
 
     def _save_owner(self):
         if self._owner:
-            OWNER_FILE.write_text(json.dumps(self._owner.to_dict(), indent=2), encoding="utf-8")
-        elif OWNER_FILE.exists():
-            OWNER_FILE.unlink(missing_ok=True)
+            self.owner_file.write_text(json.dumps(self._owner.to_dict(), indent=2), encoding="utf-8")
+        elif self.owner_file.exists():
+            self.owner_file.unlink(missing_ok=True)
 
     def _save_users(self):
-        USERS_FILE.write_text(json.dumps({"users": [asdict(u) for u in self._users.values()]}, indent=2), encoding="utf-8")
+        self.users_file.write_text(json.dumps({"users": [asdict(u) for u in self._users.values()]}, indent=2), encoding="utf-8")
 
     def _save_tokens(self):
-        TOKENS_FILE.write_text(json.dumps({"tokens": [asdict(t) for t in self._tokens.values()]}, indent=2), encoding="utf-8")
+        self.tokens_file.write_text(json.dumps({"tokens": [asdict(t) for t in self._tokens.values()]}, indent=2), encoding="utf-8")
 
     def _save_invites(self):
-        INVITES_FILE.write_text(json.dumps({"invites": [asdict(i) for i in self._invites.values()]}, indent=2), encoding="utf-8")
+        self.invites_file.write_text(json.dumps({"invites": [asdict(i) for i in self._invites.values()]}, indent=2), encoding="utf-8")
 
     def _save_settings(self):
-        SETTINGS_FILE.write_text(json.dumps(self._settings, indent=2), encoding="utf-8")
+        self.settings_file.write_text(json.dumps(self._settings, indent=2), encoding="utf-8")
 
     # --- Owner Profile ---
     def get_owner(self) -> Optional[dict]:
@@ -367,14 +379,51 @@ class CollabStore:
         return inv
 
     # --- Tokens ---
-    def create_token(self, identifier: str) -> Optional[str]:
+    def create_token(self, identifier: str, ttl_seconds: Optional[float] = None) -> Optional[str]:
         u = self.get_user(identifier)
         if not u:
             return None
         token = secrets.token_urlsafe(32)
-        self._tokens[token] = CollabToken(token=token, username=u.username)
+        ttl = 7 * 86400 if ttl_seconds is None else max(60.0, float(ttl_seconds))
+        self._tokens[token] = CollabToken(
+            token=token,
+            username=u.username,
+            expires_at=time.time() + ttl,
+        )
         self._save_tokens()
         return token
+
+    def revoke_token_prefix(self, identifier: str, prefix: str) -> int:
+        """Revoke tokens for this user whose value starts with prefix.
+
+        An empty prefix revokes every token for the user. Returns how many
+        tokens were removed.
+        """
+        u = self._find_user_any(identifier)
+        if not u:
+            return 0
+        to_del = [
+            tok for tok, t in self._tokens.items()
+            if t.username == u.username and (not prefix or tok.startswith(prefix))
+        ]
+        for tok in to_del:
+            del self._tokens[tok]
+        if to_del:
+            self._save_tokens()
+        return len(to_del)
+
+    def _find_user_any(self, identifier: str) -> Optional[CollabUser]:
+        """Look up a user even if they have been revoked."""
+        if not identifier:
+            return None
+        u = self._users.get(identifier)
+        if u:
+            return u
+        low = identifier.lower().strip()
+        for user in self._users.values():
+            if user.username.lower() == low or (user.email or "").lower() == low:
+                return user
+        return None
 
     def validate_token(self, token: str) -> Optional[CollabUser]:
         t = self._tokens.get(token)
@@ -479,26 +528,137 @@ class CollabStore:
         except Exception as e:
             return False, f"Failed to send email: {e}"
 
+    def send_signin_alert(
+        self,
+        visitor_name: str,
+        visitor_email: str,
+        ip: str,
+        browser: str,
+        os_name: str,
+        device: str,
+        when_ts: Optional[float] = None,
+    ) -> Tuple[bool, str]:
+        """Email the owner when a visitor signs in. No-op unless the toggle and SMTP are on."""
+        if not self.get_settings().get("signin_alerts"):
+            return False, "Sign-in alerts are off"
+        owner = self.get_owner() or {}
+        to_email = (owner.get("email") or "").strip()
+        if not to_email or "@" not in to_email:
+            return False, "Owner email is not set"
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(when_ts or time.time()))
+        subject = f"Someone signed in to your Task Orchestrator — {visitor_name or visitor_email}"
+        body = (
+            f"{visitor_name or visitor_email} ({visitor_email}) just signed in to your Task Orchestrator.\n\n"
+            f"When: {when}\n"
+            f"From: {ip or 'unknown'}\n"
+            f"Using: {browser or 'unknown browser'} on {os_name or 'unknown system'} ({device or 'device'})\n\n"
+            f"If you do not recognize this visit, open Colab Hub, find the visit, and choose Block this person.\n\n"
+            f"— Task Orchestrator Colab Hub"
+        )
+        return self._send_plain_email(to_email, subject, body)
+
+    def _send_plain_email(self, to_email: str, subject: str, body: str) -> Tuple[bool, str]:
+        smtp_cfg = self._settings.get("smtp", {})
+        if not smtp_cfg.get("enabled"):
+            return False, "SMTP is not enabled in Colab Settings"
+        host = smtp_cfg.get("host")
+        port = int(smtp_cfg.get("port", 587))
+        username = smtp_cfg.get("username", "")
+        password = smtp_cfg.get("password", "")
+        owner = self.get_owner() or {}
+        from_email = smtp_cfg.get("from_email") or owner.get("email") or username
+        from_name = smtp_cfg.get("from_name", "Task Orchestrator Colab")
+        use_tls = smtp_cfg.get("use_tls", True)
+        if not host or not from_email:
+            return False, "SMTP host or sender email is missing"
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = f"{from_name} <{from_email}>"
+        msg["To"] = to_email
+        msg.set_content(body)
+        try:
+            if port == 465:
+                server = smtplib.SMTP_SSL(host, port, timeout=10)
+            else:
+                server = smtplib.SMTP(host, port, timeout=10)
+                if use_tls:
+                    server.starttls()
+            if username and password:
+                server.login(username, password)
+            server.send_message(msg)
+            server.quit()
+            return True, "Email sent successfully"
+        except Exception as e:
+            return False, f"Failed to send email: {e}"
+
     # --- Settings ---
     def get_settings(self) -> dict:
-        return dict(self._settings)
+        data = dict(self._settings)
+        data.setdefault("signin_alerts", False)
+        data.setdefault("visit_retention_days", 90)
+        data.setdefault("session_hours", 168)
+        data.setdefault("idle_minutes", 30)
+        return data
+
+    def session_ttl_seconds(self) -> float:
+        try:
+            hours = int(self.get_settings().get("session_hours") or 168)
+        except (TypeError, ValueError):
+            hours = 168
+        hours = max(1, min(hours, 24 * 30))
+        return float(hours * 3600)
+
+    def idle_timeout_seconds(self) -> float:
+        try:
+            minutes = int(self.get_settings().get("idle_minutes") or 30)
+        except (TypeError, ValueError):
+            minutes = 30
+        minutes = max(1, min(minutes, 24 * 60))
+        return float(minutes * 60)
+
+    def retention_days(self) -> int:
+        try:
+            days = int(self.get_settings().get("visit_retention_days") if self.get_settings().get("visit_retention_days") is not None else 90)
+        except (TypeError, ValueError):
+            days = 90
+        return max(0, min(days, 3650))
 
     def set_lan_access(self, enabled: bool) -> dict:
         self._settings["lan_access"] = enabled
         self._save_settings()
-        return dict(self._settings)
+        return self.get_settings()
 
     def set_log_on_desktop(self, enabled: bool) -> dict:
         self._settings["log_on_desktop"] = enabled
         self._save_settings()
-        return dict(self._settings)
+        return self.get_settings()
+
+    def set_signin_alerts(self, enabled: bool) -> dict:
+        self._settings["signin_alerts"] = bool(enabled)
+        self._save_settings()
+        return self.get_settings()
+
+    def set_visit_retention_days(self, days: int) -> dict:
+        self._settings["visit_retention_days"] = max(0, min(int(days), 3650))
+        self._save_settings()
+        return self.get_settings()
+
+    def set_session_hours(self, hours: int) -> dict:
+        self._settings["session_hours"] = max(1, min(int(hours), 24 * 30))
+        self._save_settings()
+        return self.get_settings()
+
+    def set_idle_minutes(self, minutes: int) -> dict:
+        self._settings["idle_minutes"] = max(1, min(int(minutes), 24 * 60))
+        self._save_settings()
+        return self.get_settings()
 
     def update_smtp_settings(self, smtp_cfg: dict) -> dict:
         current_smtp = self._settings.get("smtp", {})
         current_smtp.update(smtp_cfg)
         self._settings["smtp"] = current_smtp
         self._save_settings()
-        return dict(self._settings)
+        return self.get_settings()
 
     # --- Lan access check ---
     def is_lan_allowed(self) -> bool:
