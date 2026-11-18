@@ -1,7 +1,8 @@
-// Developer City — CameraRig: orbit/zoom/pan + fly-to transitions.
+// Developer City — CameraRig: hands-on 360° orbit/zoom/pan + fly-to transitions.
 // Mount: overview orbit around city centre. When the store's cameraTarget
-// changes (nonce), the rig smoothly flies camera + target there. Orbit
-// presets (180°/360° exploration) are pre-computed targets.
+// changes (nonce), the rig smoothly flies camera + target there.
+// Provides 100% manual hands-on 360° orbit control (mouse drag + interactive angle slider)
+// with zero unrequested auto-rotation.
 
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
@@ -12,7 +13,7 @@ import { plotWorldPosition, cityRadius } from './CityGrid';
 import { InteriorWalkControls } from './InteriorWalkControls';
 import type { Project } from '@/city/types';
 
-const FLY_SPEED = 4.5;
+const FLY_SPEED = 5.0;
 
 export function CameraRig() {
   const controls = useRef<any>(null);
@@ -20,15 +21,16 @@ export function CameraRig() {
   const cameraTarget = useCityStore((s) => s.cameraTarget);
   const nav = useCityStore((s) => s.nav);
   const interiorViewMode = useCityStore((s) => s.interiorViewMode);
-  const turntable = useCityStore((s) => s.turntable);
   const pending = useRef<{ pos: THREE.Vector3; look: THREE.Vector3; startTime: number } | null>(null);
+  const lastEmittedAzimuth = useRef<number>(-999);
+  const lastEmittedPolar = useRef<number>(-999);
 
   const radius = cityRadius();
   const isCarMode = nav.mode === 'car';
   const isInteriorMode = nav.mode === 'interior';
   const isWalkIn = isInteriorMode && interiorViewMode === 'walk-in';
-  const minDistance = isCarMode ? 0.05 : isInteriorMode ? 0.5 : 4;
-  const maxDistance = isCarMode ? 25 : isInteriorMode ? 18 : radius * 2.4;
+  const minDistance = isCarMode ? 0.05 : isInteriorMode ? 0.4 : 4;
+  const maxDistance = isCarMode ? 25 : isInteriorMode ? 22 : radius * 2.4;
 
   useEffect(() => {
     const c = controls.current;
@@ -52,7 +54,7 @@ export function CameraRig() {
     };
   }, []);
 
-  // Listen to step-rotation and step-zoom events from FloorNav HUD
+  // Listen to hands-on step-rotation, direct 360° scrub slider, and step-zoom events from FloorNav HUD
   useEffect(() => {
     const handleStepRotate = (e: Event) => {
       const custom = e as CustomEvent<{ deltaRad: number }>;
@@ -63,6 +65,31 @@ export function CameraRig() {
       const target = c.target as THREE.Vector3;
       const offset = new THREE.Vector3().subVectors(camera.position, target);
       offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), delta);
+      camera.position.copy(target).add(offset);
+      c.update();
+    };
+
+    const handleSetOrbit = (e: Event) => {
+      const custom = e as CustomEvent<{ azimuthDeg?: number; polarDeg?: number; distance?: number }>;
+      const c = controls.current;
+      if (!c || isWalkIn) return;
+      pending.current = null;
+      const target = c.target as THREE.Vector3;
+      const offset = new THREE.Vector3().subVectors(camera.position, target);
+      const spherical = new THREE.Spherical().setFromVector3(offset);
+
+      if (typeof custom.detail?.azimuthDeg === 'number') {
+        spherical.theta = THREE.MathUtils.degToRad(custom.detail.azimuthDeg);
+      }
+      if (typeof custom.detail?.polarDeg === 'number') {
+        const clampedPolar = Math.max(8, Math.min(86, custom.detail.polarDeg));
+        spherical.phi = THREE.MathUtils.degToRad(clampedPolar);
+      }
+      if (typeof custom.detail?.distance === 'number') {
+        spherical.radius = Math.max(minDistance, Math.min(maxDistance, custom.detail.distance));
+      }
+
+      offset.setFromSpherical(spherical);
       camera.position.copy(target).add(offset);
       c.update();
     };
@@ -84,9 +111,11 @@ export function CameraRig() {
     };
 
     window.addEventListener('tto-camera-rotate', handleStepRotate);
+    window.addEventListener('tto-camera-set-orbit', handleSetOrbit);
     window.addEventListener('tto-camera-zoom', handleStepZoom);
     return () => {
       window.removeEventListener('tto-camera-rotate', handleStepRotate);
+      window.removeEventListener('tto-camera-set-orbit', handleSetOrbit);
       window.removeEventListener('tto-camera-zoom', handleStepZoom);
     };
   }, [camera, isWalkIn, minDistance, maxDistance]);
@@ -101,19 +130,44 @@ export function CameraRig() {
   }, [cameraTarget]);
 
   useFrame((_, delta) => {
-    const p = pending.current;
-    if (!p) return;
     const c = controls.current;
-    const t = Math.min(1, delta * FLY_SPEED);
-    camera.position.lerp(p.pos, t);
-    if (c) {
-      c.target.lerp(p.look, t);
-      c.update();
+    const p = pending.current;
+    if (p) {
+      const t = Math.min(1, delta * FLY_SPEED);
+      camera.position.lerp(p.pos, t);
+      if (c) {
+        c.target.lerp(p.look, t);
+        c.update();
+      }
+      const elapsed = performance.now() - p.startTime;
+      // Timeout guard (max 1.1s flight) + distance threshold
+      if (elapsed > 1100 || (camera.position.distanceTo(p.pos) < 0.05 && (!c || c.target.distanceTo(p.look) < 0.05))) {
+        if (c) {
+          c.target.copy(p.look);
+          c.update();
+        }
+        pending.current = null;
+      }
     }
-    const elapsed = performance.now() - p.startTime;
-    // Timeout guard (max 1.2s flight) + distance threshold
-    if (elapsed > 1200 || (camera.position.distanceTo(p.pos) < 0.05 && c.target.distanceTo(p.look) < 0.05)) {
-      pending.current = null;
+
+    // Broadcast live camera spherical angles in interior mode so the hands-on 360° scrubber stays synced
+    if (isInteriorMode && !isWalkIn && c) {
+      const offset = new THREE.Vector3().subVectors(camera.position, c.target);
+      const sph = new THREE.Spherical().setFromVector3(offset);
+      const azDeg = ((THREE.MathUtils.radToDeg(sph.theta) % 360) + 360) % 360;
+      const polDeg = THREE.MathUtils.radToDeg(sph.phi);
+      if (
+        Math.abs(azDeg - lastEmittedAzimuth.current) > 1.0 ||
+        Math.abs(polDeg - lastEmittedPolar.current) > 1.0
+      ) {
+        lastEmittedAzimuth.current = azDeg;
+        lastEmittedPolar.current = polDeg;
+        window.dispatchEvent(
+          new CustomEvent('tto-camera-angle-sync', {
+            detail: { azimuthDeg: Math.round(azDeg), polarDeg: Math.round(polDeg), distance: sph.radius },
+          }),
+        );
+      }
     }
   });
 
@@ -121,7 +175,10 @@ export function CameraRig() {
   useEffect(() => {
     camera.position.set(radius * 0.85, radius * 0.6, radius * 0.85);
     const c = controls.current;
-    if (c) c.update();
+    if (c) {
+      c.target.set(0, 4, 0);
+      c.update();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -133,12 +190,16 @@ export function CameraRig() {
         enabled={!isWalkIn}
         enableDamping
         dampingFactor={0.08}
+        enablePan
+        screenSpacePanning
+        rotateSpeed={0.85}
+        zoomSpeed={1.0}
+        panSpeed={0.85}
         minDistance={minDistance}
         maxDistance={maxDistance}
-        maxPolarAngle={Math.PI / 2.05}
-        autoRotate={turntable && !isWalkIn}
-        autoRotateSpeed={2.2}
-        target={[0, 4, 0]}
+        minPolarAngle={isInteriorMode ? 0.08 : 0.05}
+        maxPolarAngle={isInteriorMode ? Math.PI * 0.82 : Math.PI / 2.05}
+        autoRotate={false}
       />
       {isWalkIn && <InteriorWalkControls />}
     </>
@@ -214,7 +275,7 @@ export function interiorTarget(
   floorIndex: number,
   floorH: number,
   buildingDepth: number,
-  viewPreset: 'overview' | 'walkin' | 'desks' | 'servers' | 'blueprint' | 'lounge' | 'topdown' = 'overview',
+  viewPreset: 'overview' | 'walkin' | 'desks' | 'servers' | 'blueprint' | 'preview' | 'lounge' | 'topdown' = 'overview',
 ) {
   const c = plotWorldPosition(plot);
   const fy = floorIndex * floorH + 0.3;
@@ -242,42 +303,52 @@ export function interiorTarget(
   }
   if (viewPreset === 'desks') {
     return {
-      x: c[0] - 1.9,
-      y: fy + 1.35,
-      z: c[2] + 1.6,
-      lookX: c[0] - 1.9,
+      x: c[0] - 1.8,
+      y: fy + 1.45,
+      z: c[2] + 1.9,
+      lookX: c[0] - 1.8,
       lookY: fy + 0.85,
-      lookZ: c[2] + 0.2,
+      lookZ: c[2] + 0.1,
     };
   }
   if (viewPreset === 'servers') {
     return {
-      x: c[0] + 1.8,
-      y: fy + 1.4,
-      z: c[2] - 0.4,
-      lookX: c[0] + 2.4,
-      lookY: fy + 1.1,
-      lookZ: c[2] - 1.6,
+      x: c[0] + 1.2,
+      y: fy + 1.45,
+      z: c[2] - 0.2,
+      lookX: c[0] + 2.3,
+      lookY: fy + 1.0,
+      lookZ: c[2] - 1.7,
     };
   }
   if (viewPreset === 'blueprint') {
     return {
-      x: c[0],
-      y: fy + 1.4,
-      z: c[2] - 0.9,
-      lookX: c[0],
-      lookY: fy + 1.35,
+      x: c[0] + 0.1,
+      y: fy + 1.45,
+      z: c[2] + 0.6,
+      lookX: c[0] + 0.1,
+      lookY: fy + 1.25,
       lookZ: c[2] - 2.4,
+    };
+  }
+  if (viewPreset === 'preview') {
+    return {
+      x: c[0] + 0.4,
+      y: fy + 1.45,
+      z: c[2] + 1.4,
+      lookX: c[0] + 2.1,
+      lookY: fy + 1.15,
+      lookZ: c[2] - 0.1,
     };
   }
   if (viewPreset === 'lounge') {
     return {
-      x: c[0] + 1.6,
-      y: fy + 1.25,
-      z: c[2] + 1.8,
-      lookX: c[0] + 2.2,
-      lookY: fy + 0.8,
-      lookZ: c[2] + 0.6,
+      x: c[0] + 0.8,
+      y: fy + 1.55,
+      z: c[2] + 2.5,
+      lookX: c[0] + 1.9,
+      lookY: fy + 0.65,
+      lookZ: c[2] + 1.1,
     };
   }
 

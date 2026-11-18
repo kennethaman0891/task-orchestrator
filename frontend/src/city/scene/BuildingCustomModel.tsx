@@ -110,9 +110,9 @@ export function BuildingCustomModel({
     );
   }
 
-  // Default: 'rooftop' - Grand rotating 3D monument atop skyscraper
+  // Default: 'rooftop' - Grand rotating 3D monument atop skyscraper penthouse
   return (
-    <group position={[0, spec.height + 0.2, 0]} scale={[scale, scale, scale]}>
+    <group position={[0, spec.height + 1.4, 0]} scale={[scale, scale, scale]}>
       {/* Rooftop Pedestal Stand */}
       <mesh position={[0, 0.45, 0]} material={pedestalMaterial} castShadow>
         <cylinderGeometry args={[1.8, 2.1, 0.9, 16]} />

@@ -5,6 +5,7 @@
 
 import { useMemo } from 'react';
 import * as THREE from 'three';
+import { useCityStore } from '@/city/store';
 import type { Project } from '@/city/types';
 
 export const GRID_SIZE = 8;
@@ -26,6 +27,8 @@ interface CityGridProps {
 
 export function CityGrid({ projects, groundColor }: CityGridProps) {
   const radius = cityRadius();
+  const cityMood = useCityStore((s) => s.cityMood);
+  const isNight = cityMood === 'night';
 
   const occupied = useMemo(() => {
     const set = new Set<string>();
@@ -37,18 +40,18 @@ export function CityGrid({ projects, groundColor }: CityGridProps) {
     return {
       ground: new THREE.MeshStandardMaterial({
         color: groundColor,
-        roughness: 0.68,
-        metalness: 0.22,
+        roughness: 0.78,
+        metalness: 0.08,
       }),
       plazaPad: new THREE.MeshStandardMaterial({
-        color: '#1a2233',
-        roughness: 0.6,
-        metalness: 0.25,
+        color: isNight ? '#1a2233' : '#64707d',
+        roughness: 0.72,
+        metalness: isNight ? 0.25 : 0.12,
       }),
       plazaRing: new THREE.MeshBasicMaterial({
-        color: '#38bdf8',
+        color: isNight ? '#38bdf8' : '#475569',
         transparent: true,
-        opacity: 0.45,
+        opacity: isNight ? 0.36 : 0.45,
         side: THREE.DoubleSide,
       }),
       plazaMarker: new THREE.MeshBasicMaterial({
@@ -58,13 +61,13 @@ export function CityGrid({ projects, groundColor }: CityGridProps) {
         side: THREE.DoubleSide,
       }),
       cornerBeacon: new THREE.MeshStandardMaterial({
-        color: '#38bdf8',
-        emissive: '#0284c7',
-        emissiveIntensity: 1.5,
-        roughness: 0.3,
+        color: isNight ? '#38bdf8' : '#475569',
+        emissive: isNight ? '#0284c7' : '#000000',
+        emissiveIntensity: isNight ? 1.4 : 0,
+        roughness: 0.4,
       }),
     };
-  }, [groundColor]);
+  }, [groundColor, isNight]);
 
   return (
     <group>

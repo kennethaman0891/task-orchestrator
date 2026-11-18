@@ -158,21 +158,31 @@ export function CityScene() {
 
       {visible
         .filter((p) => (!isInterior ? true : p.id === interiorProjectId))
-        .map((p) => (
-          <ProjectBuilding
-            key={p.id}
-            project={p}
-            position={plotWorldPosition(p.plot)}
-            interiorFloor={interiorProjectId === p.id ? interiorFloorIndex : null}
-            agents={[]}
-            agentActive={activePaths.has(p.path)}
-            workspaceActive={!!activeWorkspacePath && activeWorkspacePath === p.path}
-            selected={selectedProjectId === p.id}
-            dimmed={selectedProjectId !== null && selectedProjectId !== p.id}
-            onPointerDown={(e: any) => { e.stopPropagation(); focusBuilding(p); }}
-            onDoubleClick={(e: any) => { e.stopPropagation(); enterBuilding(p); }}
-          />
-        ))}
+        .map((p) => {
+          const projAgents = Object.values(agents).filter(
+            (a) =>
+              a.status !== 'offline' &&
+              p.path &&
+              (a.projectPath === p.path ||
+                a.projectPath.startsWith(p.path + '/') ||
+                p.path.startsWith(a.projectPath)),
+          );
+          return (
+            <ProjectBuilding
+              key={p.id}
+              project={p}
+              position={plotWorldPosition(p.plot)}
+              interiorFloor={interiorProjectId === p.id ? interiorFloorIndex : null}
+              agents={projAgents}
+              agentActive={activePaths.has(p.path)}
+              workspaceActive={!!activeWorkspacePath && activeWorkspacePath === p.path}
+              selected={selectedProjectId === p.id}
+              dimmed={selectedProjectId !== null && selectedProjectId !== p.id}
+              onPointerDown={(e: any) => { e.stopPropagation(); focusBuilding(p); }}
+              onDoubleClick={(e: any) => { e.stopPropagation(); enterBuilding(p); }}
+            />
+          );
+        })}
 
       {!isInterior && (
         <>

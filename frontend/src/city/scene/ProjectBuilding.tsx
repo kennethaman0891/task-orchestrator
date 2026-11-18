@@ -142,28 +142,45 @@ function useSignTexture(project: Project, themeId: string, signBg?: string | nul
 function WindowInstances({
   spec,
   glass,
+  glassDark,
   frame,
+  sill,
+  isNight,
 }: {
   spec: ArchetypeSpec;
   glass: THREE.MeshStandardMaterial;
+  glassDark: THREE.MeshStandardMaterial;
   frame: THREE.MeshStandardMaterial;
+  sill: THREE.MeshStandardMaterial;
+  isNight: boolean;
 }) {
   const frameRef = useRef<THREE.InstancedMesh>(null);
   const glassRef = useRef<THREE.InstancedMesh>(null);
+  const glassDarkRef = useRef<THREE.InstancedMesh>(null);
   const mullionVRef = useRef<THREE.InstancedMesh>(null);
   const mullionHRef = useRef<THREE.InstancedMesh>(null);
   const sillRef = useRef<THREE.InstancedMesh>(null);
+  const lintelRef = useRef<THREE.InstancedMesh>(null);
   const grid = useMemo(() => windowGrid(spec), [spec]);
   const pane = useMemo(() => windowPane(spec), [spec]);
   const count = Math.max(1, grid.positions.length);
 
+  // Reset instance matrices & colors whenever geometry spec or Day/Night mood changes
+  useEffect(() => {
+    if (frameRef.current) {
+      frameRef.current.userData.initialized = false;
+    }
+  }, [grid, pane, isNight]);
+
   useFrame(() => {
     const fm = frameRef.current;
     const gm = glassRef.current;
+    const gdm = glassDarkRef.current;
     const mv = mullionVRef.current;
     const mh = mullionHRef.current;
     const sm = sillRef.current;
-    if (!fm || !gm || !mv || !mh || !sm) return;
+    const lm = lintelRef.current;
+    if (!fm || !gm || !gdm || !mv || !mh || !sm || !lm) return;
     if (fm.userData.initialized) return;
     if (grid.positions.length === 0) {
       fm.userData.initialized = true;
@@ -171,18 +188,27 @@ function WindowInstances({
     }
 
     const mat = new THREE.Matrix4();
+    const zeroMat = new THREE.Matrix4().makeScale(0, 0, 0);
     const q = new THREE.Quaternion();
     const up = new THREE.Vector3(0, 1, 0);
     const scale = new THREE.Vector3(1, 1, 1);
     const outward = new THREE.Vector3();
     const placed = new THREE.Vector3();
 
-    const colors = [
-      new THREE.Color('#ffedd5'),
-      new THREE.Color('#fef9c3'),
+    // Realistic sky-reflecting glass tints in daylight vs warm/cool office interiors at night
+    const dayGlassColors = [
+      new THREE.Color('#1d3b5c'),
+      new THREE.Color('#23466b'),
+      new THREE.Color('#2a527a'),
+      new THREE.Color('#18324f'),
+      new THREE.Color('#305a82'),
+    ];
+    const nightLitColors = [
+      new THREE.Color('#fef3c7'),
+      new THREE.Color('#fde68a'),
+      new THREE.Color('#fed7aa'),
       new THREE.Color('#e0f2fe'),
-      new THREE.Color('#bae6fd'),
-      new THREE.Color('#dbeafe'),
+      new THREE.Color('#fff7ed'),
     ];
 
     const place = (rot: number, pos: THREE.Vector3, push: number, yShift: number) => {
@@ -195,25 +221,42 @@ function WindowInstances({
 
     grid.positions.forEach((pos, i) => {
       const rot = grid.rotY[i];
+      const hash = Math.abs(Math.sin(pos.x * 12.9898 + pos.y * 78.233 + pos.z * 37.719));
+      const isLitAtNight = hash > 0.34; // ~66% of rooms lit at night, ~34% dark
+
       place(rot, pos, 0, 0);
       fm.setMatrixAt(i, mat);
-      place(rot, pos, 0.045, 0);
-      gm.setMatrixAt(i, mat);
-      place(rot, pos, 0.062, 0);
+
+      place(rot, pos, 0.036, 0);
+      if (isNight && !isLitAtNight) {
+        gm.setMatrixAt(i, zeroMat);
+        gdm.setMatrixAt(i, mat);
+      } else {
+        gm.setMatrixAt(i, mat);
+        gdm.setMatrixAt(i, zeroMat);
+      }
+
+      place(rot, pos, 0.052, 0);
       mv.setMatrixAt(i, mat);
       mh.setMatrixAt(i, mat);
-      place(rot, pos, 0.03, -(pane.height / 2 + 0.03));
-      sm.setMatrixAt(i, mat);
 
-      const hash = Math.abs(Math.sin(pos.x * 12.9898 + pos.y * 78.233 + pos.z * 37.719));
-      gm.setColorAt(i, colors[Math.floor(hash * colors.length) % colors.length]);
+      // Architectural projecting sill below and subtle lintel above
+      place(rot, pos, 0.038, -(pane.height / 2 + 0.04));
+      sm.setMatrixAt(i, mat);
+      place(rot, pos, 0.028, pane.height / 2 + 0.045);
+      lm.setMatrixAt(i, mat);
+
+      const palette = isNight ? nightLitColors : dayGlassColors;
+      gm.setColorAt(i, palette[Math.floor(hash * 97) % palette.length]);
     });
 
     fm.instanceMatrix.needsUpdate = true;
     gm.instanceMatrix.needsUpdate = true;
+    gdm.instanceMatrix.needsUpdate = true;
     mv.instanceMatrix.needsUpdate = true;
     mh.instanceMatrix.needsUpdate = true;
     sm.instanceMatrix.needsUpdate = true;
+    lm.instanceMatrix.needsUpdate = true;
     if (gm.instanceColor) gm.instanceColor.needsUpdate = true;
     fm.userData.initialized = true;
   });
@@ -222,7 +265,7 @@ function WindowInstances({
 
   return (
     <group>
-      {/* Casing larger than the glass, so the border shows around the pane. */}
+      {/* Dark anodized architectural window frame / shadow reveal */}
       <instancedMesh
         ref={frameRef}
         args={[undefined as unknown as THREE.BufferGeometry, undefined as unknown as THREE.Material, count]}
@@ -230,26 +273,37 @@ function WindowInstances({
         userData={{ initialized: false }}
         castShadow
       >
-        <boxGeometry args={[pane.width + 0.16, pane.height + 0.12, 0.045]} />
+        <boxGeometry args={[pane.width + 0.14, pane.height + 0.1, 0.045]} />
         <primitive object={frame} attach="material" />
       </instancedMesh>
 
-      {/* Glass in front of the casing. A solid casing behind an inset pane reads as a black block. */}
+      {/* Reflective (day) / illuminated (night) glass panes */}
       <instancedMesh
         ref={glassRef}
         args={[undefined as unknown as THREE.BufferGeometry, undefined as unknown as THREE.Material, count]}
         frustumCulled={false}
       >
-        <boxGeometry args={[pane.width, pane.height, 0.028]} />
+        <boxGeometry args={[pane.width, pane.height, 0.026]} />
         <primitive object={glass} attach="material" />
       </instancedMesh>
 
+      {/* Unlit dark night panes (~34% of windows for authentic skyline variety) */}
+      <instancedMesh
+        ref={glassDarkRef}
+        args={[undefined as unknown as THREE.BufferGeometry, undefined as unknown as THREE.Material, count]}
+        frustumCulled={false}
+      >
+        <boxGeometry args={[pane.width, pane.height, 0.026]} />
+        <primitive object={glassDark} attach="material" />
+      </instancedMesh>
+
+      {/* Center vertical & horizontal anodized mullions */}
       <instancedMesh
         ref={mullionVRef}
         args={[undefined as unknown as THREE.BufferGeometry, undefined as unknown as THREE.Material, count]}
         frustumCulled={false}
       >
-        <boxGeometry args={[0.04, pane.height, 0.018]} />
+        <boxGeometry args={[0.036, pane.height, 0.018]} />
         <primitive object={frame} attach="material" />
       </instancedMesh>
       <instancedMesh
@@ -257,17 +311,27 @@ function WindowInstances({
         args={[undefined as unknown as THREE.BufferGeometry, undefined as unknown as THREE.Material, count]}
         frustumCulled={false}
       >
-        <boxGeometry args={[pane.width, 0.035, 0.018]} />
+        <boxGeometry args={[pane.width, 0.032, 0.018]} />
         <primitive object={frame} attach="material" />
       </instancedMesh>
 
+      {/* Stone / metal projecting sill & upper lintel */}
       <instancedMesh
         ref={sillRef}
         args={[undefined as unknown as THREE.BufferGeometry, undefined as unknown as THREE.Material, count]}
         frustumCulled={false}
+        castShadow
       >
-        <boxGeometry args={[pane.width + 0.22, 0.05, 0.1]} />
-        <primitive object={frame} attach="material" />
+        <boxGeometry args={[pane.width + 0.2, 0.055, 0.11]} />
+        <primitive object={sill} attach="material" />
+      </instancedMesh>
+      <instancedMesh
+        ref={lintelRef}
+        args={[undefined as unknown as THREE.BufferGeometry, undefined as unknown as THREE.Material, count]}
+        frustumCulled={false}
+      >
+        <boxGeometry args={[pane.width + 0.16, 0.05, 0.085]} />
+        <primitive object={sill} attach="material" />
       </instancedMesh>
     </group>
   );
@@ -279,12 +343,20 @@ function RoofFeature({
   trim,
   wallDark,
   roofDeck,
+  frame,
+  glass,
+  signTex,
+  hasCustomRooftop,
 }: {
   spec: ArchetypeSpec;
   accent: THREE.MeshStandardMaterial;
   trim: THREE.MeshStandardMaterial;
   wallDark: THREE.MeshStandardMaterial;
   roofDeck: THREE.MeshStandardMaterial;
+  frame: THREE.MeshStandardMaterial;
+  glass: THREE.MeshStandardMaterial;
+  signTex: THREE.CanvasTexture | null;
+  hasCustomRooftop?: boolean;
 }) {
   const top = spec.height;
   const strobeRef = useRef<THREE.Mesh>(null);
@@ -298,6 +370,10 @@ function RoofFeature({
     }
   });
 
+  const phW = spec.width * 0.44;
+  const phD = spec.depth * 0.44;
+  const phH = 1.35;
+
   return (
     <group position={[0, top, 0]}>
       {/* ── Recessed Gravel/Bitumen Roof Deck ── */}
@@ -305,112 +381,172 @@ function RoofFeature({
         <boxGeometry args={[spec.width, 0.04, spec.depth]} />
       </mesh>
 
-      {/* ── Perimeter Parapet Wall with Coping Stones ── */}
-      {/* Front & Back Parapets */}
+      {/* ── Perimeter Parapet Wall with Stone/Metal Coping ── */}
       {[-spec.depth / 2 + 0.1, spec.depth / 2 - 0.1].map((pz, i) => (
-        <group key={`p-fb-${i}`} position={[0, 0.25, pz]}>
-          <mesh material={wallDark} castShadow>
-            <boxGeometry args={[spec.width, 0.5, 0.2]} />
+        <group key={`p-fb-${i}`} position={[0, 0.24, pz]}>
+          <mesh material={wallDark} castShadow receiveShadow>
+            <boxGeometry args={[spec.width, 0.48, 0.2]} />
           </mesh>
-          <mesh position={[0, 0.27, 0]} material={trim}>
+          <mesh position={[0, 0.26, 0]} material={trim}>
             <boxGeometry args={[spec.width + 0.08, 0.06, 0.26]} />
           </mesh>
         </group>
       ))}
-      {/* Left & Right Parapets */}
       {[-spec.width / 2 + 0.1, spec.width / 2 - 0.1].map((px, i) => (
-        <group key={`p-lr-${i}`} position={[px, 0.25, 0]}>
-          <mesh material={wallDark} castShadow>
-            <boxGeometry args={[0.2, 0.5, spec.depth - 0.4]} />
+        <group key={`p-lr-${i}`} position={[px, 0.24, 0]}>
+          <mesh material={wallDark} castShadow receiveShadow>
+            <boxGeometry args={[0.2, 0.48, spec.depth - 0.4]} />
           </mesh>
-          <mesh position={[0, 0.27, 0]} material={trim}>
+          <mesh position={[0, 0.26, 0]} material={trim}>
             <boxGeometry args={[0.26, 0.06, spec.depth - 0.32]} />
           </mesh>
         </group>
       ))}
 
-      {/* ── Architectural Mechanical Penthouse & Elevator Shaft ── */}
-      <group position={[0, 0.7, 0]}>
+      {/* ── Architectural Mechanical Penthouse & Elevator Core ── */}
+      <group position={[0, phH / 2, 0]}>
         <mesh material={wallDark} castShadow receiveShadow>
-          <boxGeometry args={[spec.width * 0.42, 1.4, spec.depth * 0.42]} />
+          <boxGeometry args={[phW, phH, phD]} />
         </mesh>
-        <mesh position={[0, 0.72, 0]} material={trim}>
-          <boxGeometry args={[spec.width * 0.44, 0.06, spec.depth * 0.44]} />
+        {/* Penthouse cornice cap */}
+        <mesh position={[0, phH / 2 + 0.04, 0]} material={trim}>
+          <boxGeometry args={[phW + 0.14, 0.08, phD + 0.14]} />
         </mesh>
-        <mesh position={[0, 0.2, spec.depth * 0.21 + 0.01]} material={trim}>
-          <planeGeometry args={[spec.width * 0.28, 0.6]} />
-        </mesh>
+        {/* Side louver intake grilles */}
+        {[-1, 1].map((side) => (
+          <mesh key={`louver-${side}`} position={[side * (phW / 2 + 0.01), 0.05, 0]} rotation={[0, (side * Math.PI) / 2, 0]} material={frame}>
+            <planeGeometry args={[phD * 0.56, 0.52]} />
+          </mesh>
+        ))}
+        {/* Clean Penthouse Front Architectural Emblem (no window overlap!) */}
+        {signTex && !hasCustomRooftop && (
+          <group position={[0, 0.06, phD / 2 + 0.04]}>
+            <mesh position={[0, 0, -0.015]} material={frame}>
+              <boxGeometry args={[1.18, 1.18, 0.04]} />
+            </mesh>
+            <mesh position={[0, 0, -0.005]} material={accent}>
+              <boxGeometry args={[1.22, 1.22, 0.018]} />
+            </mesh>
+            <mesh position={[0, 0, 0.015]} frustumCulled={false}>
+              <planeGeometry args={[1.06, 1.06]} />
+              <meshStandardMaterial map={signTex} transparent roughness={0.35} />
+            </mesh>
+          </group>
+        )}
       </group>
 
-      {/* ── Industrial HVAC Chillers & Fan Ducts ── */}
-      <group position={[-spec.width * 0.26, 0.35, spec.depth * 0.18]}>
-        <mesh material={trim} castShadow>
-          <boxGeometry args={[1.2, 0.7, 0.9]} />
-        </mesh>
-        <mesh position={[0, 0.4, 0]} material={accent}>
-          <cylinderGeometry args={[0.34, 0.36, 0.18, 16]} />
-        </mesh>
-      </group>
+      {/* ── Industrial HVAC Chillers with Dark Fan Shrouds ── */}
+      {[-1, 1].map((side, idx) => (
+        <group key={`hvac-${idx}`} position={[side * spec.width * 0.28, 0.32, spec.depth * 0.2]}>
+          <mesh material={trim} castShadow receiveShadow>
+            <boxGeometry args={[1.1, 0.64, 0.85]} />
+          </mesh>
+          <mesh position={[0, 0.34, 0]} material={frame}>
+            <cylinderGeometry args={[0.32, 0.34, 0.08, 16]} />
+          </mesh>
+          <mesh position={[0, 0.385, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <circleGeometry args={[0.26, 14]} />
+            <meshStandardMaterial color="#0f172a" roughness={0.5} metalness={0.7} />
+          </mesh>
+        </group>
+      ))}
 
-      <group position={[spec.width * 0.26, 0.35, spec.depth * 0.18]}>
-        <mesh material={trim} castShadow>
-          <boxGeometry args={[1.2, 0.7, 0.9]} />
+      {/* ── Communications Dish on Back Corner ── */}
+      <group position={[-spec.width * 0.28, 0.24, -spec.depth * 0.24]} rotation={[0.45, 0.65, 0]}>
+        <mesh material={frame} castShadow>
+          <cylinderGeometry args={[0.05, 0.07, 0.48, 8]} />
         </mesh>
-        <mesh position={[0, 0.4, 0]} material={accent}>
-          <cylinderGeometry args={[0.34, 0.36, 0.18, 16]} />
-        </mesh>
-      </group>
-
-      {/* ── Communications Satellite Dish ── */}
-      <group position={[-spec.width * 0.26, 0.25, -spec.depth * 0.22]} rotation={[0.4, 0.6, 0]}>
-        <mesh material={trim} castShadow>
-          <cylinderGeometry args={[0.06, 0.08, 0.5, 8]} />
-        </mesh>
-        <mesh position={[0, 0.35, 0]} material={trim}>
-          <sphereGeometry args={[0.42, 16, 16, 0, Math.PI * 2, 0, Math.PI / 2.2]} />
+        <mesh position={[0, 0.32, 0]} material={trim}>
+          <sphereGeometry args={[0.36, 14, 14, 0, Math.PI * 2, 0, Math.PI / 2.2]} />
         </mesh>
       </group>
 
       {/* ── Signature Architectural Crown Features ───────────────────────── */}
       {spec.feature === 'clockTower' && (
-        <group position={[0, 1.4, 0]}>
-          <mesh position={[0, 1.2, 0]} material={accent} castShadow>
-            <cylinderGeometry args={[1.1, 1.3, 2.6, 8]} />
+        <group position={[0, phH, 0]}>
+          {/* Brick/Stone Clock Turret */}
+          <mesh position={[0, 1.05, 0]} material={trim} castShadow>
+            <boxGeometry args={[1.7, 2.1, 1.7]} />
           </mesh>
-          <mesh position={[0, 3.1, 0]} material={trim}>
-            <coneGeometry args={[1.4, 1.8, 8]} />
+          {/* 4-Sided Illuminated Clock Faces */}
+          {[0, Math.PI / 2, Math.PI, -Math.PI / 2].map((ry, ci) => (
+            <group key={`clk-${ci}`} position={[Math.sin(ry) * 0.87, 1.25, Math.cos(ry) * 0.87]} rotation={[0, ry, 0]}>
+              <mesh material={frame}>
+                <cylinderGeometry args={[0.46, 0.46, 0.05, 20]} />
+              </mesh>
+              <mesh position={[0, 0, 0.02]} rotation={[Math.PI / 2, 0, 0]}>
+                <circleGeometry args={[0.4, 20]} />
+                <meshStandardMaterial color="#fefce8" emissive="#fef3c7" emissiveIntensity={0.35} roughness={0.4} />
+              </mesh>
+              {/* Clock hands */}
+              <mesh position={[0, 0.09, 0.032]} material={frame}>
+                <boxGeometry args={[0.035, 0.22, 0.015]} />
+              </mesh>
+              <mesh position={[0.08, 0, 0.032]} material={frame}>
+                <boxGeometry args={[0.18, 0.035, 0.015]} />
+              </mesh>
+            </group>
+          ))}
+          {/* Steep Slate/Copper Cupola Spire */}
+          <mesh position={[0, 2.85, 0]} rotation={[0, Math.PI / 4, 0]} material={frame} castShadow>
+            <coneGeometry args={[1.45, 1.65, 4]} />
           </mesh>
-          <mesh position={[0, 4.3, 0]} ref={strobeRef}>
-            <sphereGeometry args={[0.2, 8, 8]} />
+          <mesh position={[0, 3.85, 0]} ref={strobeRef}>
+            <sphereGeometry args={[0.16, 8, 8]} />
             <meshStandardMaterial color="#ef4444" emissive="#ef4444" emissiveIntensity={3} />
           </mesh>
         </group>
       )}
 
       {spec.feature === 'antenna' && (
-        <group position={[0, 1.4, 0]}>
-          <mesh position={[0, 2.4, 0]} material={trim} castShadow>
-            <cylinderGeometry args={[0.08, 0.18, 4.8, 8]} />
+        <group position={[0, phH, 0]}>
+          {/* Architectural Stepped Glass/Metal Crown */}
+          <mesh position={[0, 0.45, 0]} material={glass} castShadow>
+            <boxGeometry args={[phW * 0.65, 0.9, phD * 0.65]} />
           </mesh>
-          <mesh position={[0, 4.9, 0]} ref={strobeRef}>
-            <sphereGeometry args={[0.24, 8, 8]} />
+          <mesh position={[0, 0.92, 0]} material={frame}>
+            <boxGeometry args={[phW * 0.7, 0.06, phD * 0.7]} />
+          </mesh>
+          {/* Tapered Communications Spire */}
+          <mesh position={[0, 2.55, 0]} material={trim} castShadow>
+            <cylinderGeometry args={[0.05, 0.16, 3.4, 8]} />
+          </mesh>
+          <mesh position={[0, 4.35, 0]} ref={strobeRef}>
+            <sphereGeometry args={[0.18, 8, 8]} />
             <meshStandardMaterial color="#ef4444" emissive="#ef4444" emissiveIntensity={3.5} />
           </mesh>
         </group>
       )}
 
       {spec.feature === 'beacon' && (
-        <group position={[0, 1.4, 0]}>
-          {/* Helipad ring on SaaS / Highrise roofs */}
-          <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-            <ringGeometry args={[1.6, 1.9, 32]} />
+        <group position={[0, phH, 0]}>
+          {/* Solid Helipad Deck atop Penthouse */}
+          <mesh position={[0, 0.07, 0]} material={frame} castShadow receiveShadow>
+            <cylinderGeometry args={[1.65, 1.75, 0.14, 24]} />
+          </mesh>
+          <mesh position={[0, 0.15, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[1.15, 1.32, 32]} />
             <meshBasicMaterial color="#facc15" side={THREE.DoubleSide} />
           </mesh>
-          <mesh position={[0, 1.6, 0]} material={trim}>
-            <cylinderGeometry args={[0.25, 0.45, 3.2, 8]} />
+          {/* H marking */}
+          <mesh position={[-0.28, 0.152, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <planeGeometry args={[0.14, 0.85]} />
+            <meshBasicMaterial color="#facc15" side={THREE.DoubleSide} />
           </mesh>
-          <mesh position={[0, 3.3, 0]} ref={strobeRef}>
-            <sphereGeometry args={[0.3, 10, 10]} />
+          <mesh position={[0.28, 0.152, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <planeGeometry args={[0.14, 0.85]} />
+            <meshBasicMaterial color="#facc15" side={THREE.DoubleSide} />
+          </mesh>
+          <mesh position={[0, 0.152, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <planeGeometry args={[0.6, 0.14]} />
+            <meshBasicMaterial color="#facc15" side={THREE.DoubleSide} />
+          </mesh>
+          {/* Side Communications Mast */}
+          <mesh position={[phW * 0.35, 1.25, -phD * 0.35]} material={trim}>
+            <cylinderGeometry args={[0.05, 0.1, 2.5, 8]} />
+          </mesh>
+          <mesh position={[phW * 0.35, 2.55, -phD * 0.35]} ref={strobeRef}>
+            <sphereGeometry args={[0.2, 10, 10]} />
             <meshStandardMaterial color="#ef4444" emissive="#ef4444" emissiveIntensity={3.5} />
           </mesh>
         </group>
@@ -418,28 +554,45 @@ function RoofFeature({
 
       {spec.feature === 'garden' && (
         <group position={[0, 0.06, 0]}>
-          <mesh position={[0, 0.12, 0]} material={trim}>
-            <boxGeometry args={[spec.width * 0.88, 0.24, spec.depth * 0.88]} />
+          {/* Rooftop Pergola & Planter Terrace */}
+          <mesh position={[-spec.width * 0.25, 0.18, -spec.depth * 0.22]} material={trim} castShadow>
+            <boxGeometry args={[1.4, 0.32, 1.4]} />
           </mesh>
-          <mesh position={[-spec.width * 0.22, 0.65, spec.depth * 0.18]} material={accent}>
-            <sphereGeometry args={[0.65, 12, 12]} />
+          <mesh position={[spec.width * 0.25, 0.18, -spec.depth * 0.22]} material={trim} castShadow>
+            <boxGeometry args={[1.4, 0.32, 1.4]} />
           </mesh>
-          <mesh position={[spec.width * 0.22, 0.65, -spec.depth * 0.18]} material={accent}>
-            <sphereGeometry args={[0.55, 12, 12]} />
+          {/* Realistic Greenery Planters */}
+          <mesh position={[-spec.width * 0.25, 0.65, -spec.depth * 0.22]} castShadow>
+            <dodecahedronGeometry args={[0.58, 1]} />
+            <meshStandardMaterial color="#2e7d32" roughness={0.85} flatShading />
+          </mesh>
+          <mesh position={[spec.width * 0.25, 0.65, -spec.depth * 0.22]} castShadow>
+            <dodecahedronGeometry args={[0.52, 1]} />
+            <meshStandardMaterial color="#388e3c" roughness={0.85} flatShading />
           </mesh>
         </group>
       )}
 
       {spec.feature === 'awning' && (
-        <mesh position={[0, 0.25, 0]} material={trim}>
-          <boxGeometry args={[spec.width + 0.35, 0.5, spec.depth + 0.35]} />
-        </mesh>
+        <group position={[0, phH, 0]}>
+          {/* Commercial Glass Skylight Monitor */}
+          <mesh position={[0, 0.22, 0]} material={glass} castShadow>
+            <boxGeometry args={[phW * 0.72, 0.44, phD * 0.72]} />
+          </mesh>
+          <mesh position={[0, 0.46, 0]} material={frame}>
+            <boxGeometry args={[phW * 0.76, 0.05, phD * 0.76]} />
+          </mesh>
+        </group>
       )}
 
       {spec.feature === 'parapet' && (
-        <group position={[0, 0.1, 0]}>
-          <mesh position={[0, 0.25, 0]} material={trim}>
-            <boxGeometry args={[spec.width + 0.3, 0.5, spec.depth + 0.3]} />
+        <group position={[0, phH, 0]}>
+          {/* Architectural Skylight Monitor */}
+          <mesh position={[0, 0.18, 0]} material={glass}>
+            <boxGeometry args={[phW * 0.62, 0.36, phD * 0.62]} />
+          </mesh>
+          <mesh position={[0, 0.38, 0]} material={frame}>
+            <boxGeometry args={[phW * 0.66, 0.04, phD * 0.66]} />
           </mesh>
         </group>
       )}
@@ -697,14 +850,23 @@ export function ProjectBuilding({
     [b.buildingStyle, b.scale, project.type],
   );
 
+  const styleKey = b.buildingStyle || project.type;
+  const isNight = cityMood === 'night';
   const mats = useBuildingMaterials(facade, facadeDark, glass, accent, {
     glow: pal(4) || undefined,
     signBg: pal(6) || undefined,
     trim: pal(7) || undefined,
+    style: styleKey,
+    isNight,
   });
   const beacon = healthColor(project);
   const sign = useSignTexture(project, b.theme, pal(6) || null);
   const rot = ((b.rotation || 0) * Math.PI) / 180;
+  const hasCustomRooftop = Boolean(
+    b.customModel3d?.enabled &&
+      b.customModel3d?.imageUrl &&
+      (b.customModel3d.placement ?? 'rooftop') === 'rooftop',
+  );
 
   const beaconRef = useRef<THREE.Mesh>(null);
   useFrame(({ clock }) => {
@@ -717,6 +879,8 @@ export function ProjectBuilding({
 
   const activeBots = agents.filter((a) => a.status !== 'offline');
   const exterior = interiorFloor === null;
+  const lobbyH = Math.max(0.95, spec.floorH * 0.74);
+  const lobbyW = Math.min(2.4, spec.width * 0.38);
 
   const tower = exterior ? (
     <group
@@ -724,7 +888,7 @@ export function ProjectBuilding({
       onPointerDown={handlePointerDown}
       onContextMenu={handleContextMenu}
     >
-      {/* ── Main Tower Structural Shaft ────────────────────────── */}
+      {/* ── Main Tower Structural Shaft (Textured Architectural Cladding) ── */}
       <mesh
         position={[0, spec.height / 2, 0]}
         material={mats.wall}
@@ -735,7 +899,7 @@ export function ProjectBuilding({
         <boxGeometry args={[spec.width, spec.height, spec.depth]} />
       </mesh>
 
-      {/* ── Corner Structural Pilasters (Vertical Piers) ────────── */}
+      {/* ── Corner Structural Pilasters (Slender Architectural Piers) ── */}
       {[
         [-spec.width / 2, -spec.depth / 2],
         [spec.width / 2, -spec.depth / 2],
@@ -743,71 +907,141 @@ export function ProjectBuilding({
         [spec.width / 2, spec.depth / 2],
       ].map(([cx, cz], ci) => (
         <mesh key={`col-${ci}`} position={[cx, spec.height / 2, cz]} material={mats.trim} castShadow>
-          <boxGeometry args={[0.34, spec.height, 0.34]} />
+          <boxGeometry args={[0.22, spec.height, 0.22]} />
         </mesh>
       ))}
 
-      {/* ── Intermediate Vertical Architectural Fins ────────────── */}
-      {spec.width > 6 && (
+      {/* ── Intermediate Vertical Architectural Mullion Fins ────────────── */}
+      {spec.width > 5.8 && (
         <>
-          <mesh position={[-spec.width * 0.24, spec.height / 2, spec.depth / 2 + 0.02]} material={mats.trim} castShadow>
-            <boxGeometry args={[0.16, spec.height, 0.12]} />
+          <mesh position={[-spec.width * 0.24, spec.height / 2, spec.depth / 2 + 0.015]} material={mats.trim} castShadow>
+            <boxGeometry args={[0.1, spec.height, 0.07]} />
           </mesh>
-          <mesh position={[spec.width * 0.24, spec.height / 2, spec.depth / 2 + 0.02]} material={mats.trim} castShadow>
-            <boxGeometry args={[0.16, spec.height, 0.12]} />
+          <mesh position={[spec.width * 0.24, spec.height / 2, spec.depth / 2 + 0.015]} material={mats.trim} castShadow>
+            <boxGeometry args={[0.1, spec.height, 0.07]} />
           </mesh>
-          <mesh position={[-spec.width * 0.24, spec.height / 2, -spec.depth / 2 - 0.02]} material={mats.trim} castShadow>
-            <boxGeometry args={[0.16, spec.height, 0.12]} />
+          <mesh position={[-spec.width * 0.24, spec.height / 2, -spec.depth / 2 - 0.015]} material={mats.trim} castShadow>
+            <boxGeometry args={[0.1, spec.height, 0.07]} />
           </mesh>
-          <mesh position={[spec.width * 0.24, spec.height / 2, -spec.depth / 2 - 0.02]} material={mats.trim} castShadow>
-            <boxGeometry args={[0.16, spec.height, 0.12]} />
+          <mesh position={[spec.width * 0.24, spec.height / 2, -spec.depth / 2 - 0.015]} material={mats.trim} castShadow>
+            <boxGeometry args={[0.1, spec.height, 0.07]} />
+          </mesh>
+        </>
+      )}
+      {spec.depth > 5.8 && (
+        <>
+          <mesh position={[spec.width / 2 + 0.015, spec.height / 2, -spec.depth * 0.24]} material={mats.trim} castShadow>
+            <boxGeometry args={[0.07, spec.height, 0.1]} />
+          </mesh>
+          <mesh position={[spec.width / 2 + 0.015, spec.height / 2, spec.depth * 0.24]} material={mats.trim} castShadow>
+            <boxGeometry args={[0.07, spec.height, 0.1]} />
+          </mesh>
+          <mesh position={[-spec.width / 2 - 0.015, spec.height / 2, -spec.depth * 0.24]} material={mats.trim} castShadow>
+            <boxGeometry args={[0.07, spec.height, 0.1]} />
+          </mesh>
+          <mesh position={[-spec.width / 2 - 0.015, spec.height / 2, spec.depth * 0.24]} material={mats.trim} castShadow>
+            <boxGeometry args={[0.07, spec.height, 0.1]} />
           </mesh>
         </>
       )}
 
-      {/* Thin belt courses on the floor lines. Windows sit in the gap between them. */}
+      {/* Architectural stone/metal belt courses on floor lines */}
       {Array.from({ length: Math.max(1, Math.floor(spec.height / spec.floorH) - 1) }, (_, fi) => (
         <mesh key={`slab-${fi}`} position={[0, (fi + 1) * spec.floorH, 0]} material={mats.trim}>
-          <boxGeometry args={[spec.width + 0.08, 0.06, spec.depth + 0.08]} />
+          <boxGeometry args={[spec.width + 0.08, 0.055, spec.depth + 0.08]} />
         </mesh>
       ))}
 
-      {/* Plinth stays inside the lot. A deep black podium was covering the curb. */}
+      {/* Granite/stone ground plinth staying strictly within PODIUM_OUTSET */}
       <mesh position={[0, 0.18, 0]} material={mats.wallDark} castShadow receiveShadow>
         <boxGeometry args={[spec.width + PODIUM_OUTSET * 2, 0.36, spec.depth + PODIUM_OUTSET * 2]} />
       </mesh>
       <mesh position={[0, 0.38, 0]} material={mats.trim}>
-        <boxGeometry args={[spec.width + PODIUM_OUTSET * 2 + 0.08, 0.05, spec.depth + PODIUM_OUTSET * 2 + 0.08]} />
+        <boxGeometry args={[spec.width + PODIUM_OUTSET * 2 + 0.06, 0.05, spec.depth + PODIUM_OUTSET * 2 + 0.06]} />
       </mesh>
 
-      {/* ── Upper Tower Crown Ledge ───────────────────────────── */}
-      <mesh position={[0, spec.height - 0.1, 0]} material={mats.trim}>
-        <boxGeometry args={[spec.width + 0.24, 0.18, spec.depth + 0.24]} />
+      {/* ── Upper Tower Architectural Crown Cornice ───────────────── */}
+      <mesh position={[0, spec.height - 0.09, 0]} material={mats.trim} castShadow>
+        <boxGeometry args={[spec.width + 0.26, 0.18, spec.depth + 0.26]} />
       </mesh>
 
-      {/* Entrance stays inside CANOPY_REACH so it does not cover the curb. */}
+      {/* ── Architectural Ground-Floor Lobby Portal & Storefront Bays ── */}
+      {/* Entrance stays inside CANOPY_REACH (0.42) so it never covers the curb. */}
       <group position={[0, 0, spec.depth / 2 + 0.02]}>
-        <mesh position={[0, 0.62, 0.02]} material={mats.windowFrame}>
-          <boxGeometry args={[Math.min(2.4, spec.width * 0.46), 1.05, 0.08]} />
+        {/* Portal outer surround frame */}
+        <mesh position={[0, 0.16 + lobbyH / 2, 0.02]} material={mats.windowFrame} castShadow>
+          <boxGeometry args={[lobbyW + 0.24, lobbyH + 0.1, 0.08]} />
         </mesh>
-        <mesh position={[0, 0.62, 0.07]} material={mats.lobbyGlow}>
-          <planeGeometry args={[Math.min(2.05, spec.width * 0.4), 0.88]} />
+        {/* Glazed double-door lobby interior */}
+        <mesh position={[0, 0.16 + lobbyH / 2, 0.066]} material={mats.lobbyGlow}>
+          <planeGeometry args={[lobbyW, lobbyH - 0.04]} />
         </mesh>
-        <mesh position={[0, 1.16, 0.14]} material={mats.trim} castShadow>
-          <boxGeometry args={[Math.min(2.6, spec.width * 0.5), 0.05, 0.36]} />
+        {/* Center door mullion + transom bar */}
+        <mesh position={[0, 0.16 + lobbyH / 2, 0.078]} material={mats.frame}>
+          <boxGeometry args={[0.045, lobbyH - 0.04, 0.025]} />
         </mesh>
+        <mesh position={[0, 0.16 + lobbyH * 0.72, 0.078]} material={mats.frame}>
+          <boxGeometry args={[lobbyW, 0.04, 0.025]} />
+        </mesh>
+        {/* Cantilevered glass-and-steel entrance canopy */}
+        <mesh position={[0, 0.18 + lobbyH, 0.18]} material={mats.trim} castShadow>
+          <boxGeometry args={[lobbyW + 0.52, 0.06, 0.36]} />
+        </mesh>
+        {/* Subtle illuminated architectural canopy edge strip */}
+        <mesh position={[0, 0.15 + lobbyH, 0.355]} material={mats.accent}>
+          <boxGeometry args={[lobbyW + 0.48, 0.024, 0.02]} />
+        </mesh>
+        {/* Entrance steps */}
         <mesh position={[0, 0.04, 0.16]} material={mats.wallDark} receiveShadow>
-          <boxGeometry args={[Math.min(2.6, spec.width * 0.5), 0.08, 0.32]} />
+          <boxGeometry args={[lobbyW + 0.48, 0.08, 0.32]} />
         </mesh>
+
+        {/* Flanking street-level storefront display bays */}
+        {spec.width >= 6.0 && (
+          <>
+            {[-1, 1].map((side) => {
+              const bayX = side * spec.width * 0.34;
+              const bayW = Math.min(1.45, spec.width * 0.2);
+              const bayH = lobbyH * 0.72;
+              return (
+                <group key={`storefront-${side}`} position={[bayX, 0.24 + bayH / 2, 0.015]}>
+                  <mesh material={mats.windowFrame}>
+                    <boxGeometry args={[bayW + 0.12, bayH + 0.1, 0.05]} />
+                  </mesh>
+                  <mesh position={[0, 0, 0.032]} material={mats.lobbyGlow}>
+                    <planeGeometry args={[bayW, bayH]} />
+                  </mesh>
+                  <mesh position={[0, 0, 0.042]} material={mats.frame}>
+                    <boxGeometry args={[0.035, bayH, 0.02]} />
+                  </mesh>
+                  <mesh position={[0, -bayH / 2 - 0.04, 0.035]} material={mats.windowSill}>
+                    <boxGeometry args={[bayW + 0.18, 0.05, 0.1]} />
+                  </mesh>
+                </group>
+              );
+            })}
+          </>
+        )}
       </group>
 
-      <WindowInstances spec={spec} glass={mats.windowGlass} frame={mats.windowFrame} />
+      <WindowInstances
+        spec={spec}
+        glass={mats.windowGlass}
+        glassDark={mats.windowGlassDark}
+        frame={mats.windowFrame}
+        sill={mats.windowSill}
+        isNight={isNight}
+      />
       <RoofFeature
         spec={spec}
         accent={mats.accent}
         trim={mats.trim}
         wallDark={mats.wallDark}
         roofDeck={mats.roofDeck}
+        frame={mats.frame}
+        glass={mats.glass}
+        signTex={sign}
+        hasCustomRooftop={hasCustomRooftop}
       />
 
       {b.customModel3d?.enabled && b.customModel3d?.imageUrl && (
@@ -815,19 +1049,19 @@ export function ProjectBuilding({
           config={b.customModel3d}
           spec={spec}
           accentColor={accent}
-          isNight={cityMood === 'night'}
+          isNight={isNight}
         />
       )}
 
-      {/* ── Illuminated Architectural Logo Sign with Beveled Frame ── */}
+      {/* ── Entrance Marquee Sign Badge (cleanly mounted above lobby canopy, never overlaps windows) ── */}
       {sign && (
-        <group position={[0, spec.height * 0.55, spec.depth / 2 + 0.08]}>
-          <mesh position={[0, 0, -0.02]} material={mats.trim}>
-            <boxGeometry args={[Math.min(2.4, spec.width * 0.5) + 0.16, Math.min(2.4, spec.width * 0.5) + 0.16, 0.04]} />
+        <group position={[0, 0.24 + lobbyH + 0.26, spec.depth / 2 + 0.09]}>
+          <mesh position={[0, 0, -0.015]} material={mats.frame}>
+            <boxGeometry args={[0.56, 0.56, 0.04]} />
           </mesh>
-          <mesh frustumCulled={false}>
-            <planeGeometry args={[Math.min(2.4, spec.width * 0.5), Math.min(2.4, spec.width * 0.5)]} />
-            <meshStandardMaterial map={sign} transparent roughness={0.4} />
+          <mesh position={[0, 0, 0.01]} frustumCulled={false}>
+            <planeGeometry args={[0.48, 0.48]} />
+            <meshStandardMaterial map={sign} transparent roughness={0.35} />
           </mesh>
         </group>
       )}
@@ -855,34 +1089,23 @@ export function ProjectBuilding({
         floorH={spec.floorH}
         agents={activeBots}
       />
-
-      {/* Open dollhouse rim. A solid lid hid the floor, walls, and windows. */}
-      <group position={[0, (interiorFloor + 1) * spec.floorH + 0.06, 0]}>
-        <mesh position={[0, 0, spec.depth / 2 - 0.12]} material={mats.trim}>
-          <boxGeometry args={[spec.width + 0.2, 0.1, 0.24]} />
-        </mesh>
-        <mesh position={[0, 0, -spec.depth / 2 + 0.12]} material={mats.trim}>
-          <boxGeometry args={[spec.width + 0.2, 0.1, 0.24]} />
-        </mesh>
-        <mesh position={[-spec.width / 2 + 0.12, 0, 0]} material={mats.trim}>
-          <boxGeometry args={[0.24, 0.1, spec.depth - 0.2]} />
-        </mesh>
-        <mesh position={[spec.width / 2 - 0.12, 0, 0]} material={mats.trim}>
-          <boxGeometry args={[0.24, 0.1, spec.depth - 0.2]} />
-        </mesh>
-      </group>
     </group>
   );
 
   const detailed = (
     <>
       {tower}
-      {/* status beacon on roof */}
+      {/* status beacon on roof corner mast (never collides with clock tower / helipad) */}
       {exterior && (
-        <mesh ref={beaconRef} position={[0, spec.height + (spec.feature === 'clockTower' ? 4.4 : spec.feature === 'antenna' ? 3.2 : 1.1), 0]}>
-          <sphereGeometry args={[0.3, 10, 10]} />
-          <meshStandardMaterial color={beacon} emissive={beacon} emissiveIntensity={agentActive ? 2.2 : 1.1} />
-        </mesh>
+        <group position={[spec.width * 0.34, spec.height, spec.depth * 0.34]}>
+          <mesh position={[0, 0.35, 0]} material={mats.frame}>
+            <cylinderGeometry args={[0.04, 0.06, 0.7, 8]} />
+          </mesh>
+          <mesh ref={beaconRef} position={[0, 0.76, 0]}>
+            <sphereGeometry args={[0.2, 10, 10]} />
+            <meshStandardMaterial color={beacon} emissive={beacon} emissiveIntensity={agentActive ? 2.2 : 1.1} />
+          </mesh>
+        </group>
       )}
       {/* user plaza ring (palette slot 5) */}
       {exterior && pal(5) && (
@@ -933,7 +1156,7 @@ export function ProjectBuilding({
 
   return (
     <group position={dragWorld ?? position}>
-        <Detailed distances={[0, 200]}>
+        <Detailed distances={[0, 260]}>
           {detailed}
           {/* far LOD: single box, zero detail */}
           <group rotation={[0, rot, 0]}>

@@ -138,6 +138,38 @@ export function TopBar({
           </button>
         )}
 
+        {/* Prominent BETA VERSION Badge on Top of City Tab */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '4px 10px',
+            borderRadius: 8,
+            background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.24) 0%, rgba(234, 88, 12, 0.24) 100%)',
+            border: '1px solid rgba(251, 191, 36, 0.55)',
+            color: '#fde047',
+            fontSize: 10,
+            fontWeight: 800,
+            letterSpacing: 1.1,
+            textTransform: 'uppercase',
+            boxShadow: '0 0 14px rgba(245, 158, 11, 0.25)',
+            whiteSpace: 'nowrap',
+          }}
+          title="Developer City 3D Workspace — Beta Version"
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: '#fbbf24',
+              boxShadow: '0 0 8px #fbbf24',
+            }}
+          />
+          <span>BETA VERSION</span>
+        </div>
+
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '3px 8px', border: '1px solid rgba(255,255,255,0.08)' }}>
           <Search size={13} style={{ color: t.colors.text.muted }} />
           <input

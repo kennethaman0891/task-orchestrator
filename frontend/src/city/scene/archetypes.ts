@@ -6,6 +6,12 @@
 
 import { useMemo } from 'react';
 import * as THREE from 'three';
+import {
+  deriveArchitecturalTrim,
+  getFacadeTextures,
+  getPlinthStoneTexture,
+  getRoofGravelTexture,
+} from './buildingTextures';
 
 export interface ArchetypeSpec {
   /** Tower dimensions (before user scale) */
@@ -58,8 +64,8 @@ export interface WindowPane {
 export function windowPane(spec: ArchetypeSpec): WindowPane {
   const band = Math.max(0.8, spec.floorH);
   return {
-    width: Math.min(1.02, Math.max(0.72, band * 0.62)),
-    height: band * 0.5,
+    width: Math.min(1.06, Math.max(0.76, band * 0.65)),
+    height: band * 0.56,
     centerLift: band * 0.5,
   };
 }
@@ -117,8 +123,12 @@ export interface BuildingPaletteOptions {
   glow?: string;
   /** sign/logo plate background (palette slot 6); unset = theme trim */
   signBg?: string;
-  /** trim color (palette slot 7); unset = accent */
+  /** trim color (palette slot 7); unset = architectural stone/slate trim */
   trim?: string;
+  /** building archetype style for procedural facade cladding */
+  style?: string;
+  /** scene mood so glass reflects sky by day and glows warmly at night */
+  isNight?: boolean;
 }
 
 export function useBuildingMaterials(
@@ -136,81 +146,103 @@ export function useBuildingMaterials(
   signBg: THREE.MeshStandardMaterial;
   frame: THREE.MeshStandardMaterial;
   windowFrame: THREE.MeshStandardMaterial;
+  windowSill: THREE.MeshStandardMaterial;
   windowGlass: THREE.MeshStandardMaterial;
+  windowGlassDark: THREE.MeshStandardMaterial;
   roofDeck: THREE.MeshStandardMaterial;
   lobbyGlow: THREE.MeshStandardMaterial;
 } {
+  const style = opts?.style || 'custom';
+  const isNight = opts?.isNight ?? false;
+
   return useMemo(() => {
     const glow = opts?.glow;
-    const trim = opts?.trim || accent;
+    const structuralTrim = opts?.trim || deriveArchitecturalTrim(facadeDark);
+    const tex = getFacadeTextures(facade, style);
+    const plinthTex = getPlinthStoneTexture();
+    const roofTex = getRoofGravelTexture();
+
     return {
       wall: new THREE.MeshStandardMaterial({
-        color: facade,
-        roughness: 0.55,
-        metalness: 0.15,
+        color: tex ? '#ffffff' : facade,
+        map: tex?.map ?? null,
+        bumpMap: tex?.bumpMap ?? null,
+        bumpScale: tex?.bumpScale ?? 0,
+        roughness: tex?.roughness ?? 0.65,
+        metalness: tex?.metalness ?? 0.14,
       }),
       wallDark: new THREE.MeshStandardMaterial({
-        color: facadeDark,
-        roughness: 0.65,
-        metalness: 0.25,
+        color: plinthTex ? '#cbd5e1' : facadeDark,
+        map: plinthTex ?? null,
+        roughness: 0.78,
+        metalness: 0.15,
       }),
       glass: new THREE.MeshStandardMaterial({
         color: glass,
         roughness: 0.08,
         metalness: 0.85,
         emissive: new THREE.Color(glow || glass),
-        emissiveIntensity: glow ? 0.45 : 0.25,
+        emissiveIntensity: isNight ? (glow ? 0.55 : 0.3) : 0.08,
       }),
       accent: new THREE.MeshStandardMaterial({
         color: accent,
-        roughness: 0.35,
-        metalness: 0.4,
+        roughness: 0.32,
+        metalness: 0.45,
         emissive: new THREE.Color(accent),
-        emissiveIntensity: 0.4,
+        emissiveIntensity: isNight ? 0.85 : 0.25,
       }),
       trim: new THREE.MeshStandardMaterial({
-        color: trim,
-        roughness: 0.3,
-        metalness: 0.7,
+        color: structuralTrim,
+        roughness: style === 'college' ? 0.68 : 0.36,
+        metalness: style === 'college' ? 0.15 : 0.62,
       }),
       signBg: new THREE.MeshStandardMaterial({
-        color: opts?.signBg || trim,
-        roughness: 0.5,
-        metalness: 0.3,
+        color: opts?.signBg || structuralTrim,
+        roughness: 0.45,
+        metalness: 0.35,
       }),
       frame: new THREE.MeshStandardMaterial({
-        color: '#1a1f2c',
-        roughness: 0.35,
-        metalness: 0.75,
-      }),
-      // Light casing so the border reads on both cream and dark facades.
-      // The glass pane sits in front of this, so the opening is not a black block.
-      windowFrame: new THREE.MeshStandardMaterial({
-        color: '#e7e5e4',
+        color: '#181e29',
         roughness: 0.32,
-        metalness: 0.55,
+        metalness: 0.78,
+      }),
+      windowFrame: new THREE.MeshStandardMaterial({
+        color: style === 'college' ? '#2c2520' : '#1b2230',
+        roughness: 0.34,
+        metalness: 0.65,
+      }),
+      windowSill: new THREE.MeshStandardMaterial({
+        color: style === 'college' ? '#a8a29e' : '#64748b',
+        roughness: 0.58,
+        metalness: 0.25,
       }),
       windowGlass: new THREE.MeshStandardMaterial({
         color: '#ffffff',
-        roughness: 0.06,
-        metalness: 0.04,
-        emissive: new THREE.Color('#fff7ed'),
-        emissiveIntensity: 0.42,
-        transparent: true,
-        opacity: 0.94,
+        roughness: isNight ? 0.14 : 0.06,
+        metalness: isNight ? 0.32 : 0.88,
+        emissive: new THREE.Color(isNight ? glow || '#fde68a' : '#0d223b'),
+        emissiveIntensity: isNight ? 0.92 : 0.1,
+      }),
+      windowGlassDark: new THREE.MeshStandardMaterial({
+        color: '#0b1322',
+        roughness: 0.08,
+        metalness: 0.9,
+        emissive: new THREE.Color('#050a14'),
+        emissiveIntensity: 0.04,
       }),
       roofDeck: new THREE.MeshStandardMaterial({
-        color: '#1e2430',
-        roughness: 0.9,
+        color: roofTex ? '#94a3b8' : '#1e2430',
+        map: roofTex ?? null,
+        roughness: 0.92,
         metalness: 0.05,
       }),
       lobbyGlow: new THREE.MeshStandardMaterial({
-        color: '#fef3c7',
-        emissive: new THREE.Color('#fef3c7'),
-        emissiveIntensity: 0.85,
-        roughness: 0.2,
+        color: isNight ? '#fef3c7' : '#263a52',
+        emissive: new THREE.Color(isNight ? '#fef3c7' : '#fed7aa'),
+        emissiveIntensity: isNight ? 1.05 : 0.24,
+        roughness: isNight ? 0.2 : 0.1,
+        metalness: isNight ? 0.1 : 0.78,
       }),
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [facade, facadeDark, glass, accent, opts?.glow, opts?.signBg, opts?.trim]);
+  }, [facade, facadeDark, glass, accent, opts?.glow, opts?.signBg, opts?.trim, style, isNight]);
 }

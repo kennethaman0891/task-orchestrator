@@ -1,10 +1,10 @@
 // Developer City — FloorNav / InteriorHUD: Complete architectural HUD overlay for building interior.
-// Provides top-level breadcrumb navigation, room zone switcher, multi-floor elevator stack,
-// interactive 3D camera controls (orbit presets, 45° step rotation, zoom, reset),
-// full-featured inside-the-room First-Person Walk-In navigation, and a collapsible agent dock.
+// Provides top-level breadcrumb navigation with BETA VERSION badge, meaningful room zone switcher,
+// multi-floor elevator stack, complete hands-on 360° camera control (manual scrub slider + tilt + step orbit,
+// zero unrequested continuous spin), First-Person Walk-In navigation, and live agent/terminal dock.
 
-import { useState, useEffect } from 'react';
-import type { CSSProperties } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import {
   ArrowLeft,
   ChevronUp,
@@ -24,36 +24,50 @@ import {
   X,
   Compass,
   History,
+  Terminal,
+  Activity,
+  Sliders,
 } from 'lucide-react';
 import { useCityStore } from '@/city/store';
 import { floorName } from '@/city/scene/Interior';
 import { interiorTarget, buildingFocusTarget } from '@/city/scene/CameraRig';
 import { fittedArchetype } from '@/city/scene/plotFit';
-import type { AgentBot, Project, FloorPlanFloor } from '@/city/types';
+import type { AgentBot, Project, FloorPlanFloor, TerminalCar } from '@/city/types';
 import { useProjectFloorPlan, generateFallbackFloorPlan } from '@/city/utils/projectScanner';
+
+type CameraPreset = 'overview' | 'walkin' | 'desks' | 'servers' | 'blueprint' | 'preview' | 'lounge' | 'topdown';
 
 export interface FloorNavProps {
   onExitToWorkspace?: () => void;
   onOpenTerminal?: (terminalId: string) => void;
+  onOpenFloatingTerminal?: (terminalId: string) => void;
   onNewSession?: (project: Project) => void;
 }
 
-export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: FloorNavProps) {
+export function FloorNav({
+  onExitToWorkspace,
+  onOpenTerminal,
+  onOpenFloatingTerminal,
+  onNewSession,
+}: FloorNavProps) {
   const nav = useCityStore((s) => s.nav);
   const projects = useCityStore((s) => s.projects);
   const agents = useCityStore((s) => s.agents);
+  const terminalCars = useCityStore((s) => s.terminalCars);
   const goInterior = useCityStore((s) => s.goInterior);
   const exitOneLevel = useCityStore((s) => s.exitOneLevel);
   const setCameraTarget = useCityStore((s) => s.setCameraTarget);
   const interiorViewMode = useCityStore((s) => s.interiorViewMode);
   const setInteriorViewMode = useCityStore((s) => s.setInteriorViewMode);
+  const setActiveObjectInspection = useCityStore((s) => s.setActiveObjectInspection);
 
-  const [activePreset, setActivePreset] = useState<'overview' | 'walkin' | 'desks' | 'servers' | 'blueprint' | 'lounge' | 'topdown'>('overview');
+  const [activePreset, setActivePreset] = useState<CameraPreset>('overview');
   const [showAgents, setShowAgents] = useState<boolean>(false);
   const [showFloorPicker, setShowFloorPicker] = useState<boolean>(false);
-  const turntable = useCityStore((s) => s.turntable);
-  const setTurntable = useCityStore((s) => s.setTurntable);
-  const toggleTurntable = useCityStore((s) => s.toggleTurntable);
+  const [showHandsOn360, setShowHandsOn360] = useState<boolean>(true);
+  const [azimuthDeg, setAzimuthDeg] = useState<number>(22);
+  const [polarDeg, setPolarDeg] = useState<number>(52);
+
   const memoryOpen = useCityStore((s) => s.memoryOpen);
   const memoryFloor = useCityStore((s) => s.memoryFloor);
   const openMemory = useCityStore((s) => s.openMemory);
@@ -61,11 +75,29 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
   const isInterior = nav.mode === 'interior';
   const p = isInterior ? projects[nav.projectId] : null;
   const floorPlan = useProjectFloorPlan(p || null);
+  const fallbackPlan = useMemo(() => (p ? generateFallbackFloorPlan(p) : null), [p]);
 
   const activePlanFloor: FloorPlanFloor =
     floorPlan?.floors?.[nav.mode === 'interior' ? nav.floorIndex : 0] ||
+    fallbackPlan?.floors?.[nav.mode === 'interior' ? nav.floorIndex : 0] ||
     floorPlan?.floors?.[0] ||
-    (p ? generateFallbackFloorPlan(p).floors[0] : null as any);
+    (fallbackPlan ? fallbackPlan.floors[0] : (null as any));
+
+  // Sync live camera spherical angles when user drags in the 3D viewport
+  useEffect(() => {
+    if (!isInterior) return;
+    const onAngleSync = (e: Event) => {
+      const custom = e as CustomEvent<{ azimuthDeg: number; polarDeg: number }>;
+      if (typeof custom.detail?.azimuthDeg === 'number') {
+        setAzimuthDeg(custom.detail.azimuthDeg);
+      }
+      if (typeof custom.detail?.polarDeg === 'number') {
+        setPolarDeg(custom.detail.polarDeg);
+      }
+    };
+    window.addEventListener('tto-camera-angle-sync', onAngleSync);
+    return () => window.removeEventListener('tto-camera-angle-sync', onAngleSync);
+  }, [isInterior]);
 
   // Keyboard shortcut 'V' to toggle Walk-In vs Dollhouse Overview
   useEffect(() => {
@@ -78,6 +110,7 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isInterior, interiorViewMode]);
 
   useEffect(() => {
@@ -91,12 +124,23 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
   const fitted = fittedArchetype(p.building.buildingStyle || p.type, p.type, p.building.scale);
   const floorCount = Math.max(floorPlan?.floors?.length || p.floors?.length || 0, fitted.slabs || 6);
 
-  // Active agents inside this project
-  const projectAgents: AgentBot[] = Object.values(agents).filter(
-    (a) => a.projectPath === p.path && a.status !== 'offline',
+  // Live terminal cars & active agents inside this project
+  const projectCars: TerminalCar[] = Object.values(terminalCars).filter(
+    (c) => c.projectId === p.id || (p.path && c.projectPath === p.path),
   );
 
-  const flyToFloor = (i: number, preset: 'overview' | 'walkin' | 'desks' | 'servers' | 'blueprint' | 'lounge' | 'topdown' = activePreset) => {
+  const projectAgents: AgentBot[] = Object.values(agents).filter(
+    (a) =>
+      a.status !== 'offline' &&
+      p.path &&
+      (a.projectPath === p.path ||
+        a.projectPath.startsWith(p.path + '/') ||
+        p.path.startsWith(a.projectPath)),
+  );
+
+  const totalLiveUnits = Math.max(projectAgents.length, projectCars.length);
+
+  const flyToFloor = (i: number, preset: CameraPreset = activePreset) => {
     goInterior(p.id, i, nav.room);
     setActivePreset(preset);
     setCameraTarget(
@@ -104,7 +148,7 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
     );
   };
 
-  const setViewPreset = (preset: 'overview' | 'walkin' | 'desks' | 'servers' | 'blueprint' | 'lounge' | 'topdown') => {
+  const setViewPreset = (preset: CameraPreset) => {
     setActivePreset(preset);
     if (preset === 'walkin') {
       setInteriorViewMode('walk-in');
@@ -126,18 +170,33 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
     }
   };
 
-  // Interactive 3D step rotation around floor (dispatched directly to CameraRig for zero-conflict orbit)
+  // Interactive 3D step rotation around floor (manual hands-on control)
   const rotateCamera = (deltaRad: number) => {
+    if (interiorViewMode === 'walk-in') setInteriorViewMode('dollhouse');
     window.dispatchEvent(new CustomEvent('tto-camera-rotate', { detail: { deltaRad } }));
   };
 
-  // Interactive 3D step zoom (dispatched directly to CameraRig)
+  // Direct hands-on 360° orbit angle scrubber (never auto-spins!)
+  const scrubOrbitAngle = (nextAzimuthDeg: number, nextPolarDeg?: number) => {
+    if (interiorViewMode === 'walk-in') setInteriorViewMode('dollhouse');
+    setAzimuthDeg(nextAzimuthDeg);
+    if (typeof nextPolarDeg === 'number') setPolarDeg(nextPolarDeg);
+    window.dispatchEvent(
+      new CustomEvent('tto-camera-set-orbit', {
+        detail: {
+          azimuthDeg: nextAzimuthDeg,
+          polarDeg: typeof nextPolarDeg === 'number' ? nextPolarDeg : polarDeg,
+        },
+      }),
+    );
+  };
+
+  // Interactive 3D step zoom
   const zoomCamera = (factorDelta: number) => {
     window.dispatchEvent(new CustomEvent('tto-camera-zoom', { detail: { factor: factorDelta } }));
   };
 
   const resetCamera = () => {
-    setTurntable(false);
     setInteriorViewMode('dollhouse');
     setViewPreset('overview');
   };
@@ -156,6 +215,14 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
   const floorCategory = activePlanFloor?.category || 'custom';
   const accentColor = activePlanFloor?.accentColor || '#38bdf8';
 
+  const zoneButtons: Array<{ id: CameraPreset; label: string; icon: ReactNode }> = [
+    { id: 'desks', label: 'Workstations', icon: <Monitor size={12} /> },
+    { id: 'preview', label: 'Live Preview', icon: <Activity size={12} /> },
+    { id: 'blueprint', label: 'Command Wall', icon: <Layers size={12} /> },
+    { id: 'servers', label: 'Server Pod', icon: <Server size={12} /> },
+    { id: 'lounge', label: 'Lounge', icon: <Coffee size={12} /> },
+  ];
+
   return (
     <>
       {/* ── 1. Top Architectural HUD Header ────────────────────────── */}
@@ -169,11 +236,12 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          gap: 12,
+          gap: 10,
           pointerEvents: 'none',
+          flexWrap: 'wrap',
         }}
       >
-        {/* Left: Exit button & Real Project Identity */}
+        {/* Left: Exit button, BETA VERSION Badge & Real Project Identity */}
         <div
           style={{
             pointerEvents: 'auto',
@@ -213,6 +281,36 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
             <span>Exit Building</span>
           </button>
 
+          {/* BETA VERSION Badge */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '3px 9px',
+              borderRadius: 7,
+              background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.24) 0%, rgba(234, 88, 12, 0.24) 100%)',
+              border: '1px solid rgba(251, 191, 36, 0.55)',
+              color: '#fde047',
+              fontSize: 10,
+              fontWeight: 800,
+              letterSpacing: 1.0,
+              textTransform: 'uppercase',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: '#fbbf24',
+                boxShadow: '0 0 8px #fbbf24',
+              }}
+            />
+            <span>BETA VERSION</span>
+          </div>
+
           <div style={{ width: 1, height: 20, background: 'rgba(255, 255, 255, 0.12)' }} />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13 }}>
@@ -246,7 +344,7 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
           </div>
         </div>
 
-        {/* Center: Real Scanned Zones for this Floor */}
+        {/* Center: Clean Functional Room Zones for this Floor */}
         <div
           style={{
             pointerEvents: 'auto',
@@ -261,43 +359,83 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
             backdropFilter: 'blur(20px)',
           }}
         >
-          <span style={{ fontSize: 11, color: 'rgba(232, 237, 245, 0.45)', padding: '0 6px', fontWeight: 700, letterSpacing: 0.8 }}>
+          <span
+            style={{
+              fontSize: 10,
+              color: 'rgba(232, 237, 245, 0.45)',
+              padding: '0 6px',
+              fontWeight: 700,
+              letterSpacing: 0.8,
+            }}
+          >
             ZONES
           </span>
-          {(activePlanFloor?.objects || []).slice(0, 4).map((obj) => {
-            const isObjActive = nav.room === obj.id;
+          {zoneButtons.map((zb) => {
+            const isZoneActive = activePreset === zb.id;
             return (
               <button
-                key={obj.id}
+                key={zb.id}
                 type="button"
                 onClick={() => {
-                  goInterior(p.id, nav.floorIndex, isObjActive ? null : obj.id);
-                  if (obj.type === 'server_pod') setViewPreset('servers');
-                  else if (obj.type === 'blueprint_board') setViewPreset('blueprint');
-                  else if (obj.type === 'lounge') setViewPreset('lounge');
-                  else setViewPreset('desks');
+                  goInterior(p.id, nav.floorIndex, zb.id);
+                  setViewPreset(zb.id);
                 }}
                 style={{
-                  background: isObjActive ? '#3b82f6' : 'rgba(255, 255, 255, 0.05)',
-                  color: isObjActive ? '#fff' : '#e2e8f0',
-                  border: isObjActive ? '1px solid #60a5fa' : '1px solid rgba(255, 255, 255, 0.08)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  background: isZoneActive ? '#3b82f6' : 'rgba(255, 255, 255, 0.05)',
+                  color: isZoneActive ? '#fff' : '#e2e8f0',
+                  border: isZoneActive ? '1px solid #60a5fa' : '1px solid rgba(255, 255, 255, 0.08)',
                   borderRadius: 8,
-                  padding: '5px 11px',
-                  fontSize: 12,
-                  fontWeight: isObjActive ? 600 : 500,
+                  padding: '5px 10px',
+                  fontSize: 11,
+                  fontWeight: isZoneActive ? 600 : 500,
                   cursor: 'pointer',
                   transition: 'all 0.15s ease',
-                  boxShadow: isObjActive ? '0 0 12px rgba(59, 130, 246, 0.5)' : 'none',
+                  boxShadow: isZoneActive ? '0 0 12px rgba(59, 130, 246, 0.5)' : 'none',
                 }}
               >
-                {obj.title.split(' ')[0]}
+                {zb.icon}
+                <span>{zb.label}</span>
               </button>
             );
           })}
         </div>
 
-        {/* Right: Active Agents Pill */}
-        <div style={{ pointerEvents: 'auto' }}>
+        {/* Right: Live Terminal Quick-Open & Active Agents Pill */}
+        <div style={{ pointerEvents: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          {projectCars.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                const firstTerm = projectCars[0]?.terminalId || projectCars[0]?.id;
+                if (!firstTerm) return;
+                if (onOpenFloatingTerminal) onOpenFloatingTerminal(firstTerm);
+                else if (onOpenTerminal) onOpenTerminal(firstTerm);
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                background: 'rgba(16, 185, 129, 0.16)',
+                border: '1px solid rgba(16, 185, 129, 0.45)',
+                borderRadius: 14,
+                padding: '7px 12px',
+                color: '#34d399',
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: 'pointer',
+                boxShadow: '0 12px 30px rgba(0, 0, 0, 0.55)',
+                backdropFilter: 'blur(16px)',
+              }}
+              title="Open Live Floating Terminal for this Building"
+            >
+              <Terminal size={14} />
+              <span>Live Terminal ({projectCars.length})</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setShowAgents(!showAgents)}
@@ -309,7 +447,7 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
               border: '1px solid rgba(255, 255, 255, 0.14)',
               borderRadius: 14,
               padding: '7px 14px',
-              color: projectAgents.length > 0 ? '#38bdf8' : '#94a3b8',
+              color: totalLiveUnits > 0 ? '#38bdf8' : '#94a3b8',
               fontSize: 12,
               fontWeight: 600,
               cursor: 'pointer',
@@ -322,7 +460,7 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
             <span>Agents</span>
             <span
               style={{
-                background: projectAgents.length > 0 ? '#0284c7' : 'rgba(255, 255, 255, 0.1)',
+                background: totalLiveUnits > 0 ? '#0284c7' : 'rgba(255, 255, 255, 0.1)',
                 color: '#fff',
                 fontSize: 10,
                 padding: '2px 6px',
@@ -330,21 +468,21 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
                 fontWeight: 700,
               }}
             >
-              {projectAgents.length}
+              {totalLiveUnits}
             </span>
           </button>
         </div>
       </div>
 
-      {/* ── 2. Collapsible Agent Dock (Right Side) ──────── */}
+      {/* ── 2. Collapsible Live Agents & Terminals Dock (Right Side) ──────── */}
       {showAgents && (
         <div
           style={{
             position: 'absolute',
             top: 68,
             right: 14,
-            width: 320,
-            maxHeight: 'calc(100% - 150px)',
+            width: 340,
+            maxHeight: 'calc(100% - 170px)',
             zIndex: 26,
             display: 'flex',
             flexDirection: 'column',
@@ -364,9 +502,9 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <div
                 style={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: 6,
+                  width: 26,
+                  height: 26,
+                  borderRadius: 7,
                   background: 'rgba(59, 130, 246, 0.2)',
                   display: 'flex',
                   alignItems: 'center',
@@ -378,10 +516,10 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
               </div>
               <div>
                 <div style={{ fontWeight: 700, fontSize: 13, color: '#f8fafc' }}>
-                  Floor {nav.floorIndex + 1} Agents
+                  {p.name} · Live Sessions
                 </div>
                 <div style={{ fontSize: 11, color: 'rgba(232, 237, 245, 0.5)' }}>
-                  {projectAgents.length} active agents
+                  {projectCars.length} terminals · {projectAgents.length} AI agents
                 </div>
               </div>
             </div>
@@ -394,9 +532,10 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
                     background: 'rgba(59, 130, 246, 0.2)',
                     border: '1px solid rgba(59, 130, 246, 0.4)',
                     color: '#93c5fd',
-                    padding: '3px 8px',
+                    padding: '4px 9px',
                     borderRadius: 6,
                     fontSize: 11,
+                    fontWeight: 600,
                     cursor: 'pointer',
                   }}
                 >
@@ -413,8 +552,85 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
             </div>
           </div>
 
+          {projectCars.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8', letterSpacing: 0.7 }}>
+                LIVE PTY TERMINALS
+              </div>
+              {projectCars.map((car) => (
+                <div
+                  key={car.id}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.04)',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    borderRadius: 10,
+                    padding: '9px 12px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 4,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ fontWeight: 600, fontSize: 12, color: '#f8fafc' }}>{car.name}</span>
+                    <span
+                      style={{
+                        fontSize: 10,
+                        color: car.moving ? '#fbbf24' : '#34d399',
+                        fontWeight: 700,
+                      }}
+                    >
+                      ● {car.moving ? 'WORKING' : 'ONLINE'}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                    {car.currentTask?.description || car.cli || car.cwd}
+                  </div>
+                  <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+                    {onOpenFloatingTerminal && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenFloatingTerminal(car.terminalId || car.id)}
+                        style={{
+                          background: 'rgba(56, 189, 248, 0.15)',
+                          border: '1px solid rgba(56, 189, 248, 0.35)',
+                          color: '#38bdf8',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          borderRadius: 6,
+                          padding: '3px 8px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Live Overlay
+                      </button>
+                    )}
+                    {onOpenTerminal && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenTerminal(car.terminalId || car.id)}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#60a5fa',
+                          fontSize: 11,
+                          cursor: 'pointer',
+                          padding: 0,
+                        }}
+                      >
+                        Open in Workspace →
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {projectAgents.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8', letterSpacing: 0.7 }}>
+                ACTIVE AI AGENTS
+              </div>
               {projectAgents.map((agent) => (
                 <div
                   key={agent.id}
@@ -430,41 +646,65 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <span style={{ fontWeight: 600, fontSize: 12, color: '#f8fafc' }}>{agent.name}</span>
-                    <span style={{ fontSize: 10, color: '#38bdf8' }}>{agent.model}</span>
+                    <span style={{ fontSize: 10, color: '#38bdf8' }}>{agent.model || agent.status}</span>
                   </div>
-                  <div style={{ fontSize: 11, color: '#94a3b8' }}>{agent.currentTask || 'Idle at workstation'}</div>
-                  {onOpenTerminal && agent.terminalId && (
-                    <button
-                      type="button"
-                      onClick={() => onOpenTerminal(agent.terminalId)}
-                      style={{
-                        marginTop: 4,
-                        alignSelf: 'flex-start',
-                        background: 'transparent',
-                        border: 'none',
-                        color: '#60a5fa',
-                        fontSize: 11,
-                        cursor: 'pointer',
-                        padding: 0,
-                      }}
-                    >
-                      Open Terminal →
-                    </button>
+                  <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                    {agent.currentTask || 'Stationed at floor workstation'}
+                  </div>
+                  {agent.terminalId && (
+                    <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+                      {onOpenFloatingTerminal && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenFloatingTerminal(agent.terminalId)}
+                          style={{
+                            background: 'rgba(56, 189, 248, 0.15)',
+                            border: '1px solid rgba(56, 189, 248, 0.35)',
+                            color: '#38bdf8',
+                            fontSize: 11,
+                            fontWeight: 600,
+                            borderRadius: 6,
+                            padding: '3px 8px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Live Terminal
+                        </button>
+                      )}
+                      {onOpenTerminal && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenTerminal(agent.terminalId)}
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: '#60a5fa',
+                            fontSize: 11,
+                            cursor: 'pointer',
+                            padding: 0,
+                          }}
+                        >
+                          Open in Workspace →
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               ))}
             </div>
           ) : (
-            <div style={{ padding: '16px 12px', textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>
-              Automated systems active.
-              <br />
-              No live agents stationed on this floor.
-            </div>
+            projectCars.length === 0 && (
+              <div style={{ padding: '14px 12px', textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>
+                No live agent PTYs running yet for this project.
+                <br />
+                Click <strong>+ Session</strong> above to spawn a live terminal.
+              </div>
+            )
           )}
         </div>
       )}
 
-      {/* ── 3. Bottom Responsive Island Dock Architecture (Zero-Clipping Guaranteed) ── */}
+      {/* ── 3. Bottom Responsive Island Dock Architecture ── */}
       <div
         style={{
           position: 'absolute',
@@ -477,7 +717,7 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
           alignItems: 'center',
           gap: 8,
           width: 'calc(100% - 24px)',
-          maxWidth: 1100,
+          maxWidth: 1140,
           pointerEvents: 'none',
         }}
       >
@@ -497,15 +737,138 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
               display: 'flex',
               alignItems: 'center',
               gap: 8,
-              animation: 'pulse 2s infinite',
             }}
           >
             <Compass size={14} color="#38bdf8" />
-            <span>Walk-In Mode Active · Use WASD / Arrows to walk · Drag to look around 360° · [V] Toggle Overview</span>
+            <span>
+              Walk-In Mode Active · Use WASD / Arrows to walk · Drag to look around 360° · [V] Toggle Overview
+            </span>
           </div>
         )}
 
-        {/* Floating Floor Picker Shaft Popover (opens when clicking elevator badge) */}
+        {/* ── HANDS-ON 360° MANUAL ORBIT & TILT CONTROL BAR (Replaces Auto-Spin Turntable!) ── */}
+        {showHandsOn360 && interiorViewMode !== 'walk-in' && (
+          <div
+            style={{
+              pointerEvents: 'auto',
+              display: 'flex',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              justifyContent: 'center',
+              gap: 12,
+              background: 'rgba(9, 13, 22, 0.95)',
+              border: '1px solid rgba(56, 189, 248, 0.35)',
+              borderRadius: 14,
+              padding: '7px 14px',
+              boxShadow: '0 14px 34px rgba(0, 0, 0, 0.75)',
+              backdropFilter: 'blur(24px)',
+              color: '#e8edf5',
+              fontFamily: 'system-ui, sans-serif',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, color: '#38bdf8' }}>
+              <Sliders size={13} />
+              <span>360° HANDS-ON CONTROL</span>
+            </div>
+
+            {/* Manual 360° Horizontal Orbit Scrubber */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>Orbit</span>
+              <input
+                type="range"
+                min={0}
+                max={360}
+                step={1}
+                value={azimuthDeg}
+                onChange={(e) => scrubOrbitAngle(Number(e.target.value))}
+                style={{
+                  width: 150,
+                  accentColor: '#38bdf8',
+                  cursor: 'grab',
+                }}
+                title="Drag to manually rotate 360° around the floor"
+              />
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: '#f8fafc',
+                  fontFamily: 'monospace',
+                  minWidth: 36,
+                }}
+              >
+                {azimuthDeg}°
+              </span>
+            </div>
+
+            <div style={{ width: 1, height: 16, background: 'rgba(255, 255, 255, 0.12)' }} />
+
+            {/* Manual Vertical Tilt Scrubber */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600 }}>Tilt</span>
+              <input
+                type="range"
+                min={12}
+                max={82}
+                step={1}
+                value={polarDeg}
+                onChange={(e) => scrubOrbitAngle(azimuthDeg, Number(e.target.value))}
+                style={{
+                  width: 95,
+                  accentColor: '#38bdf8',
+                  cursor: 'grab',
+                }}
+                title="Drag to manually tilt camera from top-down to eye-level"
+              />
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: '#f8fafc',
+                  fontFamily: 'monospace',
+                  minWidth: 30,
+                }}
+              >
+                {polarDeg}°
+              </span>
+            </div>
+
+            <div style={{ width: 1, height: 16, background: 'rgba(255, 255, 255, 0.12)' }} />
+
+            {/* Quick Cardinal Snap Buttons */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              {[
+                { label: 'Front 0°', deg: 0 },
+                { label: 'Right 90°', deg: 90 },
+                { label: 'Rear 180°', deg: 180 },
+                { label: 'Left 270°', deg: 270 },
+              ].map((snap) => {
+                const isSnap = Math.abs(azimuthDeg - snap.deg) <= 8 || (snap.deg === 0 && azimuthDeg >= 352);
+                return (
+                  <button
+                    key={snap.label}
+                    type="button"
+                    onClick={() => scrubOrbitAngle(snap.deg)}
+                    style={{
+                      background: isSnap ? 'rgba(56, 189, 248, 0.24)' : 'rgba(255, 255, 255, 0.05)',
+                      border: isSnap ? '1px solid #38bdf8' : '1px solid rgba(255, 255, 255, 0.1)',
+                      color: isSnap ? '#38bdf8' : '#cbd5e1',
+                      borderRadius: 6,
+                      padding: '3px 8px',
+                      fontSize: 10,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {snap.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Floating Floor Picker Shaft Popover */}
         {showFloorPicker && (
           <div
             style={{
@@ -519,11 +882,22 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
               display: 'flex',
               flexDirection: 'column',
               gap: 4,
-              minWidth: 230,
+              minWidth: 250,
               marginBottom: 4,
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', fontSize: 10, fontWeight: 700, color: 'rgba(232, 237, 245, 0.45)', letterSpacing: 1 }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '4px 8px',
+                fontSize: 10,
+                fontWeight: 700,
+                color: 'rgba(232, 237, 245, 0.45)',
+                letterSpacing: 1,
+              }}
+            >
               <span>SELECT FLOOR SHAFT</span>
               <button
                 type="button"
@@ -535,7 +909,7 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
             </div>
             {Array.from({ length: floorCount }, (_, i) => {
               const isActive = nav.floorIndex === i;
-              const fPlan = floorPlan?.floors?.[i];
+              const fPlan = floorPlan?.floors?.[i] || fallbackPlan?.floors?.[i];
               const fName = fPlan?.name || floorName(p, i);
               const fCat = fPlan?.category || 'custom';
               return (
@@ -597,7 +971,6 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
               <ChevronDown size={14} />
             </button>
 
-            {/* Compact Floor Picker Trigger */}
             <button
               type="button"
               onClick={() => setShowFloorPicker(!showFloorPicker)}
@@ -617,7 +990,9 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
               }}
             >
               <Layers size={13} color="#60a5fa" />
-              <span>Floor {nav.floorIndex + 1} / {floorCount}</span>
+              <span>
+                Floor {nav.floorIndex + 1} / {floorCount}
+              </span>
             </button>
 
             <button
@@ -698,33 +1073,31 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
               type="button"
               onClick={() => setViewPreset('desks')}
               style={presetBtn(activePreset === 'desks')}
-              title="Workstations & Code Monitors"
+              title="Workstations & Live Code Monitors"
             >
               <Monitor size={13} />
               <span>Workstations</span>
             </button>
 
-            {activePlanFloor?.category === 'docs' ? (
-              <button
-                type="button"
-                onClick={() => setViewPreset('blueprint')}
-                style={presetBtn(activePreset === 'blueprint')}
-                title="Master Architecture Blueprint Wall"
-              >
-                <Layers size={13} />
-                <span>Blueprint Wall</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setViewPreset('servers')}
-                style={presetBtn(activePreset === 'servers')}
-                title="Server & Cloud Infrastructure Pod"
-              >
-                <Server size={13} />
-                <span>Server Pod</span>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setViewPreset('preview')}
+              style={presetBtn(activePreset === 'preview')}
+              title="Live Application & Terminal Viewport"
+            >
+              <Activity size={13} />
+              <span>Live Preview</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setViewPreset('servers')}
+              style={presetBtn(activePreset === 'servers')}
+              title="Server & Cloud Infrastructure Pod"
+            >
+              <Server size={13} />
+              <span>Server Pod</span>
+            </button>
 
             <button
               type="button"
@@ -747,7 +1120,7 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
             </button>
           </div>
 
-          {/* ── ISLAND 3: 3D Camera Controls & 360° Turntable (Zero-Clipping Guaranteed) ── */}
+          {/* ── ISLAND 3: Hands-On 360° Camera Controls (Manual Only — Never Spins Automatically!) ── */}
           <div style={islandBaseStyle}>
             <button
               type="button"
@@ -767,35 +1140,40 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
               <RotateCw size={13} />
             </button>
 
-            {/* 360° Turntable Mode Toggle */}
+            {/* Hands-On 360° Manual Control Toggle (Opens/Closes Manual Orbit & Tilt Scrubber) */}
             <button
               type="button"
-              onClick={toggleTurntable}
-              title="Toggle Smooth 360° Continuous Turntable Orbit"
+              onClick={() => {
+                setActiveObjectInspection(null);
+                if (interiorViewMode === 'walk-in') {
+                  setInteriorViewMode('dollhouse');
+                }
+                setShowHandsOn360((v) => !v);
+              }}
+              title="Toggle Hands-On 360° Manual Orbit & Tilt Scrubber"
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: 4,
+                gap: 5,
                 height: 28,
-                padding: '0 8px',
+                padding: '0 10px',
                 borderRadius: 8,
-                border: turntable ? '1px solid #38bdf8' : '1px solid rgba(255, 255, 255, 0.12)',
-                background: turntable ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255, 255, 255, 0.05)',
-                color: turntable ? '#38bdf8' : '#e8edf5',
+                border: showHandsOn360 ? '1px solid #38bdf8' : '1px solid rgba(255, 255, 255, 0.12)',
+                background: showHandsOn360 ? 'rgba(56, 189, 248, 0.22)' : 'rgba(255, 255, 255, 0.05)',
+                color: showHandsOn360 ? '#38bdf8' : '#e8edf5',
                 fontSize: 11,
                 fontWeight: 700,
                 cursor: 'pointer',
-                boxShadow: turntable ? '0 0 10px rgba(56, 189, 248, 0.5)' : 'none',
                 transition: 'all 0.15s ease',
               }}
             >
-              <Compass size={13} color={turntable ? '#38bdf8' : '#cbd5e1'} />
-              <span>360°</span>
+              <Sliders size={12} color={showHandsOn360 ? '#38bdf8' : '#cbd5e1'} />
+              <span>360° Hands-On ({azimuthDeg}°)</span>
             </button>
 
             <button
               type="button"
-              onClick={() => zoomCamera(0.85)}
+              onClick={() => zoomCamera(0.82)}
               title="Zoom In"
               style={navIconBtn(false)}
             >
@@ -804,7 +1182,7 @@ export function FloorNav({ onExitToWorkspace, onOpenTerminal, onNewSession }: Fl
 
             <button
               type="button"
-              onClick={() => zoomCamera(1.2)}
+              onClick={() => zoomCamera(1.22)}
               title="Zoom Out"
               style={navIconBtn(false)}
             >
@@ -846,11 +1224,11 @@ function presetBtn(active: boolean): CSSProperties {
   return {
     display: 'flex',
     alignItems: 'center',
-    gap: 6,
+    gap: 5,
     background: active ? 'rgba(59, 130, 246, 0.28)' : 'rgba(255, 255, 255, 0.05)',
     border: active ? '1px solid #3b82f6' : '1px solid rgba(255, 255, 255, 0.08)',
     borderRadius: 8,
-    padding: '5px 10px',
+    padding: '5px 9px',
     color: active ? '#93c5fd' : '#cbd5e1',
     fontSize: 11,
     fontWeight: active ? 600 : 500,

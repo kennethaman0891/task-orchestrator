@@ -149,6 +149,10 @@ step "8/9 install into macOS bundle and /Applications"
 # on :8775. Port 8765 is this app's sidecar only.
 pkill -f "/Applications/Task Orchestrator.app/Contents/MacOS/tto" 2>/dev/null || true
 pkill -f "/Applications/tto.app/Contents/MacOS/tto" 2>/dev/null || true
+# The in-tree release bundle is the same product. A live copy blocks rm of
+# that bundle and keeps the :8765 sidecar. Match the full path so Terminal
+# Task Orchestrator (also named tto) is left alone.
+pkill -f "$TAURI/target/release/bundle/macos/Task Orchestrator.app/Contents/MacOS/tto" 2>/dev/null || true
 lsof -tiTCP:8765 -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
 sleep 1
 

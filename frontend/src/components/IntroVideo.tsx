@@ -129,7 +129,7 @@ export function IntroVideo({ onComplete }: IntroVideoProps) {
     >
       <video
         ref={videoRef}
-        src="/videos/promo.mp4"
+        src="/videos/login.mp4"
         autoPlay
         muted
         playsInline

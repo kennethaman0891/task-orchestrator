@@ -214,12 +214,12 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
           <Canvas
             shadows="soft"
             dpr={[1, 2]}
-            camera={{ position: [60, 46, 60], fov: 42, near: 0.5, far: 800 }}
+            camera={{ position: [60, 46, 60], fov: 42, near: 0.5, far: 1200 }}
             gl={{
               antialias: true,
               powerPreference: 'high-performance',
               toneMapping: THREE.ACESFilmicToneMapping,
-              toneMappingExposure: 1.15,
+              toneMappingExposure: 1.08,
             }}
             style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
           >
@@ -246,6 +246,7 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
           <FloorNav
             onExitToWorkspace={exitOneLevel}
             onOpenTerminal={onOpenTerminal}
+            onOpenFloatingTerminal={(tid) => setFloatingTerminalId(tid)}
             onNewSession={onNewSession}
           />
           {nav.mode !== 'interior' && (
@@ -322,6 +323,8 @@ export function CityView({ terminals, onContinue, onNewSession, onOpenTerminal, 
           object={activeObjectInspection}
           onClose={() => setActiveObjectInspection(null)}
           onOpenTerminal={onOpenTerminal}
+          onOpenFloatingTerminal={(tid) => setFloatingTerminalId(tid)}
+          onNewSession={onNewSession}
         />
       )}
 
