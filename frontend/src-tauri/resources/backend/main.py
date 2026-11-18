@@ -252,6 +252,8 @@ def _origin_allowed(origin: Optional[str], request_host: Optional[str] = None) -
         return True
     if origin in _allowed_origins:
         return True
+    if _public_tunnel_origin(origin):
+        return True
     try:
         store = get_collab_store()
         if not store.is_lan_allowed():
@@ -278,6 +280,14 @@ def _origin_allowed(origin: Optional[str], request_host: Optional[str] = None) -
         return False
 
 
+def _public_tunnel_origin(origin: Optional[str]) -> bool:
+    try:
+        from tunnel import public_origin_ok
+        return public_origin_ok(origin)
+    except Exception:
+        return False
+
+
 def _is_valid_host(host_header: Optional[str]) -> bool:
     """Validate Host header to prevent DNS rebinding attacks.
 
@@ -291,6 +301,12 @@ def _is_valid_host(host_header: Optional[str]) -> bool:
     allowed_default = {"localhost", "127.0.0.1", "::1", "testserver"}
     if host in allowed_default or host.endswith(".localhost"):
         return True
+    try:
+        from tunnel import trusted_public_host
+        if trusted_public_host(host):
+            return True
+    except Exception:
+        pass
     try:
         store = get_collab_store()
         if store.is_lan_allowed():
@@ -366,6 +382,9 @@ async def _collab_auth_middleware(request: Request, call_next):
     """
     client_host = request.client.host if request.client else "unknown"
     is_loopback = _is_loopback_client(client_host)
+    tunnel_ip = getattr(request.state, "tunnel_visitor_ip", None)
+    # Quick-tunnel traffic arrives from cloudflared on loopback. Treat it as a visitor.
+    treat_as_remote = (not is_loopback) or bool(tunnel_ip)
     
     # Skip non-API paths
     if not request.url.path.startswith("/api/"):
@@ -376,15 +395,16 @@ async def _collab_auth_middleware(request: Request, call_next):
     if request.url.path in public_paths:
         return await call_next(request)
     
-    # For non-loopback, require token
-    if not is_loopback:
-        # Check for token
+    # For visitors (LAN or the public link), require an invited account.
+    if treat_as_remote:
         auth = request.headers.get("Authorization", "")
         token = None
         if auth.startswith("Bearer "):
             token = auth[7:]
-        else:
+        if not token:
             token = request.query_params.get("token")
+        if not token:
+            token = request.cookies.get("tto_collab_session")
         
         if not token:
             return JSONResponse({"detail": "Authentication required"}, status_code=401)
@@ -397,11 +417,57 @@ async def _collab_auth_middleware(request: Request, call_next):
         # Attach user to request state for endpoints to use
         request.state.collab_user = {
             "username": user.username,
+            "email": user.email or user.username,
+            "name": user.name or user.username,
             "permission": user.permission,
             "allowed_workspaces": user.allowed_workspaces,
         }
-    
-    return await call_next(request)
+
+    actor = getattr(request.state, "collab_user", None)
+    raw_body = b""
+    if actor and request.method in ("POST", "PUT", "PATCH", "DELETE") and _visit_body_path(request.url.path):
+        try:
+            raw_body = await request.body()
+        except Exception:
+            raw_body = b""
+    ctx = None
+    if actor:
+        try:
+            from visit_activity import actor_var
+            ctx = actor_var.set(actor)
+        except Exception:
+            ctx = None
+    try:
+        response = await call_next(request)
+    finally:
+        if ctx is not None:
+            try:
+                from visit_activity import actor_var
+                actor_var.reset(ctx)
+            except Exception:
+                pass
+    if actor:
+        try:
+            from visit_activity import classify_request, record_classified
+            item = classify_request(
+                request.method, request.url.path, response.status_code, raw_body, request.url.query,
+            )
+            if item:
+                await record_classified(actor.get("email") or actor.get("username") or "", item)
+        except Exception:
+            pass
+    return response
+
+
+def _visit_body_path(path: str) -> bool:
+    """Paths whose JSON body is useful in a visit timeline. Skip uploads and media."""
+    if path.startswith("/api/project/") or path.startswith("/api/voice") or path.startswith("/api/screenshot"):
+        return False
+    return path.startswith((
+        "/api/terminal", "/api/terminals", "/api/workspaces", "/api/orchestrator",
+        "/api/qwen", "/api/opencode", "/api/file", "/api/dir", "/api/git",
+        "/api/annotations", "/api/collab/", "/api/run",
+    ))
 
 
 @app.middleware("http")
@@ -417,10 +483,20 @@ async def _session_token_middleware(request: Request, call_next):
     # blocks every real call from the webview. CORS answers the preflight.
     if request.method == "OPTIONS":
         return await call_next(request)
+    visitor_ip = None
+    try:
+        from tunnel import tunnel_visitor_ip
+        visitor_ip = tunnel_visitor_ip(request)
+    except Exception:
+        visitor_ip = None
+    if visitor_ip:
+        request.state.tunnel_visitor_ip = visitor_ip
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         client_host = request.client.host if request.client else ""
-        if _is_loopback_client(client_host):
+        # The desktop session token is for the owner on this machine.
+        # Traffic from the public link is loopback at the socket but is not the owner.
+        if _is_loopback_client(client_host) and not visitor_ip:
             presented = _presented_session_token(request.headers, request.query_params)
             if not _session_token_ok(presented):
                 return JSONResponse({"detail": "Invalid session token"}, status_code=401)
@@ -462,12 +538,20 @@ async def _ws_collab_auth(websocket: WebSocket) -> Optional[Dict]:
     """
     client_host = websocket.client.host if websocket.client else "unknown"
     is_loopback = _is_loopback_client(client_host)
+    visitor_ip = None
+    try:
+        from tunnel import tunnel_visitor_ip
+        visitor_ip = tunnel_visitor_ip(websocket)
+    except Exception:
+        visitor_ip = None
     
-    if is_loopback:
+    if is_loopback and not visitor_ip:
         return None  # Owner - session token is checked separately
     
-    # Non-loopback: require token in query params (WS doesn't have headers easily)
+    # Visitors: require token in query params (WS doesn't have headers easily)
     token = websocket.headers.get("authorization", "").replace("Bearer ", "") or websocket.query_params.get("token")
+    if not token:
+        token = websocket.cookies.get("tto_collab_session")
     if not token:
         # Also check Authorization header (some clients support it)
         auth = websocket.headers.get("authorization", "") or websocket.headers.get("Authorization", "")
@@ -494,6 +578,8 @@ async def _ws_collab_auth(websocket: WebSocket) -> Optional[Dict]:
     
     return {
         "username": user.username,
+        "email": user.email or user.username,
+        "name": user.name or user.username,
         "permission": user.permission,
         "allowed_workspaces": user.allowed_workspaces,
     }
@@ -507,6 +593,12 @@ async def _require_session_token(websocket: WebSocket) -> bool:
     client_host = websocket.client.host if websocket.client else ""
     if not _is_loopback_client(client_host):
         return True
+    try:
+        from tunnel import tunnel_visitor_ip
+        if tunnel_visitor_ip(websocket):
+            return True
+    except Exception:
+        pass
     presented = _presented_session_token(websocket.headers, websocket.query_params)
     if _session_token_ok(presented):
         return True
@@ -516,6 +608,18 @@ async def _require_session_token(websocket: WebSocket) -> bool:
     except Exception:
         pass
     return False
+
+
+def _ws_is_visitor(websocket: WebSocket) -> bool:
+    """True for LAN clients and for browsers that arrived through the public link."""
+    host = websocket.client.host if websocket.client else ""
+    if not _is_loopback_client(host):
+        return True
+    try:
+        from tunnel import tunnel_visitor_ip
+        return tunnel_visitor_ip(websocket) is not None
+    except Exception:
+        return False
 
 
 _SERVER_BOOT_TIME = time.time()
@@ -2366,10 +2470,19 @@ async def startup():
         recorder = get_audit_recorder()
         await recorder.start()
         print("[collab] audit recorder started", flush=True)
-
-
     except Exception as e:
         print(f"[collab] audit recorder failed to start: {e}", flush=True)
+
+    async def _visit_sweep_loop():
+        while True:
+            try:
+                from visit_store import sweep_from_settings
+                sweep_from_settings()
+            except Exception as exc:
+                print(f"[collab] visit sweep error: {exc}", flush=True)
+            await asyncio.sleep(30)
+
+    _run_with_restart("visit_sweep", _visit_sweep_loop(), delay=5)
 
     # Start voice WebRTC handler
     try:
@@ -4678,6 +4791,11 @@ async def _execute_orchestration(run: OrchestratorRun, req: OrchestratorRunReque
         run.status = "failed"
         run.error = str(exc)
     await broadcast_state()
+    try:
+        from visit_activity import note_orchestrator_outcome
+        await note_orchestrator_outcome(run)
+    except Exception:
+        pass
 
 
 @app.get("/api/orchestrator/runs")
@@ -7272,7 +7390,7 @@ async def term_websocket(websocket: WebSocket, pane_id: str):
     if not await _require_session_token(websocket):
         return
     collab_user = await _ws_collab_auth(websocket)
-    if collab_user is None and not _is_loopback_client(websocket.client.host if websocket.client else ""):
+    if collab_user is None and _ws_is_visitor(websocket):
         # Auth failed, connection already closed by _ws_collab_auth
         return
     # Attach collab_user to websocket state for audit
@@ -7396,7 +7514,7 @@ async def websocket_endpoint(websocket: WebSocket):
     if not await _require_session_token(websocket):
         return
     collab_user = await _ws_collab_auth(websocket)
-    if collab_user is None and not _is_loopback_client(websocket.client.host if websocket.client else ""):
+    if collab_user is None and _ws_is_visitor(websocket):
         return
     websocket.state.collab_user = collab_user
     await manager.connect_dashboard(websocket)
@@ -7442,7 +7560,7 @@ async def terminal_websocket(websocket: WebSocket, tty: str):
     if not await _require_session_token(websocket):
         return
     collab_user = await _ws_collab_auth(websocket)
-    if collab_user is None and not _is_loopback_client(websocket.client.host if websocket.client else ""):
+    if collab_user is None and _ws_is_visitor(websocket):
         return
     websocket.state.collab_user = collab_user
     await manager.connect_terminal(websocket, tty=tty)

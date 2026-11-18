@@ -49,7 +49,7 @@ const ColabView = lazy(() =>
 void ColabView; // suppress unused warning
 import type { Project } from '@/city/types';
 import { CollaboratorLoginGate } from '@/components/auth/CollaboratorLoginGate';
-import { getCollabSession, type CollabUser, type OwnerProfile } from '@/lib/collab';
+import { getCollabSession, collabLogout, collabHeartbeat, type CollabUser, type OwnerProfile } from '@/lib/collab';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { SettingsView } from '@/views/settings/SettingsView';
 import { CallOverlay } from '@/opendots/components/CallOverlay';
@@ -123,6 +123,33 @@ export default function App() {
       }
     })();
   }, []);
+
+  // Visitors check in while the tab is open so the owner can see them,
+  // and so a closed tab ends the visit instead of staying "signed in".
+  useEffect(() => {
+    if (isTauri() || !collabSession) return;
+    let stopped = false;
+    const beat = async () => {
+      const token = localStorage.getItem('tto_collab_token');
+      if (!token || stopped) return;
+      try {
+        await collabHeartbeat(token);
+      } catch (err: any) {
+        if (stopped) return;
+        const msg = String(err?.message || '');
+        if (msg.includes('Session ended') || msg.includes('Invalid or expired') || msg.includes('401')) {
+          localStorage.removeItem('tto_collab_token');
+          setCollabSession(null);
+        }
+      }
+    };
+    beat();
+    const timer = setInterval(beat, 20000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [collabSession]);
 
   // Auto-dismissing toast handler with timer reset
   const showToast = useCallback((msg: string, error = false) => {
@@ -1290,6 +1317,8 @@ export default function App() {
           </div>
           <button
             onClick={() => {
+              const token = typeof window !== 'undefined' ? localStorage.getItem('tto_collab_token') : null;
+              if (token) collabLogout(token).catch(() => {});
               if (typeof window !== 'undefined') localStorage.removeItem('tto_collab_token');
               setCollabSession(null);
             }}

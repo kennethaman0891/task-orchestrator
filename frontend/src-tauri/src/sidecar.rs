@@ -387,11 +387,15 @@ fn collab_ttos_host() -> Option<String> {
     let settings_path = home.join(".local/share/tto/collab/settings.json");
     if let Ok(content) = fs::read_to_string(&settings_path) {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-            if val
-                .get("lan_enabled")
+            let lan_on = val
+                .get("lan_access")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
-            {
+                || val
+                    .get("lan_enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+            if lan_on {
                 return Some("0.0.0.0".to_string());
             }
         }

@@ -236,7 +236,10 @@ not bypass the safety policy.
 7. File access sandboxed to `$HOME`, secrets paths blocked, traversal rejected.
 8. Audit log with sender/command/result/duration — never secrets.
 9. Local-first: everything binds 127.0.0.1; remote access should go through a
-   VPN/tunnel, not open ports.
+   VPN/tunnel, not open ports. Collaborator browsers are separate from this
+   WhatsApp path: Colab Hub can show your LAN address and an opt-in HTTPS
+   quick tunnel, and only invited accounts can sign in. See
+   [collab-hub.md](collab-hub.md).
 
 ## 12. Proactive notifications
 

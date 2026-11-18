@@ -397,6 +397,10 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 
 ---
 
+## Colab visits
+
+Invited people can sign in from your network, or from an optional HTTPS public link. Colab Hub keeps one record per visit (who, where from, how long, and a timeline of what they did) and can export it to CSV, a printable report, or PDF. The owner guide is [docs/collab-hub.md](docs/collab-hub.md).
+
 ## 🔒 Security
 
 Task Orchestrator executes shell commands by design — that's the product. Security measures focus on **containing** that power:

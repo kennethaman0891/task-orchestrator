@@ -10,14 +10,15 @@ import {
   Mail, Send, Share2, Settings, UserCheck, Sparkles, RefreshCw
 } from 'lucide-react';
 import type { 
-  CollabUser, CollabSettings, PresenceUser, AuditEvent, OwnerProfile, SmtpConfig, CreateUserResponse
+  CollabUser, CollabSettings, PresenceUser, AuditEvent, OwnerProfile, SmtpConfig, CreateUserResponse, AccessInfo
 } from '@/lib/collab';
 import {
   listCollabUsers, createCollabUser, updateCollabUser, changeCollabPin,
   revokeCollabUser, getCollabSettings, updateCollabSettings, updateSmtpSettings,
   testSmtpConnection, getCollabPresence, getCollabAudit, getOwnerProfile,
-  setOwnerProfile, generateCollabInvite
+  setOwnerProfile, generateCollabInvite, getCollabAccess, setPublicTunnel
 } from '@/lib/collab';
+import { VisitorRecords } from '@/components/VisitorRecords';
 
 function formatDate(ts: number): string {
   const d = new Date(ts);
@@ -44,6 +45,8 @@ export function CollabView({ workspaces }: CollabViewProps) {
   // Collaborators & Presence State
   const [users, setUsers] = useState<CollabUser[]>([]);
   const [settings, setSettings] = useState<CollabSettings>({ lan_access: false, log_on_desktop: true });
+  const [access, setAccess] = useState<AccessInfo | null>(null);
+  const [tunnelBusy, setTunnelBusy] = useState(false);
   const [presence, setPresence] = useState<PresenceUser[]>([]);
   const [selectedUser, setSelectedUser] = useState<string | null>(null);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
@@ -53,7 +56,7 @@ export function CollabView({ workspaces }: CollabViewProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [copiedUrl, setCopiedUrl] = useState(false);
+  const [copiedWhich, setCopiedWhich] = useState<string | null>(null);
   const [copiedInviteUrl, setCopiedInviteUrl] = useState(false);
   const [copiedInviteText, setCopiedInviteText] = useState(false);
 
@@ -136,6 +139,11 @@ export function CollabView({ workspaces }: CollabViewProps) {
       }
     } catch (e: any) {
       setError(e.message || 'Failed to load settings');
+    }
+    try {
+      setAccess(await getCollabAccess());
+    } catch {
+      // Access info is optional until the sidecar is up.
     }
   }, []);
 
@@ -411,16 +419,34 @@ export function CollabView({ workspaces }: CollabViewProps) {
     }
   };
 
-  const lanUrl = typeof window !== 'undefined' ? `http://${window.location.hostname || 'localhost'}:8765` : 'http://localhost:8765';
+  const lanUrls = access?.lan_urls?.length
+    ? access.lan_urls
+    : (settings.lan_access ? ['http://127.0.0.1:8765'] : []);
 
-  const handleCopyUrl = async () => {
-    if (!lanUrl) return;
+  const handleCopyUrl = async (url?: string) => {
+    const value = url || lanUrls[0];
+    if (!value) return;
     try {
-      await navigator.clipboard.writeText(lanUrl);
-      setCopiedUrl(true);
-      setTimeout(() => setCopiedUrl(false), 2000);
+      await navigator.clipboard.writeText(value);
+      setCopiedWhich(value);
+      setTimeout(() => setCopiedWhich(null), 2000);
     } catch (err) {
       console.warn('Failed to copy URL:', err);
+    }
+  };
+
+  const handleTunnel = async (enabled: boolean) => {
+    clearMessages();
+    setTunnelBusy(true);
+    try {
+      await setPublicTunnel(enabled);
+      setAccess(await getCollabAccess());
+      setSuccess(enabled ? 'Public link is on. Only invited people can sign in.' : 'Public link turned off.');
+    } catch (e: any) {
+      setError(e.message || 'Could not change the public link');
+      try { setAccess(await getCollabAccess()); } catch { /* ignore */ }
+    } finally {
+      setTunnelBusy(false);
     }
   };
 
@@ -778,49 +804,116 @@ export function CollabView({ workspaces }: CollabViewProps) {
             </div>
 
             {settings.lan_access ? (
-              <div
-                style={{
-                  marginTop: '12px',
-                  padding: '10px 14px',
-                  background: t.colors.bg.tertiary,
-                  borderRadius: '8px',
-                  border: `1px solid ${t.colors.border.subtle}`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '10px',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                  <Radio style={{ width: 14, height: 14, color: t.colors.success.primary, flexShrink: 0 }} />
-                  <code style={{ fontSize: '12px', color: t.colors.accent.primary, fontFamily: t.fontFamily.mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {lanUrl}
-                  </code>
-                </div>
-                <button
-                  onClick={handleCopyUrl}
-                  style={{
-                    ...buttonBase(t),
-                    ...buttonSize(t, 'sm'),
-                    ...buttonVariant(t, copiedUrl ? 'primary' : 'ghost'),
-                    padding: '4px 8px',
-                    fontSize: '11px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    flexShrink: 0,
-                  }}
-                  title="Copy LAN URL"
-                >
-                  {copiedUrl ? <Check style={{ width: 12, height: 12 }} /> : <Copy style={{ width: 12, height: 12 }} />}
-                  {copiedUrl ? 'Copied' : 'Copy'}
-                </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+                {lanUrls.map((url) => (
+                  <div
+                    key={url}
+                    style={{
+                      padding: '10px 14px',
+                      background: t.colors.bg.tertiary,
+                      borderRadius: '8px',
+                      border: `1px solid ${t.colors.border.subtle}`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '10px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                      <Radio style={{ width: 14, height: 14, color: t.colors.success.primary, flexShrink: 0 }} />
+                      <code style={{ fontSize: '12px', color: t.colors.accent.primary, fontFamily: t.fontFamily.mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {url}
+                      </code>
+                    </div>
+                    <button
+                      onClick={() => handleCopyUrl(url)}
+                      style={{
+                        ...buttonBase(t),
+                        ...buttonSize(t, 'sm'),
+                        ...buttonVariant(t, copiedWhich === url ? 'primary' : 'ghost'),
+                        padding: '4px 8px',
+                        fontSize: '11px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        flexShrink: 0,
+                      }}
+                      title="Copy LAN URL"
+                    >
+                      {copiedWhich === url ? <Check style={{ width: 12, height: 12 }} /> : <Copy style={{ width: 12, height: 12 }} />}
+                      {copiedWhich === url ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
+                ))}
+                {lanUrls.length === 0 && (
+                  <div style={{ fontSize: 12, color: t.colors.text.muted }}>
+                    LAN access is on, but this computer did not report a network address. Try again in a moment.
+                  </div>
+                )}
               </div>
             ) : (
               <div style={{ fontSize: '12px', color: t.colors.text.muted, marginTop: '8px' }}>
-                LAN access is disabled. Collaborators cannot reach this instance over network.
+                LAN access is disabled. People on your home network cannot open this instance.
               </div>
             )}
+
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${t.colors.border.subtle}` }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>Public link</div>
+                  <div style={{ fontSize: 12, color: t.colors.text.muted, marginTop: 2, lineHeight: 1.4 }}>
+                    An HTTPS address for people outside your network. Only invited accounts can sign in. The link turns off when you restart the app.
+                  </div>
+                </div>
+                <label
+                  style={{
+                    position: 'relative', width: 48, height: 26, borderRadius: 13, flexShrink: 0,
+                    background: access?.tunnel.running ? t.colors.accent.primary : t.colors.border.primary,
+                    cursor: tunnelBusy ? 'wait' : 'pointer',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!access?.tunnel.running}
+                    disabled={tunnelBusy}
+                    onChange={(e) => handleTunnel(e.target.checked)}
+                    style={{ position: 'absolute', opacity: 0, width: '100%', height: '100%', cursor: 'pointer' }}
+                  />
+                  <span style={{
+                    position: 'absolute', left: access?.tunnel.running ? 24 : 2, top: 2,
+                    width: 22, height: 22, borderRadius: '50%', background: 'white',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.25)', transition: 'left 0.2s',
+                  }} />
+                </label>
+              </div>
+              {access?.tunnel.running && access.tunnel.url && (
+                <div style={{
+                  marginTop: 10, padding: '10px 14px', background: t.colors.bg.tertiary, borderRadius: 8,
+                  border: `1px solid ${t.colors.border.subtle}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+                }}>
+                  <code style={{ fontSize: 12, color: t.colors.accent.primary, fontFamily: t.fontFamily.mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {access.tunnel.url}
+                  </code>
+                  <button
+                    onClick={() => handleCopyUrl(access.tunnel.url || undefined)}
+                    style={{ ...buttonBase(t), ...buttonSize(t, 'sm'), ...buttonVariant(t, copiedWhich === access.tunnel.url ? 'primary' : 'ghost'), padding: '4px 8px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}
+                  >
+                    {copiedWhich === access.tunnel.url ? <Check style={{ width: 12, height: 12 }} /> : <Copy style={{ width: 12, height: 12 }} />}
+                    {copiedWhich === access.tunnel.url ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              )}
+              {access && !access.tunnel.available && (
+                <div style={{ marginTop: 8, fontSize: 12, color: t.colors.text.muted, lineHeight: 1.4 }}>
+                  A public link needs the free cloudflared program, which is not installed. People on your home network can still use the LAN address.
+                </div>
+              )}
+              {access?.tunnel.error && !access.tunnel.running && (
+                <div style={{ marginTop: 8, fontSize: 12, color: t.colors.warning.primary, lineHeight: 1.4 }}>
+                  {access.tunnel.error}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Desktop Audit Log Card */}
@@ -1283,6 +1376,11 @@ export function CollabView({ workspaces }: CollabViewProps) {
                         <div>
                           <div style={{ fontWeight: 600, fontSize: '13px' }}>{p.name || p.username}</div>
                           <div style={{ fontSize: '11px', color: t.colors.text.muted }}>{p.email || p.username}</div>
+                          <div style={{ fontSize: '12px', color: t.colors.text.secondary, marginTop: 3 }}>
+                            {p.current_activity || 'Signed in'}
+                            {p.browser ? ` · ${p.browser}` : ''}
+                            {p.ip ? ` · ${p.ip}` : ''}
+                          </div>
                         </div>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -1316,6 +1414,8 @@ export function CollabView({ workspaces }: CollabViewProps) {
             </div>
           </div>
         </div>
+
+        <VisitorRecords users={users} onChanged={() => { loadUsers(); loadPresence(); }} />
 
         {/* ── Audit Log Section ── */}
         <div
