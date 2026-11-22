@@ -82,7 +82,7 @@ export function useWorkspaceNotifications({
             ? `${meta.cliName} · ${idx + 1}`
             : entry?.session_name || entry?.pane_title || `Terminal ${idx + 1}`;
         const cleanName = rawName.replace(/^tto\s*[·•-]\s*/i, '');
-        const terminalName = p.label || cleanName;
+        const terminalName = p.label || meta.autoName || cleanName;
 
         // Extract last non-blank line from buffer for preview snippet
         const lines = TerminalManager.lastLines(p.tty, 15);

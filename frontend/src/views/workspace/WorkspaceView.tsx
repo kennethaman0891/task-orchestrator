@@ -135,13 +135,13 @@ export function WorkspaceView({
           'shell'
         );
 
-        // Format clean dynamic name: Priority is user rename (p.label), then detected CLI Name + Index, then clean session name
+        // Format clean dynamic name: Priority is user rename (p.label), then read-only auto task name (meta.autoName), then detected CLI Name + Index, then clean session name
         const rawDefaultName =
           meta.cliName && meta.cli !== 'shell'
             ? `${meta.cliName} · ${idx + 1}`
             : entry?.session_name || entry?.pane_title || `Terminal ${idx + 1}`;
         const cleanDefaultName = rawDefaultName.replace(/^tto\s*[·•-]\s*/i, '');
-        const label = p.label || cleanDefaultName;
+        const label = p.label || meta.autoName || cleanDefaultName;
 
         return {
           paneId: p.id,

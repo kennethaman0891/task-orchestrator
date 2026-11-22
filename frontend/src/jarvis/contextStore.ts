@@ -7,6 +7,7 @@ import type { SessionContext } from './types';
 import { detectCLI } from './adapters';
 import { eventBus } from './eventBus';
 import { TerminalManager } from '@/terminal/TerminalManager';
+import { getAutoTerminalName } from '@/terminal/autoTerminalName';
 import type { UnifiedTerminal } from '@/types';
 import type { Workspace } from '@/lib/workspace';
 
@@ -128,7 +129,8 @@ class SessionContextStore {
     const lastActivity = hasNewOutput ? now : (existing?.lastActivityTimestamp || now);
 
     const pane = activeWorkspace?.panes?.find((p) => p.tty === sessionId);
-    const resolvedTerminalName = pane?.label || existing?.terminalName || term?.session_name || sessionId;
+    const autoName = getAutoTerminalName(sessionId, TerminalManager.lastLines(sessionId, 120), parsed.cli, lastActivity);
+    const resolvedTerminalName = pane?.label || autoName || existing?.terminalName || term?.session_name || sessionId;
     const parsedTitle = realTaskTitle(parsed.taskTitle);
     const previousTitle = realTaskTitle(existing?.currentTaskTitle);
 

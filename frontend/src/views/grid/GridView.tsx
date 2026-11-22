@@ -927,7 +927,7 @@ export function GridView({
             ? `${meta.cliName} · ${slotIndex + 1}`
             : entry?.session_name || entry?.pane_title || `Terminal ${slotIndex + 1}`;
 
-        const displayName = pane.label || defaultName;
+        const displayName = pane.label || meta?.autoName || defaultName;
         const status: TermStatus = meta ? meta.status : 'empty';
 
         return {

@@ -6,6 +6,7 @@
 import type { Terminal } from '@xterm/xterm';
 import { WriteQueue } from './writeQueue';
 import { SynchronizedOutputFilter } from './synchronizedOutputFilter';
+import { getAutoTerminalName, clearAutoTerminalName } from './autoTerminalName';
 
 function menuKeystrokes(value: string, opts: { enter: boolean }): string[] {
   if (value.toLowerCase() === 'escape') return ['\x1b'];
@@ -995,7 +996,7 @@ export const TerminalManager = {
     deriveStatusFn: (tty: string, entry: any, closed: boolean) => TStatus,
     durationFn: (tty: string, status: TStatus) => TDuration,
     defaultCli = 'shell'
-  ): { cli: string; cliName: string; status: TStatus; duration: TDuration } {
+  ): { cli: string; cliName: string; status: TStatus; duration: TDuration; autoName?: string } {
     const h = TerminalManager.get(tty);
     const now = Date.now();
     const lastOut = h?.lastOutputAt ?? 0;
@@ -1017,6 +1018,7 @@ export const TerminalManager = {
         cliName: cached.cliName,
         status: cached.status as TStatus,
         duration: cached.duration as TDuration,
+        autoName: cached.autoName,
       };
     }
 
@@ -1079,7 +1081,11 @@ export const TerminalManager = {
       cliName = CLI_DISPLAY_NAMES[cli] || 'Terminal';
     }
 
-    const result = { cli, cliName, status, duration };
+    const autoName = h
+      ? getAutoTerminalName(tty, TerminalManager.lastLines(tty, 120), cli, lastOut)
+      : cached?.autoName;
+
+    const result = { cli, cliName, status, duration, autoName };
     _metaCache.set(tty, {
       ...result,
       entryCli,
@@ -1092,6 +1098,7 @@ export const TerminalManager = {
   /** Clear cache for a terminal (e.g. on close or unregister). */
   invalidateMetaCache(tty: string): void {
     _metaCache.delete(tty);
+    clearAutoTerminalName(tty);
   },
 };
 
@@ -1138,6 +1145,7 @@ const _metaCache = new Map<string, {
   cliName: string;
   status: any;
   duration: any;
+  autoName?: string;
   entryCli: string;
   lastOutputAt: number;
   cachedAt: number;

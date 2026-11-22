@@ -485,7 +485,7 @@ export function Sidebar({
           ? `${meta.cliName} · ${paneCounter}`
           : (entry?.session_name || entry?.pane_title || `Terminal ${paneCounter}`);
 
-        const label = p.label || defaultName;
+        const label = p.label || meta.autoName || defaultName;
 
         result.push({
           tty: p.tty,
